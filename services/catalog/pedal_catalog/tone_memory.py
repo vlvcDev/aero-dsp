@@ -34,6 +34,9 @@ class ToneMemoryService:
         pre_model = candidate.get("pre_model")
         if pre_model is not None:
             pre_model = _model(pre_model, "pre_model")
+        cabinet_ir = candidate.get("cabinet_ir")
+        if cabinet_ir is not None:
+            cabinet_ir = _model(cabinet_ir, "cabinet_ir")
         controls = _number_map(candidate.get("controls"), "controls")
         effects = _bool_map(candidate.get("effects"), "effects")
         record = {
@@ -45,6 +48,7 @@ class ToneMemoryService:
             "note": note,
             "pre_model": pre_model,
             "amp_model": amp_model,
+            "cabinet_ir": cabinet_ir,
             "controls": controls,
             "effects": effects,
         }

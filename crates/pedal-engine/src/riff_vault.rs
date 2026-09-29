@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_SECONDS: u32 = 30;
+/// Keep three minutes of clean and processed guitar so a player can decide on
+/// the actual take after the performance instead of having to hit record first.
+pub const DEFAULT_SECONDS: u32 = 180;
 
 pub struct RiffVault {
     clean: Vec<f32>,
@@ -69,6 +71,14 @@ impl RiffVault {
             self.sample_rate,
         )
     }
+
+    pub fn available_seconds(&self) -> f32 {
+        self.filled as f32 / self.sample_rate as f32
+    }
+
+    pub fn capacity_seconds(&self) -> f32 {
+        self.clean.len() as f32 / self.sample_rate as f32
+    }
 }
 
 pub struct RiffVaultProcessor<P> {
@@ -116,6 +126,8 @@ pub fn save_latest(
     directory: &Path,
     requested_name: Option<&str>,
     preset: &str,
+    trim_start_seconds: Option<f32>,
+    trim_end_seconds: Option<f32>,
 ) -> Result<SavedRiff, String> {
     let (clean, processed, sample_rate) = vault
         .lock()
@@ -123,6 +135,18 @@ pub fn save_latest(
         .snapshot();
     if clean.is_empty() {
         return Err("play for a moment before saving a riff".to_owned());
+    }
+    let duration_seconds = clean.len() as f32 / sample_rate as f32;
+    let start_seconds = trim_start_seconds.unwrap_or(0.0).clamp(0.0, duration_seconds);
+    let end_seconds = trim_end_seconds
+        .unwrap_or(duration_seconds)
+        .clamp(start_seconds, duration_seconds);
+    let start_frame = (start_seconds * sample_rate as f32).round() as usize;
+    let end_frame = (end_seconds * sample_rate as f32).round() as usize;
+    let clean = clean[start_frame..end_frame].to_vec();
+    let processed = processed[start_frame..end_frame].to_vec();
+    if clean.is_empty() {
+        return Err("choose a non-empty portion of the guitar take".to_owned());
     }
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let created_at_ms = SystemTime::now()
@@ -175,6 +199,60 @@ pub fn list(directory: &Path) -> Result<Vec<SavedRiff>, String> {
     Ok(riffs)
 }
 
+/// Creates a new trimmed take rather than modifying the source files.  That
+/// preserves the original capture for later comping or re-editing.
+pub fn trim_saved(
+    clean_source: &Path,
+    processed_source: &Path,
+    directory: &Path,
+    requested_name: Option<&str>,
+    preset: &str,
+    trim_start_seconds: f32,
+    trim_end_seconds: f32,
+) -> Result<SavedRiff, String> {
+    let (clean, sample_rate) = read_stereo_wav(clean_source)?;
+    let (processed, processed_rate) = read_stereo_wav(processed_source)?;
+    if sample_rate != processed_rate || clean.len() != processed.len() {
+        return Err("the clean and processed take files do not match".to_owned());
+    }
+    let duration = clean.len() as f32 / sample_rate as f32;
+    let start = trim_start_seconds.clamp(0.0, duration);
+    let end = trim_end_seconds.clamp(start, duration);
+    let start_frame = (start * sample_rate as f32).round() as usize;
+    let end_frame = (end * sample_rate as f32).round() as usize;
+    if start_frame >= end_frame {
+        return Err("choose a non-empty portion of the guitar take".to_owned());
+    }
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let created_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis() as u64;
+    let id = format!("riff-{created_at_ms}");
+    let name = requested_name
+        .filter(|name| !name.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("Trimmed Riff")
+        .chars()
+        .take(64)
+        .collect::<String>();
+    let clean_path = directory.join(format!("{id}-clean.wav"));
+    let processed_path = directory.join(format!("{id}-rig.wav"));
+    write_stereo_wav(&clean_path, &clean[start_frame..end_frame], sample_rate)?;
+    write_stereo_wav(&processed_path, &processed[start_frame..end_frame], sample_rate)?;
+    let saved = SavedRiff {
+        id: id.clone(),
+        name,
+        created_at_ms,
+        duration_seconds: (end_frame - start_frame) as f32 / sample_rate as f32,
+        clean_path: clean_path.display().to_string(),
+        processed_path: processed_path.display().to_string(),
+        preset: preset.to_owned(),
+    };
+    write_metadata(directory, &saved)?;
+    Ok(saved)
+}
+
 fn write_metadata(directory: &Path, saved: &SavedRiff) -> Result<(), String> {
     let destination = directory.join(format!("{}.json", saved.id));
     let temporary = destination.with_extension("json.new");
@@ -203,6 +281,24 @@ fn write_stereo_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()
     }
     writer.finalize().map_err(|error| error.to_string())?;
     fs::rename(temporary, path).map_err(|error| error.to_string())
+}
+
+fn read_stereo_wav(path: &Path) -> Result<(Vec<f32>, u32), String> {
+    let mut reader = hound::WavReader::open(path).map_err(|error| error.to_string())?;
+    let spec = reader.spec();
+    if spec.channels != 2 || spec.sample_format != SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err("only 16-bit stereo WAV takes can be trimmed".to_owned());
+    }
+    let samples = reader
+        .samples::<i16>()
+        .enumerate()
+        .filter_map(|(index, sample)| (index % 2 == 0).then_some(sample))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|sample| sample as f32 / i16::MAX as f32)
+        .collect();
+    Ok((samples, spec.sample_rate))
 }
 
 #[cfg(test)]

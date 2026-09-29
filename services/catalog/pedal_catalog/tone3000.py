@@ -17,6 +17,7 @@ from typing import Callable, Mapping, Protocol
 DEFAULT_BASE_URL = "https://www.tone3000.com"
 SUPPORTED_ARCHITECTURE = 2
 SUPPORTED_FORMAT = "nam"
+IR_FORMAT = "ir"
 
 
 class Tone3000Error(RuntimeError):
@@ -186,15 +187,18 @@ class Tone3000Client:
         *,
         page: int = 1,
         page_size: int = 20,
+        architecture: int | None = SUPPORTED_ARCHITECTURE,
     ) -> dict:
+        parameters: dict[str, int | str] = {
+            "tone_id": tone_id,
+            "page": page,
+            "page_size": page_size,
+        }
+        if architecture is not None:
+            parameters["architecture"] = architecture
         return self._get_json(
             "/api/v1/models",
-            {
-                "tone_id": tone_id,
-                "page": page,
-                "page_size": page_size,
-                "architecture": SUPPORTED_ARCHITECTURE,
-            },
+            parameters,
         )
 
     def search_tones(
@@ -203,24 +207,30 @@ class Tone3000Client:
         *,
         gears: tuple[str, ...],
         page_size: int = 5,
+        format: str = SUPPORTED_FORMAT,
+        architecture: int | None = SUPPORTED_ARCHITECTURE,
     ) -> dict:
-        """Search a small, A2 NAM-only candidate set for a user request.
+        """Search a small compatible candidate set for a user request.
 
         TONE3000 rate-limits this endpoint. Callers should use it only for an
         explicit tone-making request, never as a background catalog refresh.
         """
         if not query.strip():
             raise Tone3000Error("TONE3000 search query cannot be empty")
+        if format not in {SUPPORTED_FORMAT, IR_FORMAT}:
+            raise Tone3000Error("Unsupported TONE3000 search format")
+        parameters: dict[str, int | str] = {
+            "query": query.strip()[:160],
+            "page": 1,
+            "page_size": max(1, min(page_size, 10)),
+            "gears": "_".join(gears),
+            "format": format,
+        }
+        if architecture is not None:
+            parameters["architecture"] = architecture
         return self._get_json(
             "/api/v1/tones/search",
-            {
-                "query": query.strip()[:160],
-                "page": 1,
-                "page_size": max(1, min(page_size, 10)),
-                "gears": "_".join(gears),
-                "format": SUPPORTED_FORMAT,
-                "architecture": SUPPORTED_ARCHITECTURE,
-            },
+            parameters,
         )
 
     def download_model(

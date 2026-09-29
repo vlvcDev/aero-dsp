@@ -16,6 +16,8 @@ class FakeClient:
     def __init__(self) -> None:
         self.tokens = None
         self.downloaded = None
+        self.list_requests = []
+        self.search_requests = []
 
     def exchange_callback(self, code, state, session, redirect_uri):
         if state != session.state:
@@ -32,7 +34,19 @@ class FakeClient:
             "gear": "amp",
         }
 
-    def list_models(self, tone_id):
+    def list_models(self, tone_id, *, architecture=2):
+        self.list_requests.append((tone_id, architecture))
+        if architecture is None:
+            return {
+                "results": [
+                    {
+                        "id": 12,
+                        "name": "4x12 Greenback",
+                        "model_url": "https://www.tone3000.com/models/greenback.wav",
+                        "sha256": "def",
+                    }
+                ]
+            }
         return {
             "results": [
                 {
@@ -46,9 +60,13 @@ class FakeClient:
 
     def download_model(self, url, destination, *, expected_sha256=None):
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"nam")
+        destination.write_bytes(b"wav" if destination.suffix == ".wav" else b"nam")
         self.downloaded = (url, destination, expected_sha256)
         return "download-hash"
+
+    def search_tones(self, query, **kwargs):
+        self.search_requests.append((query, kwargs))
+        return {"data": []}
 
 
 class Tone3000ServiceTests(unittest.TestCase):
@@ -122,6 +140,34 @@ class Tone3000ServiceTests(unittest.TestCase):
             self.assertEqual(digest, "download-hash")
             self.assertEqual(client.downloaded[2], "abc")
             self.assertIsNone(service.status()["selected_tone_id"])
+
+    def test_ir_download_skips_the_nam_architecture_and_writes_wav(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            service = Tone3000Service(
+                "key", "http://pedal.local:8787/callback", root / "tokens.json", client=client
+            )
+
+            path, digest = service.download_best_ir("8", root / "irs")
+
+            self.assertEqual(path.name, "4x12-Greenback-12.wav")
+            self.assertEqual(path.read_bytes(), b"wav")
+            self.assertEqual(digest, "download-hash")
+            self.assertEqual(client.list_requests, [("8", None), ("8", None)])
+
+    def test_ai_cabinet_search_uses_the_api_cab_gear_value(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = FakeClient()
+            service = Tone3000Service(
+                "key", "http://pedal.local:8787/callback", Path(directory) / "tokens.json", client=client
+            )
+            service.search("cabinet", role="cabinet")
+
+        self.assertEqual(
+            client.search_requests,
+            [("cabinet", {"gears": ("cab",), "page_size": 5, "format": "ir", "architecture": None})],
+        )
 
 
 if __name__ == "__main__":

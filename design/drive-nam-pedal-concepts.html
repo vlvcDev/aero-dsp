@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AERO&gt;&gt;DSP — Drive NAM pedals</title>
+    <style>
+      :root { --ink:#020817; --navy:#061b42; --blue:#0e5cab; --cyan:#34c2ff; --ice:#dcf8ff; --lime:#c9ff5b; --violet:#9a8bff; }
+      * { box-sizing:border-box; }
+      body { margin:0; min-width:1080px; color:var(--ice); font-family:Arial,Helvetica,sans-serif; background:radial-gradient(circle at 20% 0,#155c9e 0,transparent 32%),#020919; }
+      header { padding:27px 5vw 21px; border-bottom:1px solid #68d9ff; background:linear-gradient(105deg,#082b65,#07142f 58%,#0d619f); }
+      .logo { font-size:31px; font-weight:900; font-style:italic; letter-spacing:-2px; text-shadow:0 0 13px var(--cyan),3px 3px #254ebe; }
+      header p { margin:7px 0 0; color:#b8ddef; font-size:14px; }
+      main { display:grid; grid-template-columns:repeat(3,minmax(300px,1fr)); gap:24px; padding:29px 5vw 44px; }
+      h2 { margin:0 0 6px; color:var(--lime); font-size:14px; letter-spacing:1.5px; }
+      .caption { min-height:56px; margin:0 0 11px; color:#a9d1e8; font-size:13px; line-height:1.4; }
+      .stage { position:relative; height:520px; display:grid; place-items:center; overflow:hidden; border:1px solid #66d8ff; border-radius:22px; background:radial-gradient(ellipse at 50% 7%,#247cc2 0,transparent 40%),linear-gradient(145deg,#0a2b5e,#020817 72%); box-shadow:inset 0 0 45px #0ad4ff17,0 0 22px #1885d355; }
+      .stage:before,.stage:after { content:""; position:absolute; width:510px; height:160px; border:1px solid #66d8ff33; border-radius:50%; transform:rotate(-20deg); }
+      .stage:before { top:35px; left:-190px; }.stage:after { bottom:10px; right:-230px; }
+      .pedal { position:relative; z-index:1; width:224px; height:358px; padding:16px; display:flex; flex-direction:column; align-items:center; overflow:hidden; border:2px solid var(--ice); color:var(--ice); box-shadow:0 17px 30px #000b,0 0 20px #27bfff99,inset 0 0 18px #a4f5ff29; }
+      .topline { width:100%; display:flex; justify-content:space-between; font-size:10px; font-weight:900; letter-spacing:1.1px; }.tag { padding:4px 7px; border:1px solid #b8f4ff; border-radius:8px; background:#0b488d; }.led { width:13px; height:13px; border-radius:50%; background:var(--lime); box-shadow:0 0 12px var(--lime); }
+      .title { margin-top:14px; text-align:center; font-size:28px; line-height:.82; font-weight:900; font-style:italic; letter-spacing:-1.5px; text-shadow:0 2px #194281; }.title small { display:block; margin-top:9px; font-size:10px; font-style:normal; letter-spacing:2px; text-shadow:none; }
+      .knobs { display:flex; gap:13px; margin-top:24px; }.knob { position:relative; width:52px; height:52px; display:grid; place-items:end center; padding-bottom:7px; border:4px solid #d5f8ff; border-radius:50%; background:radial-gradient(circle at 35% 27%,#77e2ff,#1d68b8 56%,#082d67); box-shadow:0 0 11px #33c6ff; color:#06224d; font-size:9px; font-weight:900; }.knob:before { content:""; position:absolute; top:4px; width:4px; height:16px; border-radius:3px; background:#fff; transform:rotate(23deg); transform-origin:50% 22px; }
+      .display { width:128px; height:43px; display:grid; place-items:center; margin-top:19px; border:1px solid #b8f6ff; border-radius:8px; background:#021a3f; color:#9ceeff; font-size:11px; font-weight:900; letter-spacing:.8px; box-shadow:inset 0 0 12px #1fc3ff55; }
+      .switch { position:absolute; bottom:17px; width:125px; height:60px; display:grid; place-items:center; border:3px solid #f0fcff; border-radius:14px; background:linear-gradient(105deg,#d6f8ff,#53b7ed 47%,#d8f8ff); box-shadow:inset 0 0 14px #fff,0 4px 0 #124378; color:#082858; font-size:11px; font-weight:900; letter-spacing:1px; }.switch:before { content:""; width:19px; height:19px; margin-right:5px; border-radius:50%; background:#164a88; box-shadow:inset 0 1px #bbebff; }
+      /* 01 — conventional enclosure, strongest fast-recognition option */
+      .classic { border-radius:18px; background:linear-gradient(118deg,#4bd2ff 0,#197bd0 18%,#1051aa 58%,#0b2863); }.classic:after { content:""; position:absolute; top:-65px; right:-25px; width:155px; height:190px; border-radius:50%; background:#effdff2e; transform:rotate(30deg); }
+      /* 02 — an extra-large arcade footswitch and fast on/off read */
+      .arcade { width:236px; border-radius:30px 30px 48px 48px; background:linear-gradient(140deg,#0b3d8c,#0c70c6 48%,#061f56); }.arcade .title { color:#effcff; font-size:30px; }.arcade .display { border-radius:21px; width:154px; background:linear-gradient(90deg,#142b7b,#581f91,#102d78); color:#e8e4ff; }.arcade .switch { width:144px; height:72px; border-radius:38px; background:linear-gradient(135deg,#edfaff,#54c3f3,#d7f7ff); }.arcade .knob { border-color:#d8d4ff; background:radial-gradient(circle at 35% 27%,#c4b7ff,#4e54c8 60%,#142468); box-shadow:0 0 11px #8f8bff; }
+      /* 03 — a transparent NAM "neural glass" enclosure */
+      .neural { border-radius:13px 13px 34px 34px; background:linear-gradient(135deg,#53d7ff44,#0c4d9dcc 55%,#062359de); backdrop-filter:blur(3px); }.neural:before { content:""; position:absolute; inset:72px 14px 90px; border:1px solid #b5f5ff88; border-radius:14px; background:repeating-linear-gradient(90deg,transparent 0 12px,#9fefff33 13px 14px),linear-gradient(130deg,#1ec6ff35,#5d7cff40); }.neural .title { position:relative; z-index:1; }.neural .knobs,.neural .display { position:relative; z-index:1; }.neural .display { background:#031331cc; }.neural .switch { background:linear-gradient(105deg,#d7fbff,#55caef 47%,#bedfff); }
+      footer { padding:0 5vw 29px; color:#82b2cf; font-size:13px; }.key { color:var(--lime); font-weight:900; }
+    </style>
+  </head>
+  <body>
+    <header><div class="logo">AERO&gt;&gt;DSP</div><p>DRIVE NAM pedal concepts — built around a recognizable stompbox body, oversized touch targets, and blue-chrome Y2K hardware.</p></header>
+    <main>
+      <section><h2>01 / CHROME OVERDRIVE</h2><p class="caption">The most traditional stompbox shape. Three big controls and a broad, chrome footswitch make it instantly readable as a guitar drive pedal.</p><div class="stage"><div class="pedal classic"><div class="topline"><span class="tag">NAM / DRIVE</span><i class="led"></i></div><div class="title">CHROME<br>DRIVE<small>NEURAL OVERDRIVE</small></div><div class="knobs"><div class="knob">DRIVE</div><div class="knob">TONE</div><div class="knob">LEVEL</div></div><div class="display">+8.0 dB / 100% WET</div><div class="switch">● &nbsp; ENGAGED</div></div></div></section>
+      <section><h2>02 / ARCADE STOMP</h2><p class="caption">A rounded, slightly playful pedal with a huge arcade-style switch—the best option when the physical pedal should feel like a primary performance control.</p><div class="stage"><div class="pedal arcade"><div class="topline"><span class="tag">NAM / DRIVE</span><i class="led"></i></div><div class="title">DRIVE<br>CORE<small>MODEL SLOT A</small></div><div class="knobs"><div class="knob">GAIN</div><div class="knob">MIX</div><div class="knob">OUT</div></div><div class="display">TUBE SCREAMER / 808</div><div class="switch">● &nbsp; DRIVE ON</div></div></div></section>
+      <section><h2>03 / NEURAL GLASS</h2><p class="caption">A transparent “model window” makes this feel unique to NAM: the enclosure hints at the loaded neural model while still keeping a physical-pedal silhouette.</p><div class="stage"><div class="pedal neural"><div class="topline"><span class="tag">NAM / DRIVE</span><i class="led"></i></div><div class="title">NEURAL<br>DRIVE<small>CAPTURED PEDAL</small></div><div class="knobs"><div class="knob">DRIVE</div><div class="knob">BLEND</div><div class="knob">LEVEL</div></div><div class="display">MODEL READY / 48 kHz</div><div class="switch">● &nbsp; ENGAGED</div></div></div></section>
+    </main>
+    <footer><span class="key">Recommendation:</span> Chrome Overdrive is the clearest V0 default; Arcade Stomp is strongest for a touch screen; Neural Glass gives NAM an identity that ordinary effects do not have. The chosen treatment can become the shared template for the AMP NAM with a distinct category accent.</footer>
+  </body>
+</html>

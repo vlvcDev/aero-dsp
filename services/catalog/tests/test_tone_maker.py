@@ -7,7 +7,11 @@ from pathlib import Path
 CATALOG_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CATALOG_ROOT))
 
-from pedal_catalog.tone_maker import CONTROL_RANGES, ToneMakerService  # noqa: E402
+from pedal_catalog.tone_maker import (  # noqa: E402
+    CONTROL_RANGES,
+    ToneMakerService,
+    TonePlan,
+)
 from pedal_catalog.jev_ranker import JevError, JevRigRanker  # noqa: E402
 from pedal_catalog.tone_memory import ToneMemoryService  # noqa: E402
 
@@ -29,14 +33,20 @@ class FakeOpenAITransport:
 class FakeTone3000:
     connected = True
 
-    def __init__(self):
+    def __init__(self, *, amp_gear="amp"):
         self.searches = []
         self.downloads = []
+        self.amp_gear = amp_gear
 
     def search(self, query, *, role):
         self.searches.append((query, role))
         return [
-            {"id": f"{role}-{index}", "name": f"{role.title()} Candidate {index}", "author": "Ada", "gear": role}
+            {
+                "id": f"{role}-{index}",
+                "name": f"{role.title()} Candidate {index}",
+                "author": "Ada",
+                "gear": self.amp_gear if role == "amp" else role,
+            }
             for index in range(1, 4)
         ]
 
@@ -44,6 +54,13 @@ class FakeTone3000:
         path = models_dir / f"{tone_id}.nam"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"validated nam")
+        self.downloads.append(tone_id)
+        return path, "hash"
+
+    def download_best_ir(self, tone_id, irs_dir):
+        path = irs_dir / f"{tone_id}.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"validated wav")
         self.downloads.append(tone_id)
         return path, "hash"
 
@@ -110,6 +127,27 @@ def ranking_payload():
 
 
 class ToneMakerTests(unittest.TestCase):
+    def test_amp_plus_cab_candidate_never_searches_or_loads_a_second_ir(self):
+        transport = FakeOpenAITransport(plan_payload(), ranking_payload())
+        service = ToneMakerService("sk-test", transport=transport, clock=lambda: 100)
+        tone3000 = FakeTone3000(amp_gear="amp-cab")
+
+        recommendation = service.recommend("Give me a tight metal rhythm tone", tone3000)
+
+        self.assertTrue(all(role != "cabinet" for _, role in tone3000.searches))
+        self.assertEqual(recommendation.rigs[0].cabinet_mode, "embedded")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            applied = service.apply(
+                recommendation.identifier,
+                0,
+                tone3000,
+                root / "models",
+                root / "catalog.db",
+            )
+        self.assertIsNone(applied["cabinet_ir"])
+        self.assertEqual(tone3000.downloads, ["pedal-2", "amp-3"])
+
     def test_plan_ranks_three_candidate_rigs_then_applies_the_selected_one(self):
         transport = FakeOpenAITransport(plan_payload(), ranking_payload())
         service = ToneMakerService("sk-test", transport=transport, clock=lambda: 100)
@@ -129,7 +167,19 @@ class ToneMakerTests(unittest.TestCase):
             recommendation.ranking_note, "Jev is not configured on this device."
         )
         self.assertEqual(recommendation.rigs[0].label, "Focused thrash")
-        self.assertEqual(tone3000.searches, [("tight overdrive pedal", "pedal"), ("high gain metal amp", "amp")])
+        self.assertEqual(
+            tone3000.searches,
+            [
+                ("tight overdrive pedal", "pedal"),
+                ("overdrive pedal", "pedal"),
+                ("high gain metal amp", "amp"),
+                ("guitar amp", "amp"),
+                ("high gain metal amp cab", "cabinet"),
+                ("cabinet", "cabinet"),
+                ("4x12", "cabinet"),
+                ("guitar cab", "cabinet"),
+            ],
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -141,13 +191,14 @@ class ToneMakerTests(unittest.TestCase):
                 root / "catalog.db",
             )
 
-        self.assertEqual(tone3000.downloads, ["pedal-2", "amp-3"])
+        self.assertEqual(tone3000.downloads, ["pedal-2", "amp-3", "cabinet-1"])
         self.assertEqual(applied["pre_model"]["source"], "tone3000:ai:pedal-2")
         self.assertEqual(applied["amp_model"]["source"], "tone3000:ai:amp-3")
         self.assertEqual(applied["rig_label"], "Focused thrash")
         self.assertTrue(applied["effects"]["eq"])
         self.assertEqual(applied["tone_memory"]["query"], "Give me a tight metal rhythm tone")
         self.assertEqual(applied["tone_memory"]["amp_model"]["path"], str(root / "models" / "amp-3.nam"))
+        self.assertEqual(applied["cabinet_ir"]["path"], str(root / "irs" / "cabinet-1.wav"))
 
     def test_jev_scores_each_candidate_pair_then_keeps_openai_for_planning(self):
         openai = FakeOpenAITransport(plan_payload())
@@ -264,6 +315,47 @@ class ToneMakerTests(unittest.TestCase):
         self.assertEqual(recommendation.ranking_provider, "tone_memory")
         self.assertEqual(recommendation.rigs[0].amp["local_path"], str(amp))
         self.assertEqual(transport.requests, [])
+
+    def test_intent_uses_conservative_recipe_and_diverse_gear_searches(self):
+        payload = {
+            "summary": "A tight, articulate high-gain rhythm voice.",
+            "pedal_query": "tube screamer overdrive",
+            "amp_query": "Mesa Mark high gain amp",
+            "intent": {
+                "gain": "high",
+                "tightness": "tight",
+                "brightness": "balanced",
+                "space": "dry",
+                "boost": "light",
+            },
+            "gear_hints": ["Mesa Mark IIC+", "Ibanez Tube Screamer"],
+        }
+        plan = TonePlan.from_payload(payload)
+        self.assertLessEqual(plan.controls["pedal_drive_db"], 8.0)
+        self.assertEqual(plan.controls["amp_volume_db"], 0.0)
+        self.assertTrue(plan.effects["eq"])
+
+        transport = FakeOpenAITransport(payload, ranking_payload())
+        tone3000 = FakeTone3000()
+        service = ToneMakerService("sk-test", transport=transport, clock=lambda: 100)
+        service.recommend("Metallica-style tight rhythm", tone3000)
+        self.assertEqual(
+            tone3000.searches,
+            [
+                ("tube screamer overdrive", "pedal"),
+                ("Mesa Mark IIC+", "pedal"),
+                ("Ibanez Tube Screamer", "pedal"),
+                ("transparent overdrive boost", "pedal"),
+                ("Mesa Mark high gain amp", "amp"),
+                ("Mesa Mark IIC+", "amp"),
+                ("Ibanez Tube Screamer", "amp"),
+                ("high gain amp", "amp"),
+                ("Mesa Mark high gain amp cab", "cabinet"),
+                ("cabinet", "cabinet"),
+                ("4x12", "cabinet"),
+                ("guitar cab", "cabinet"),
+            ],
+        )
 
 
 if __name__ == "__main__":

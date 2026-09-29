@@ -85,6 +85,16 @@ pub struct EffectsParameters {
     chorus_rate_hz: AtomicFloat,
     chorus_depth: AtomicFloat,
     chorus_mix: AtomicFloat,
+    flanger_enabled: AtomicBool,
+    flanger_rate_hz: AtomicFloat,
+    flanger_depth: AtomicFloat,
+    flanger_feedback: AtomicFloat,
+    flanger_mix: AtomicFloat,
+    tremolo_enabled: AtomicBool,
+    tremolo_rate_hz: AtomicFloat,
+    tremolo_depth: AtomicFloat,
+    octaver_enabled: AtomicBool,
+    octaver_mix: AtomicFloat,
     delay_enabled: AtomicBool,
     delay_time_ms: AtomicFloat,
     delay_feedback: AtomicFloat,
@@ -114,6 +124,16 @@ impl EffectsParameters {
             chorus_rate_hz: AtomicFloat::new(state.chorus_rate_hz),
             chorus_depth: AtomicFloat::new(state.chorus_depth),
             chorus_mix: AtomicFloat::new(state.chorus_mix),
+            flanger_enabled: AtomicBool::new(state.flanger_enabled),
+            flanger_rate_hz: AtomicFloat::new(state.flanger_rate_hz),
+            flanger_depth: AtomicFloat::new(state.flanger_depth),
+            flanger_feedback: AtomicFloat::new(state.flanger_feedback),
+            flanger_mix: AtomicFloat::new(state.flanger_mix),
+            tremolo_enabled: AtomicBool::new(state.tremolo_enabled),
+            tremolo_rate_hz: AtomicFloat::new(state.tremolo_rate_hz),
+            tremolo_depth: AtomicFloat::new(state.tremolo_depth),
+            octaver_enabled: AtomicBool::new(state.octaver_enabled),
+            octaver_mix: AtomicFloat::new(state.octaver_mix),
             delay_enabled: AtomicBool::new(state.delay_enabled),
             delay_time_ms: AtomicFloat::new(state.delay_time_ms),
             delay_feedback: AtomicFloat::new(state.delay_feedback),
@@ -146,6 +166,19 @@ impl EffectsParameters {
         self.chorus_rate_hz.store(state.chorus_rate_hz);
         self.chorus_depth.store(state.chorus_depth);
         self.chorus_mix.store(state.chorus_mix);
+        self.flanger_enabled
+            .store(state.flanger_enabled, Ordering::Relaxed);
+        self.flanger_rate_hz.store(state.flanger_rate_hz);
+        self.flanger_depth.store(state.flanger_depth);
+        self.flanger_feedback.store(state.flanger_feedback);
+        self.flanger_mix.store(state.flanger_mix);
+        self.tremolo_enabled
+            .store(state.tremolo_enabled, Ordering::Relaxed);
+        self.tremolo_rate_hz.store(state.tremolo_rate_hz);
+        self.tremolo_depth.store(state.tremolo_depth);
+        self.octaver_enabled
+            .store(state.octaver_enabled, Ordering::Relaxed);
+        self.octaver_mix.store(state.octaver_mix);
         self.delay_enabled
             .store(state.delay_enabled, Ordering::Relaxed);
         self.delay_time_ms.store(state.delay_time_ms);
@@ -196,6 +229,12 @@ pub struct EffectChainProcessor<P> {
     chorus_buffer: Vec<f32>,
     chorus_write: usize,
     chorus_phase: f32,
+    flanger_buffer: Vec<f32>,
+    flanger_write: usize,
+    flanger_phase: f32,
+    tremolo_phase: f32,
+    octaver_last_input: f32,
+    octaver_polarity: f32,
     delay_buffer: Vec<f32>,
     delay_write: usize,
     reverb_buffers: [Vec<f32>; 4],
@@ -231,6 +270,12 @@ impl<P> EffectChainProcessor<P> {
             chorus_buffer: vec![0.0; (sample_rate_f32 * 0.04) as usize],
             chorus_write: 0,
             chorus_phase: 0.0,
+            flanger_buffer: vec![0.0; (sample_rate_f32 * 0.012) as usize],
+            flanger_write: 0,
+            flanger_phase: 0.0,
+            tremolo_phase: 0.0,
+            octaver_last_input: 0.0,
+            octaver_polarity: 1.0,
             delay_buffer: vec![0.0; (sample_rate_f32 * 2.0) as usize],
             delay_write: 0,
             reverb_buffers: [
@@ -351,6 +396,67 @@ impl<P> EffectChainProcessor<P> {
             self.chorus_write = (self.chorus_write + 1) % self.chorus_buffer.len();
             self.chorus_phase = (self.chorus_phase + TAU * rate / self.sample_rate) % TAU;
             *sample = *sample * (1.0 - mix) + delayed * mix;
+        }
+    }
+
+    /// A short modulated delay with feedback for the classic comb-filter
+    /// sweep. Its buffer is preallocated once and never touches the allocator
+    /// from the audio callback.
+    fn process_flanger(&mut self, samples: &mut [f32]) {
+        if !self.parameters.flanger_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let rate = self.parameters.flanger_rate_hz.load().clamp(0.05, 5.0);
+        let depth = self.parameters.flanger_depth.load().clamp(0.0, 1.0);
+        let feedback = self.parameters.flanger_feedback.load().clamp(-0.85, 0.85);
+        let mix = self.parameters.flanger_mix.load().clamp(0.0, 1.0);
+        let base_delay = self.sample_rate * 0.0015;
+        let depth_samples = self.sample_rate * 0.0045 * depth;
+        for sample in samples {
+            let delay = base_delay + depth_samples * (self.flanger_phase.sin() + 1.0) * 0.5;
+            let whole = delay as usize;
+            let read = (self.flanger_write + self.flanger_buffer.len() - whole)
+                % self.flanger_buffer.len();
+            let next = (read + 1) % self.flanger_buffer.len();
+            let delayed = self.flanger_buffer[read] * (1.0 - delay.fract())
+                + self.flanger_buffer[next] * delay.fract();
+            self.flanger_buffer[self.flanger_write] = *sample + delayed * feedback;
+            self.flanger_write = (self.flanger_write + 1) % self.flanger_buffer.len();
+            self.flanger_phase = (self.flanger_phase + TAU * rate / self.sample_rate) % TAU;
+            *sample = *sample * (1.0 - mix) + delayed * mix;
+        }
+    }
+
+    fn process_tremolo(&mut self, samples: &mut [f32]) {
+        if !self.parameters.tremolo_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let rate = self.parameters.tremolo_rate_hz.load().clamp(0.1, 18.0);
+        let depth = self.parameters.tremolo_depth.load().clamp(0.0, 1.0);
+        for sample in samples {
+            let lfo = (self.tremolo_phase.sin() + 1.0) * 0.5;
+            let gain = 1.0 - depth + depth * lfo;
+            *sample *= gain;
+            self.tremolo_phase = (self.tremolo_phase + TAU * rate / self.sample_rate) % TAU;
+        }
+    }
+
+    /// Lightweight analog-style octave-down. It derives a sub-octave square
+    /// wave by flipping polarity on each rising zero crossing, then blends it
+    /// with the dry guitar before the NAM chain.
+    fn process_octaver(&mut self, samples: &mut [f32]) {
+        if !self.parameters.octaver_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let mix = self.parameters.octaver_mix.load().clamp(0.0, 1.0);
+        for sample in samples {
+            let dry = *sample;
+            if self.octaver_last_input <= 0.0 && dry > 0.0 {
+                self.octaver_polarity = -self.octaver_polarity;
+            }
+            self.octaver_last_input = dry;
+            let octave_down = dry.abs() * self.octaver_polarity;
+            *sample = dry * (1.0 - mix) + octave_down * mix;
         }
     }
 
@@ -483,10 +589,13 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
     fn process(&mut self, samples: &mut [f32]) {
         self.process_gate(samples);
         self.process_compressor(samples);
+        self.process_octaver(samples);
         self.source.process(samples);
         self.apply_gate_to_model_output(samples);
         self.process_eq(samples);
         self.process_chorus(samples);
+        self.process_flanger(samples);
+        self.process_tremolo(samples);
         self.process_delay(samples);
         self.process_reverb(samples);
         self.process_looper(samples);
@@ -514,6 +623,38 @@ mod tests {
         let mut samples = [0.25, -0.5, 0.75];
         chain.process(&mut samples);
         assert_eq!(samples, [0.25, -0.5, 0.75]);
+    }
+
+    #[test]
+    fn modulation_and_octave_effects_change_the_signal_when_enabled() {
+        let state = EngineState {
+            flanger_enabled: true,
+            flanger_rate_hz: 1.0,
+            flanger_depth: 0.8,
+            flanger_feedback: 0.3,
+            flanger_mix: 0.6,
+            tremolo_enabled: true,
+            tremolo_rate_hz: 3.0,
+            tremolo_depth: 0.7,
+            octaver_enabled: true,
+            octaver_mix: 0.5,
+            ..EngineState::default()
+        };
+        let params = Arc::new(EffectsParameters::from_state(&state));
+        let mut chain = EffectChainProcessor::new(Passthrough, params, 1_000, 1);
+        let mut samples = (0..256)
+            .map(|index| (TAU * 55.0 * index as f32 / 1_000.0).sin() * 0.7)
+            .collect::<Vec<_>>();
+        let original = samples.clone();
+
+        chain.process(&mut samples);
+
+        assert!(
+            samples
+                .iter()
+                .zip(original)
+                .any(|(processed, dry)| (processed - dry).abs() > 0.01)
+        );
     }
 
     #[test]

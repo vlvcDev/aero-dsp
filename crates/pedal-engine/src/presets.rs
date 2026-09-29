@@ -18,6 +18,11 @@ pub struct PresetRig {
     pub amp_mid_db: f32,
     pub amp_treble_db: f32,
     pub amp_volume_db: f32,
+    pub cabinet_enabled: bool,
+    pub cabinet_ir: Option<String>,
+    pub cabinet_gain_db: f32,
+    pub cabinet_low_cut_hz: f32,
+    pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
     pub gate_threshold_db: f32,
     pub compressor_enabled: bool,
@@ -33,6 +38,19 @@ pub struct PresetRig {
     pub chorus_rate_hz: f32,
     pub chorus_depth: f32,
     pub chorus_mix: f32,
+    pub flanger_enabled: bool,
+    pub flanger_visible: bool,
+    pub flanger_rate_hz: f32,
+    pub flanger_depth: f32,
+    pub flanger_feedback: f32,
+    pub flanger_mix: f32,
+    pub tremolo_enabled: bool,
+    pub tremolo_visible: bool,
+    pub tremolo_rate_hz: f32,
+    pub tremolo_depth: f32,
+    pub octaver_enabled: bool,
+    pub octaver_visible: bool,
+    pub octaver_mix: f32,
     pub delay_enabled: bool,
     pub delay_visible: bool,
     pub delay_time_ms: f32,
@@ -65,6 +83,11 @@ impl PresetRig {
             amp_mid_db: state.amp_mid_db,
             amp_treble_db: state.amp_treble_db,
             amp_volume_db: state.amp_volume_db,
+            cabinet_enabled: state.cabinet_enabled,
+            cabinet_ir: state.cabinet_ir.clone(),
+            cabinet_gain_db: state.cabinet_gain_db,
+            cabinet_low_cut_hz: state.cabinet_low_cut_hz,
+            cabinet_high_cut_hz: state.cabinet_high_cut_hz,
             gate_enabled: state.gate_enabled,
             gate_threshold_db: state.gate_threshold_db,
             compressor_enabled: state.compressor_enabled,
@@ -80,6 +103,19 @@ impl PresetRig {
             chorus_rate_hz: state.chorus_rate_hz,
             chorus_depth: state.chorus_depth,
             chorus_mix: state.chorus_mix,
+            flanger_enabled: state.flanger_enabled,
+            flanger_visible: state.flanger_visible,
+            flanger_rate_hz: state.flanger_rate_hz,
+            flanger_depth: state.flanger_depth,
+            flanger_feedback: state.flanger_feedback,
+            flanger_mix: state.flanger_mix,
+            tremolo_enabled: state.tremolo_enabled,
+            tremolo_visible: state.tremolo_visible,
+            tremolo_rate_hz: state.tremolo_rate_hz,
+            tremolo_depth: state.tremolo_depth,
+            octaver_enabled: state.octaver_enabled,
+            octaver_visible: state.octaver_visible,
+            octaver_mix: state.octaver_mix,
             delay_enabled: state.delay_enabled,
             delay_visible: state.delay_visible,
             delay_time_ms: state.delay_time_ms,
@@ -105,6 +141,11 @@ impl PresetRig {
         state.amp_mid_db = self.amp_mid_db;
         state.amp_treble_db = self.amp_treble_db;
         state.amp_volume_db = self.amp_volume_db;
+        state.cabinet_enabled = self.cabinet_enabled;
+        state.cabinet_ir.clone_from(&self.cabinet_ir);
+        state.cabinet_gain_db = self.cabinet_gain_db;
+        state.cabinet_low_cut_hz = self.cabinet_low_cut_hz;
+        state.cabinet_high_cut_hz = self.cabinet_high_cut_hz;
         state.gate_enabled = self.gate_enabled;
         state.gate_threshold_db = self.gate_threshold_db;
         state.compressor_enabled = self.compressor_enabled;
@@ -120,6 +161,19 @@ impl PresetRig {
         state.chorus_rate_hz = self.chorus_rate_hz;
         state.chorus_depth = self.chorus_depth;
         state.chorus_mix = self.chorus_mix;
+        state.flanger_enabled = self.flanger_enabled;
+        state.flanger_visible = self.flanger_visible;
+        state.flanger_rate_hz = self.flanger_rate_hz;
+        state.flanger_depth = self.flanger_depth;
+        state.flanger_feedback = self.flanger_feedback;
+        state.flanger_mix = self.flanger_mix;
+        state.tremolo_enabled = self.tremolo_enabled;
+        state.tremolo_visible = self.tremolo_visible;
+        state.tremolo_rate_hz = self.tremolo_rate_hz;
+        state.tremolo_depth = self.tremolo_depth;
+        state.octaver_enabled = self.octaver_enabled;
+        state.octaver_visible = self.octaver_visible;
+        state.octaver_mix = self.octaver_mix;
         state.delay_enabled = self.delay_enabled;
         state.delay_visible = self.delay_visible;
         state.delay_time_ms = self.delay_time_ms;

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AERO&gt;&gt;DSP — Popup concepts</title>
+    <style>
+      :root { color-scheme: dark; --ice:#d8f5ff; --cyan:#3abaff; --deep:#04132d; --blue:#0c438e; --lime:#c7ff45; }
+      * { box-sizing:border-box; }
+      body { margin:0; min-width:1060px; background:#030a19; color:var(--ice); font-family:Arial,Helvetica,sans-serif; }
+      header { padding:24px 5vw 18px; background:linear-gradient(115deg,#082a61,#061329 55%,#0d5eaa); border-bottom:1px solid #67d6ff; }
+      .logo { font-size:30px; font-weight:900; font-style:italic; letter-spacing:-2px; text-shadow:0 0 12px #37bdff,3px 3px #2452c3; }
+      header p { margin:7px 0 0; color:#b5dcef; font-size:14px; }
+      main { display:grid; grid-template-columns:repeat(3,minmax(300px,1fr)); gap:22px; padding:28px 5vw 48px; }
+      .concept { min-width:0; }
+      h2 { margin:0 0 5px; color:var(--lime); font-size:14px; letter-spacing:1.6px; }
+      .caption { min-height:38px; margin:0 0 10px; color:#a7cae4; font-size:13px; line-height:1.35; }
+      .stage { position:relative; height:545px; overflow:hidden; border-radius:20px; background:radial-gradient(circle at 50% 0,#0e66ab,#061a3b 44%,#020817); border:1px solid #65d3ff; box-shadow:0 0 24px #217ed466,inset 0 0 30px #0af3ff18; }
+      .rig { padding:18px; filter:blur(1.4px) brightness(.52); }
+      .rig-head { display:flex; justify-content:space-between; font-size:12px; font-weight:900; letter-spacing:1px; }
+      .preset { margin:18px 0; padding:15px; text-align:center; font-size:20px; font-weight:900; background:#1974b6; border:1px solid #a6eaff; border-radius:14px; }
+      .pedals { display:flex; gap:9px; padding:6px 0; }
+      .pedal { flex:1; height:290px; padding:12px 6px; display:flex; flex-direction:column; align-items:center; justify-content:space-between; background:linear-gradient(130deg,#185394,#0b254d); border:1px solid #68c8ff; border-radius:13px; font-size:10px; font-weight:900; }
+      .pedal.on { background:linear-gradient(135deg,#2a9df8,#1356b1); box-shadow:0 0 14px #1ab5ff; }
+      .pedal i { font-size:28px; font-style:normal; } .pedal b { font-size:11px; }
+      .pedal span { width:78%; padding:7px 0; text-align:center; border-radius:7px; background:#d6f4ff; color:#153866; }
+      .veil { position:absolute; inset:0; background:rgba(0,5,18,.55); backdrop-filter:blur(2px); }
+      .window { position:absolute; z-index:2; color:var(--ice); background:linear-gradient(145deg,#135da3eF,#061b43f4 54%,#0c3679f4); border:2px solid #a9edff; box-shadow:0 16px 42px #000b,0 0 25px #37c5ff77,inset 0 0 18px #68dfff20; }
+      .bar { display:flex; align-items:center; justify-content:space-between; height:42px; padding:0 14px; background:linear-gradient(90deg,#3bc2ff,#2074ca 45%,#6be8ff); color:#04234c; font-size:12px; font-weight:900; letter-spacing:1.2px; }
+      .close { display:grid; place-items:center; width:27px; height:27px; border-radius:50%; background:#e7faff; color:#114474; font-size:17px; }
+      .body { padding:18px; }
+      .muted { color:#b0d8ed; font-size:12px; line-height:1.35; }
+      .knob { display:grid; place-items:center; width:70px; height:70px; border:6px solid #a9efff; border-radius:50%; background:radial-gradient(circle at 40% 30%,#4fd5ff,#1655a6 62%,#0a2453); box-shadow:0 0 12px #1cc5ff; font-size:11px; font-weight:900; }
+      .chunk { min-height:54px; padding:12px; border:1px solid #70dbff; border-radius:12px; background:#0c3d7b; font-size:13px; font-weight:900; }
+      .button { min-height:54px; display:grid; place-items:center; border-radius:12px; background:linear-gradient(90deg,#c9ff48,#78d730); color:#052333; font-size:13px; font-weight:900; letter-spacing:.9px; }
+      /* A: centered computer-dialog pod */
+      .pod { left:11%; right:11%; top:85px; border-radius:19px; }
+      .pod .body { display:grid; gap:13px; }
+      .pod-controls { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+      .pod .chunk small { display:block; margin-top:5px; color:#9fdff8; font-size:10px; }
+      /* B: the control panel slides up from a pedal */
+      .cartridge { left:16px; right:16px; bottom:0; border-radius:22px 22px 0 0; border-bottom:0; }
+      .cartridge .body { display:grid; grid-template-columns:78px 1fr; gap:14px; align-items:center; padding:16px 18px 18px; }
+      .cartridge .options { display:grid; grid-template-columns:1fr; gap:9px; }
+      .slider-bank { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; min-height:178px; padding:9px 6px 6px; border:1px solid #5ecfff; border-radius:12px; background:#06255599; }
+      .vslider { display:flex; flex-direction:column; align-items:center; gap:5px; min-width:0; color:#c9efff; font-size:10px; font-weight:900; letter-spacing:.45px; }
+      .vslider b { color:#fff; font-size:11px; }
+      .rail { position:relative; width:32px; height:108px; border:2px solid #a7edff; border-radius:20px; background:linear-gradient(90deg,#071832,#276fbb,#0b244d); box-shadow:inset 0 0 9px #02112e,0 0 8px #1ebdff66; }
+      .rail::before { content:""; position:absolute; left:50%; bottom:8px; width:9px; height:var(--fill); transform:translateX(-50%); border-radius:8px; background:#72e6ff; box-shadow:0 0 8px #34c7ff; }
+      .thumb { position:absolute; z-index:1; left:50%; bottom:calc(var(--fill) + 4px); width:46px; height:28px; transform:translateX(-50%); border:2px solid #e5fbff; border-radius:8px; background:linear-gradient(#d7f8ff,#55b9ed); box-shadow:0 2px 8px #001b42; }
+      .tick { color:#6fb9db; font-size:8px; }
+      .cartridge .button { min-height:48px; }
+      /* C: a large rack-mounted control window */
+      .bay { inset:50px 13px 45px; border-radius:13px; }
+      .bay .body { height:calc(100% - 42px); display:grid; grid-template-columns:120px 1fr; gap:18px; }
+      .pedal-face { padding:12px; display:flex; flex-direction:column; align-items:center; justify-content:space-between; border:1px solid #a6eaff; border-radius:11px; background:linear-gradient(150deg,#258cf2,#0b367b); font-size:11px; font-weight:900; }
+      .pedal-face .footswitch { width:74px; height:38px; border-radius:9px; background:#d8f5ff; }
+      .bay-controls { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; align-content:start; }
+      .bay .button { grid-column:span 2; }
+      footer { padding:0 5vw 28px; color:#78a9c9; font-size:13px; }
+      code { color:var(--lime); }
+    </style>
+  </head>
+  <body>
+    <header><div class="logo">AERO&gt;&gt;DSP</div><p>Popup-window directions — blue chrome, dimmed rig, 54px minimum touch controls.</p></header>
+    <main>
+      <section class="concept"><h2>01 / COMMAND POD</h2><p class="caption">A centered, classic Y2K dialog. Best for Tone Maker, TONE3000, and focused setup tasks.</p><div class="stage"><div class="rig"><div class="rig-head"><span>⌁ SIGNAL PATH</span><span>CPU 8%</span></div><div class="preset">BARK ✦</div><div class="pedals"><div class="pedal"><i>⌇</i><b>GATE</b><span>OFF</span></div><div class="pedal on"><i>ϟ</i><b>DRIVE</b><span>ON</span></div><div class="pedal on"><i>◉</i><b>AMP</b><span>ON</span></div><div class="pedal"><i>≈</i><b>CHORUS</b><span>OFF</span></div></div></div><div class="veil"></div><div class="window pod"><div class="bar">⚡ DRIVE NAM <span class="close">×</span></div><div class="body"><b>IBANEZ TUBE SCREAMER</b><div class="pod-controls"><div class="chunk">DRIVE <small>8.0 dB</small></div><div class="chunk">MIX <small>100%</small></div></div><div class="button">● ENGAGED</div></div></div></div></section>
+      <section class="concept"><h2>02 / GLASS CARTRIDGE</h2><p class="caption">A lower “cartridge” attached to the selected pedal. Continuous controls become large vertical sliders; only discrete actions remain buttons.</p><div class="stage"><div class="rig"><div class="rig-head"><span>⌁ SIGNAL PATH</span><span>CPU 8%</span></div><div class="preset">BARK ✦</div><div class="pedals"><div class="pedal"><i>⌇</i><b>GATE</b><span>OFF</span></div><div class="pedal on"><i>ϟ</i><b>DRIVE</b><span>ON</span></div><div class="pedal on"><i>◉</i><b>AMP</b><span>ON</span></div><div class="pedal"><i>≈</i><b>CHORUS</b><span>OFF</span></div></div></div><div class="veil"></div><div class="window cartridge"><div class="bar">◉ AMP NAM <span class="close">×</span></div><div class="body"><div class="knob">VOL<br>+2.0</div><div class="options"><div class="slider-bank"><div class="vslider"><b>BASS</b><span class="tick">+12</span><div class="rail" style="--fill:64px"><span class="thumb"></span></div><span class="tick">−12</span><b>+1</b></div><div class="vslider"><b>MIDS</b><span class="tick">+12</span><div class="rail" style="--fill:76px"><span class="thumb"></span></div><span class="tick">−12</span><b>+3</b></div><div class="vslider"><b>TREBLE</b><span class="tick">+12</span><div class="rail" style="--fill:50px"><span class="thumb"></span></div><span class="tick">−12</span><b>−1</b></div></div><div class="chunk">CHANGE TONE</div><div class="button">● AMP ON</div></div></div></div></div></section>
+      <section class="concept"><h2>03 / CONTROL BAY</h2><p class="caption">A big dedicated panel—like opening a mini rack unit. Best for multi-parameter effects, looper, tuner, and Tone Memory.</p><div class="stage"><div class="rig"><div class="rig-head"><span>⌁ SIGNAL PATH</span><span>CPU 8%</span></div><div class="preset">BARK ✦</div><div class="pedals"><div class="pedal"><i>⌇</i><b>GATE</b><span>OFF</span></div><div class="pedal on"><i>ϟ</i><b>DRIVE</b><span>ON</span></div><div class="pedal on"><i>◉</i><b>AMP</b><span>ON</span></div><div class="pedal"><i>≈</i><b>CHORUS</b><span>OFF</span></div></div></div><div class="veil"></div><div class="window bay"><div class="bar">⌇ NOISE GATE <span class="close">×</span></div><div class="body"><div class="pedal-face"><span>UTILITY</span><i style="font-size:34px;font-style:normal">⌇</i><b>GATE</b><div class="footswitch"></div></div><div class="bay-controls"><div class="chunk">THRESHOLD<br><small>-42 dB</small></div><div class="chunk">RELEASE<br><small>SOFT</small></div><div class="chunk">INPUT SENSE<br><small>ACTIVE</small></div><div class="chunk">NAM IDLE GUARD<br><small>ACTIVE</small></div><div class="button">● GATE ENGAGED</div></div></div></div></div></section>
+    </main>
+    <footer>Glass Cartridge revision: vertical rails have <code>46×28px</code> thumbs, value readouts, and explicit range labels. Use them for gain, mix, EQ, time, feedback, decay, and BPM; keep buttons for bypass, mode, change tone, save, and delete.</footer>
+  </body>
+</html>

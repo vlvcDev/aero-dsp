@@ -1,4 +1,5 @@
 use pedal_engine::audio::{AudioConfig, probe, run_processor_with_telemetry};
+use pedal_engine::cabinet::{CabinetImpulse, CabinetParameters, CabinetProcessor};
 use pedal_engine::dsp::{
     AmpControlProcessor, AmpParameters, AmpProcessor, BypassProcessor, PedalControlProcessor,
     PedalParameters, RealtimeTelemetry, SafetyProcessor, SerialProcessor, SwapMailbox,
@@ -29,6 +30,7 @@ const DEFAULT_RIFF_DIRECTORY: &str = "/var/lib/pedal/riffs";
 struct ModelMailboxes {
     pre: Arc<SwapMailbox<AmpProcessor>>,
     amp: Arc<SwapMailbox<AmpProcessor>>,
+    cabinet: Arc<SwapMailbox<Option<CabinetImpulse>>>,
 }
 
 struct BypassFlags {
@@ -40,6 +42,7 @@ struct BypassFlags {
 struct DspParameters {
     pedal: Arc<PedalParameters>,
     amp: Arc<AmpParameters>,
+    cabinet: Arc<CabinetParameters>,
     effects: Arc<EffectsParameters>,
     tuner: Arc<TunerParameters>,
     metronome: Arc<MetronomeParameters>,
@@ -77,6 +80,12 @@ impl DspParameters {
                 state.amp_treble_db,
                 state.amp_volume_db,
             )),
+            cabinet: Arc::new(CabinetParameters::new(
+                state.cabinet_enabled,
+                state.cabinet_gain_db,
+                state.cabinet_low_cut_hz,
+                state.cabinet_high_cut_hz,
+            )),
             effects: Arc::new(EffectsParameters::from_state(state)),
             tuner: Arc::new(TunerParameters::new(state.tuner_enabled)),
             metronome: Arc::new(MetronomeParameters::new(
@@ -94,6 +103,12 @@ impl DspParameters {
             state.amp_mid_db,
             state.amp_treble_db,
             state.amp_volume_db,
+        );
+        self.cabinet.update(
+            state.cabinet_enabled,
+            state.cabinet_gain_db,
+            state.cabinet_low_cut_hz,
+            state.cabinet_high_cut_hz,
         );
         self.effects.update(state);
         self.tuner.update(state.tuner_enabled);
@@ -156,6 +171,7 @@ fn main() -> std::io::Result<()> {
     let model_mailboxes = Arc::new(ModelMailboxes {
         pre: Arc::new(SwapMailbox::default()),
         amp: Arc::new(SwapMailbox::default()),
+        cabinet: Arc::new(SwapMailbox::default()),
     });
     let telemetry = Arc::new(RealtimeTelemetry::default());
     let tuner_telemetry = Arc::new(TunerTelemetry::default());
@@ -256,12 +272,35 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
             .ok()
             .filter(|request| request.api == API_VERSION)
+            && request.message_type == "riff_buffer_status"
+        {
+            match context.riff_vault.lock() {
+                Ok(vault) => riff_buffer_status_response(
+                    request.id,
+                    vault.available_seconds(),
+                    vault.capacity_seconds(),
+                ),
+                Err(_) => control_error(request.id, "riff_buffer_failed", "riff buffer lock poisoned"),
+            }
+        } else if let Some(request) = serde_json::from_str::<Request>(&line)
+            .ok()
+            .filter(|request| request.api == API_VERSION)
             && request.message_type == "save_riff"
         {
             let name = request
                 .payload
                 .get("name")
                 .and_then(serde_json::Value::as_str);
+            let trim_start_seconds = request
+                .payload
+                .get("trim_start_seconds")
+                .and_then(serde_json::Value::as_f64)
+                .map(|value| value as f32);
+            let trim_end_seconds = request
+                .payload
+                .get("trim_end_seconds")
+                .and_then(serde_json::Value::as_f64)
+                .map(|value| value as f32);
             let preset = context
                 .state
                 .lock()
@@ -273,9 +312,37 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
                 &context.riff_directory,
                 name,
                 &preset,
+                trim_start_seconds,
+                trim_end_seconds,
             ) {
                 Ok(riff) => riff_response(request.id, &riff),
                 Err(error) => control_error(request.id, "riff_save_failed", &error),
+            }
+        } else if let Some(request) = serde_json::from_str::<Request>(&line)
+            .ok()
+            .filter(|request| request.api == API_VERSION)
+            && request.message_type == "trim_riff"
+        {
+            let clean_path = request.payload.get("clean_path").and_then(serde_json::Value::as_str);
+            let processed_path = request.payload.get("processed_path").and_then(serde_json::Value::as_str);
+            let start = request.payload.get("trim_start_seconds").and_then(serde_json::Value::as_f64);
+            let end = request.payload.get("trim_end_seconds").and_then(serde_json::Value::as_f64);
+            let name = request.payload.get("name").and_then(serde_json::Value::as_str);
+            let preset = context.state.lock().expect("control state lock poisoned").preset.clone();
+            match (clean_path, processed_path, start, end) {
+                (Some(clean), Some(processed), Some(start), Some(end)) => match pedal_engine::riff_vault::trim_saved(
+                    std::path::Path::new(clean),
+                    std::path::Path::new(processed),
+                    &context.riff_directory,
+                    name,
+                    &preset,
+                    start as f32,
+                    end as f32,
+                ) {
+                    Ok(riff) => riff_response(request.id, &riff),
+                    Err(error) => control_error(request.id, "riff_trim_failed", &error),
+                },
+                _ => control_error(request.id, "invalid_payload", "trim_riff requires take paths and start/end seconds"),
             }
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
             .ok()
@@ -436,12 +503,20 @@ fn run_audio_worker(
         ..AudioConfig::default()
     };
     let negotiated = probe(&config)?;
-    let (pre_model_path, amp_model_path, persisted_bypass, pre_bypassed, amp_bypassed) = {
+    let (
+        pre_model_path,
+        amp_model_path,
+        cabinet_ir_path,
+        persisted_bypass,
+        pre_bypassed,
+        amp_bypassed,
+    ) = {
         let mut state = shared_state.lock().expect("control state lock poisoned");
         state.sample_rate = negotiated.sample_rate;
         state.buffer_frames = negotiated.period_frames;
         let pre_model_path = state.pre_model.clone();
         let amp_model_path = state.model.clone();
+        let cabinet_ir_path = state.cabinet_ir.clone();
         let persisted_bypass = state.bypassed;
         let pre_bypassed = state.pre_bypassed;
         let amp_bypassed = state.amp_bypassed;
@@ -451,6 +526,7 @@ fn run_audio_worker(
         (
             pre_model_path,
             amp_model_path,
+            cabinet_ir_path,
             persisted_bypass,
             pre_bypassed,
             amp_bypassed,
@@ -472,12 +548,21 @@ fn run_audio_worker(
         negotiated.sample_rate,
         negotiated.period_frames,
     );
+    let (cabinet, cabinet_failed) =
+        load_restored_cabinet(cabinet_ir_path.as_deref(), negotiated.sample_rate);
     if pre_failed || amp_failed {
         bypass_flags.all.store(true, Ordering::Relaxed);
         let mut state = shared_state.lock().expect("control state lock poisoned");
         state.bypassed = true;
         if let Err(error) = pedal_engine::state::save_atomic(state_path, &state) {
             eprintln!("could not persist safe bypass state: {error}");
+        }
+    }
+    if cabinet_failed {
+        let mut state = shared_state.lock().expect("control state lock poisoned");
+        state.cabinet_enabled = false;
+        if let Err(error) = pedal_engine::state::save_atomic(state_path, &state) {
+            eprintln!("could not persist disabled cabinet state: {error}");
         }
     }
     let pre = SwappableProcessor::new(pre, Arc::clone(&model_mailboxes.pre));
@@ -492,6 +577,13 @@ fn run_audio_worker(
         AmpControlProcessor::new(amp, Arc::clone(&dsp_parameters.amp), negotiated.sample_rate);
     let amp = BypassProcessor::new(amp, Arc::clone(&bypass_flags.amp));
     let chain = SerialProcessor::new(pre, amp);
+    let chain = CabinetProcessor::new(
+        chain,
+        cabinet,
+        Arc::clone(&dsp_parameters.cabinet),
+        Arc::clone(&model_mailboxes.cabinet),
+        negotiated.sample_rate,
+    );
     let chain = EffectChainProcessor::new(
         chain,
         Arc::clone(&dsp_parameters.effects),
@@ -542,6 +634,22 @@ fn load_restored_model(
     }
 }
 
+fn load_restored_cabinet(path: Option<&str>, sample_rate: u32) -> (Option<CabinetImpulse>, bool) {
+    let Some(path) = path else {
+        return (None, false);
+    };
+    match CabinetImpulse::load(Path::new(path), sample_rate) {
+        Ok(impulse) => {
+            eprintln!("loaded restored cabinet IR {path}");
+            (Some(impulse), false)
+        }
+        Err(error) => {
+            eprintln!("could not load restored cabinet IR {path}: {error}; disabling cabinet");
+            (None, true)
+        }
+    }
+}
+
 fn handle_control_line(
     state: &mut EngineState,
     line: &str,
@@ -578,6 +686,7 @@ fn handle_control_line(
     if request.message_type == "new_preset" {
         model_mailboxes.pre.stage(AmpProcessor::Clean);
         model_mailboxes.amp.stage(AmpProcessor::Clean);
+        model_mailboxes.cabinet.stage(None);
         let sample_rate = state.sample_rate;
         let buffer_frames = state.buffer_frames;
         *state = EngineState {
@@ -650,8 +759,13 @@ fn handle_control_line(
             Ok(model) => model,
             Err(error) => return control_error(request.id, "preset_model_failed", &error),
         };
+        let cabinet = match prepare_preset_cabinet(preset.rig.cabinet_ir.as_deref(), state) {
+            Ok(cabinet) => cabinet,
+            Err(error) => return control_error(request.id, "preset_cabinet_failed", &error),
+        };
         model_mailboxes.pre.stage(pre);
         model_mailboxes.amp.stage(amp);
+        model_mailboxes.cabinet.stage(cabinet);
         preset.rig.apply_to(state);
         state.preset = preset.name;
         state.preset_id = Some(preset.id);
@@ -683,6 +797,23 @@ fn handle_control_line(
         return state_response(request.id, state);
     }
 
+    if request.message_type == "set_cabinet_bypass" {
+        let Some(bypassed) = request
+            .payload
+            .get("bypassed")
+            .and_then(serde_json::Value::as_bool)
+        else {
+            return control_error(
+                request.id,
+                "invalid_payload",
+                "set_cabinet_bypass requires a boolean 'bypassed' field",
+            );
+        };
+        state.cabinet_enabled = !bypassed && state.cabinet_ir.is_some();
+        mark_preset_dirty(state);
+        return state_response(request.id, state);
+    }
+
     if request.message_type == "set_effect_bypass" {
         let Some(effect) = request
             .payload
@@ -708,6 +839,9 @@ fn handle_control_line(
             "compressor" => state.compressor_enabled = enabled,
             "eq" => state.eq_enabled = enabled,
             "chorus" => state.chorus_enabled = enabled,
+            "flanger" => state.flanger_enabled = enabled,
+            "tremolo" => state.tremolo_enabled = enabled,
+            "octaver" => state.octaver_enabled = enabled,
             "delay" => state.delay_enabled = enabled,
             "reverb" => state.reverb_enabled = enabled,
             _ => return control_error(request.id, "invalid_effect", "unknown effect"),
@@ -738,6 +872,9 @@ fn handle_control_line(
         match pedal {
             "eq" => state.eq_visible = visible,
             "chorus" => state.chorus_visible = visible,
+            "flanger" => state.flanger_visible = visible,
+            "tremolo" => state.tremolo_visible = visible,
+            "octaver" => state.octaver_visible = visible,
             "delay" => state.delay_visible = visible,
             "reverb" => state.reverb_visible = visible,
             "looper" => state.looper_visible = visible,
@@ -863,6 +1000,38 @@ fn handle_control_line(
             state.model = None;
             state.amp_bypassed = false;
         }
+        mark_preset_dirty(state);
+        return state_response(request.id, state);
+    }
+
+    if request.message_type == "clear_cabinet" {
+        model_mailboxes.cabinet.stage(None);
+        state.cabinet_ir = None;
+        state.cabinet_enabled = false;
+        mark_preset_dirty(state);
+        return state_response(request.id, state);
+    }
+
+    if request.message_type == "select_cabinet" {
+        let Some(raw_path) = request
+            .payload
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return control_error(
+                request.id,
+                "invalid_payload",
+                "select_cabinet requires a string 'path' field",
+            );
+        };
+        let path = Path::new(raw_path);
+        let impulse = match CabinetImpulse::load(path, state.sample_rate) {
+            Ok(impulse) => impulse,
+            Err(error) => return control_error(request.id, "cabinet_load_failed", &error),
+        };
+        model_mailboxes.cabinet.stage(Some(impulse));
+        state.cabinet_ir = Some(raw_path.to_owned());
+        state.cabinet_enabled = true;
         mark_preset_dirty(state);
         return state_response(request.id, state);
     }
@@ -995,6 +1164,14 @@ fn prepare_preset_model(path: Option<&str>, state: &EngineState) -> Result<AmpPr
     .map_err(|error| error.to_string())
 }
 
+fn prepare_preset_cabinet(
+    path: Option<&str>,
+    state: &EngineState,
+) -> Result<Option<CabinetImpulse>, String> {
+    path.map(|path| CabinetImpulse::load(Path::new(path), state.sample_rate))
+        .transpose()
+}
+
 fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(), &'static str> {
     let (target, minimum, maximum) = match control {
         "pedal_drive_db" => (&mut state.pedal_drive_db, 0.0, 24.0),
@@ -1004,6 +1181,9 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         "amp_mid_db" => (&mut state.amp_mid_db, -12.0, 12.0),
         "amp_treble_db" => (&mut state.amp_treble_db, -12.0, 12.0),
         "amp_volume_db" => (&mut state.amp_volume_db, -24.0, 12.0),
+        "cabinet_gain_db" => (&mut state.cabinet_gain_db, -24.0, 12.0),
+        "cabinet_low_cut_hz" => (&mut state.cabinet_low_cut_hz, 20.0, 500.0),
+        "cabinet_high_cut_hz" => (&mut state.cabinet_high_cut_hz, 1_000.0, 20_000.0),
         "gate_threshold_db" => (&mut state.gate_threshold_db, -80.0, -10.0),
         "compressor_threshold_db" => (&mut state.compressor_threshold_db, -48.0, 0.0),
         "compressor_ratio" => (&mut state.compressor_ratio, 1.0, 20.0),
@@ -1013,6 +1193,13 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         "chorus_rate_hz" => (&mut state.chorus_rate_hz, 0.05, 8.0),
         "chorus_depth" => (&mut state.chorus_depth, 0.0, 1.0),
         "chorus_mix" => (&mut state.chorus_mix, 0.0, 1.0),
+        "flanger_rate_hz" => (&mut state.flanger_rate_hz, 0.05, 5.0),
+        "flanger_depth" => (&mut state.flanger_depth, 0.0, 1.0),
+        "flanger_feedback" => (&mut state.flanger_feedback, -0.85, 0.85),
+        "flanger_mix" => (&mut state.flanger_mix, 0.0, 1.0),
+        "tremolo_rate_hz" => (&mut state.tremolo_rate_hz, 0.1, 18.0),
+        "tremolo_depth" => (&mut state.tremolo_depth, 0.0, 1.0),
+        "octaver_mix" => (&mut state.octaver_mix, 0.0, 1.0),
         "delay_time_ms" => (&mut state.delay_time_ms, 20.0, 1_800.0),
         "delay_feedback" => (&mut state.delay_feedback, 0.0, 0.92),
         "delay_mix" => (&mut state.delay_mix, 0.0, 1.0),
@@ -1115,6 +1302,18 @@ fn riffs_response(id: String, riffs: &[SavedRiff]) -> Response {
     }
 }
 
+fn riff_buffer_status_response(id: String, available_seconds: f32, capacity_seconds: f32) -> Response {
+    Response {
+        api: API_VERSION,
+        id,
+        message_type: "riff_buffer_status",
+        payload: serde_json::json!({
+            "available_seconds": available_seconds,
+            "capacity_seconds": capacity_seconds,
+        }),
+    }
+}
+
 fn control_error(id: String, code: &str, message: &str) -> Response {
     Response {
         api: API_VERSION,
@@ -1139,6 +1338,7 @@ mod tests {
         ModelMailboxes {
             pre: Arc::new(SwapMailbox::default()),
             amp: Arc::new(SwapMailbox::default()),
+            cabinet: Arc::new(SwapMailbox::default()),
         }
     }
 

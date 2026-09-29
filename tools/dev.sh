@@ -31,9 +31,12 @@ if [[ -z "$ENGINE_PROFILE" ]]; then
   fi
 fi
 case "$ENGINE_PROFILE" in
-  debug) ENGINE_BINARY="$REPO_DIR/target/debug/pedal-engine" ;;
-  release) ENGINE_BINARY="$REPO_DIR/target/release/pedal-engine" ;;
-  *) printf 'Error: PEDAL_ENGINE_PROFILE must be debug or release\n' >&2; exit 1 ;;
+debug) ENGINE_BINARY="$REPO_DIR/target/debug/pedal-engine" ;;
+release) ENGINE_BINARY="$REPO_DIR/target/release/pedal-engine" ;;
+*)
+  printf 'Error: PEDAL_ENGINE_PROFILE must be debug or release\n' >&2
+  exit 1
+  ;;
 esac
 
 if [[ -f "$SCRIPT_DIR/dev-env.sh" ]]; then
@@ -56,7 +59,10 @@ mkdir -p "$RUNTIME_DIR" "$MODELS_DIR"
 say() { printf '\033[1;36m%s\033[0m\n' "$*"; }
 ok() { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*" >&2; }
-fail() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf '\033[1;31mError:\033[0m %s\n' "$*" >&2
+  exit 1
+}
 
 pid_from_file() {
   local file=$1 pid
@@ -111,12 +117,12 @@ start_engine() {
   (cd "$REPO_DIR" && cargo build "${cargo_profile_args[@]}" -p pedal-engine --bin pedal-engine)
   say "Starting the engine (audio ${PEDAL_AUDIO_ENABLED:-0}, $ENGINE_PROFILE)…"
   PEDAL_AUDIO_ENABLED=${PEDAL_AUDIO_ENABLED:-0} \
-  PEDAL_CONTROL_SOCKET="$CONTROL_SOCKET" \
-  PEDAL_STATE_FILE="$STATE_FILE" \
-  PEDAL_PRESET_FILE="$PRESET_FILE" \
-  PEDAL_PREVIEW_FILE="$PREVIEW_FILE" \
-  PEDAL_RIFF_DIRECTORY="$RIFF_DIRECTORY" \
-  PEDAL_TEST_AUDIO_FILE="$TEST_AUDIO_FILE" \
+    PEDAL_CONTROL_SOCKET="$CONTROL_SOCKET" \
+    PEDAL_STATE_FILE="$STATE_FILE" \
+    PEDAL_PRESET_FILE="$PRESET_FILE" \
+    PEDAL_PREVIEW_FILE="$PREVIEW_FILE" \
+    PEDAL_RIFF_DIRECTORY="$RIFF_DIRECTORY" \
+    PEDAL_TEST_AUDIO_FILE="$TEST_AUDIO_FILE" \
     "$ENGINE_BINARY" >"$ENGINE_LOG" 2>&1 &
   pid=$!
   printf '%s\n' "$pid" >"$ENGINE_PID_FILE"
@@ -146,13 +152,13 @@ start_catalog() {
       set +a
     fi
     PYTHONPATH="$REPO_DIR/services/catalog" \
-    PEDAL_TONE3000_TOKEN_FILE="$TOKEN_FILE" \
-    PEDAL_RIFF_DIRECTORY="$RIFF_DIRECTORY" \
-    PEDAL_BACKING_TRACK_DIRECTORY="$BACKING_TRACK_DIRECTORY" \
+      PEDAL_TONE3000_TOKEN_FILE="$TOKEN_FILE" \
+      PEDAL_RIFF_DIRECTORY="$RIFF_DIRECTORY" \
+      PEDAL_BACKING_TRACK_DIRECTORY="$BACKING_TRACK_DIRECTORY" \
       python3 -m pedal_catalog.cli serve \
-        --models "$MODELS_DIR" \
-        --database "$CATALOG_DB" \
-        --socket "$CATALOG_SOCKET"
+      --models "$MODELS_DIR" \
+      --database "$CATALOG_DB" \
+      --socket "$CATALOG_SOCKET"
   ) >"$CATALOG_LOG" 2>&1 &
   pid=$!
   printf '%s\n' "$pid" >"$CATALOG_PID_FILE"
@@ -210,8 +216,8 @@ run_ui() {
   say "Launching the Flutter UI. Press Ctrl+C to close it."
   cd "$REPO_DIR/apps/pedal_ui"
   PEDAL_CONTROL_SOCKET="$CONTROL_SOCKET" \
-  PEDAL_CATALOG_SOCKET="$CATALOG_SOCKET" \
-    flutter run -d linux
+    PEDAL_CATALOG_SOCKET="$CATALOG_SOCKET" \
+    flutter run -d linux --release
 }
 
 demo() {
@@ -241,10 +247,10 @@ doctor() {
 logs() {
   local selection=${1:-all}
   case "$selection" in
-    engine) tail -n 80 -F "$ENGINE_LOG" ;;
-    catalog) tail -n 80 -F "$CATALOG_LOG" ;;
-    all) tail -n 80 -F "$ENGINE_LOG" "$CATALOG_LOG" ;;
-    *) fail "Choose logs for 'engine', 'catalog', or 'all'" ;;
+  engine) tail -n 80 -F "$ENGINE_LOG" ;;
+  catalog) tail -n 80 -F "$CATALOG_LOG" ;;
+  all) tail -n 80 -F "$ENGINE_LOG" "$CATALOG_LOG" ;;
+  *) fail "Choose logs for 'engine', 'catalog', or 'all'" ;;
   esac
 }
 
@@ -283,13 +289,16 @@ EOF
 }
 
 case "${1:-help}" in
-  demo) demo ;;
-  up) up ;;
-  ui) run_ui ;;
-  down) down ;;
-  status|doctor) doctor ;;
-  logs) logs "${2:-all}" ;;
-  test) run_tests ;;
-  help|-h|--help) usage ;;
-  *) usage; fail "Unknown command: $1" ;;
+demo) demo ;;
+up) up ;;
+ui) run_ui ;;
+down) down ;;
+status | doctor) doctor ;;
+logs) logs "${2:-all}" ;;
+test) run_tests ;;
+help | -h | --help) usage ;;
+*)
+  usage
+  fail "Unknown command: $1"
+  ;;
 esac

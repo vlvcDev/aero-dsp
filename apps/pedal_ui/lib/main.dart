@@ -7,6 +7,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');
+
 void main() => runApp(const PedalApp());
 
 abstract final class LostChrome {
@@ -19,6 +21,173 @@ abstract final class LostChrome {
   static const pearl = Color(0xffeffbff);
   static const lime = Color(0xffc9ff68);
   static const glass = Color(0xff102b5b);
+}
+
+/// The full-screen, touch-friendly window used for tools that live outside
+/// the signal path.  Keeping it in one place makes every utility feel like a
+/// part of the hardware instead of a platform dialog.
+Future<T?> showAeroControlBay<T>(
+  BuildContext context, {
+  required String title,
+  required IconData icon,
+  required Widget child,
+  double heightFactor = .88,
+  bool cartridge = false,
+}) {
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Close $title',
+    barrierColor: const Color(0xd9000617),
+    transitionDuration: const Duration(milliseconds: 210),
+    pageBuilder: (dialogContext, animation, secondaryAnimation) => SafeArea(
+      minimum: const EdgeInsets.all(12),
+      child: Align(
+        alignment: cartridge ? Alignment.bottomCenter : Alignment.center,
+        child: _AeroControlBay(
+          title: title,
+          icon: icon,
+          heightFactor: heightFactor,
+          cartridge: cartridge,
+          child: child,
+        ),
+      ),
+    ),
+    transitionBuilder: (context, animation, secondaryAnimation, child) {
+      final curved =
+          CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: .96, end: 1).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
+
+class _AeroControlBay extends StatelessWidget {
+  const _AeroControlBay({
+    required this.title,
+    required this.icon,
+    required this.heightFactor,
+    required this.cartridge,
+    required this.child,
+  });
+
+  final String title;
+  final IconData icon;
+  final double heightFactor;
+  final bool cartridge;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = MediaQuery.sizeOf(context).height * heightFactor;
+    return ConstrainedBox(
+      constraints:
+          BoxConstraints(maxWidth: cartridge ? 760 : 920, maxHeight: maxHeight),
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xff1b65a4), Color(0xff0b2858), Color(0xff071735)],
+            ),
+            borderRadius: BorderRadius.circular(cartridge ? 28 : 24),
+            border: Border.all(color: LostChrome.ice, width: 1.4),
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0xaa00040f),
+                  blurRadius: 36,
+                  offset: Offset(0, 18)),
+              BoxShadow(color: Color(0x7729b9ff), blurRadius: 18),
+            ],
+          ),
+          child: Column(
+            children: [
+              Container(
+                height: cartridge ? 58 : 64,
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(cartridge ? 27 : 23)),
+                  gradient: const LinearGradient(
+                    colors: [
+                      Color(0xffc7f3ff),
+                      Color(0xff36b9f7),
+                      Color(0xff1660ad)
+                    ],
+                  ),
+                  border: const Border(
+                      bottom: BorderSide(color: Color(0xffbceeff), width: 1)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: LostChrome.navy.withValues(alpha: .7),
+                        borderRadius: BorderRadius.circular(11),
+                        border: Border.all(
+                            color: LostChrome.pearl.withValues(alpha: .8)),
+                      ),
+                      child: Icon(icon, color: LostChrome.pearl),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(title.toUpperCase(),
+                          style: const TextStyle(
+                              color: LostChrome.midnight,
+                              fontWeight: FontWeight.w900,
+                              fontSize: 17,
+                              letterSpacing: 1.1)),
+                    ),
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(11),
+                        onTap: () => Navigator.of(context).pop(),
+                        child: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: LostChrome.navy.withValues(alpha: .78),
+                            borderRadius: BorderRadius.circular(11),
+                            border: Border.all(
+                                color: LostChrome.pearl.withValues(alpha: .9)),
+                            boxShadow: const [
+                              BoxShadow(
+                                  color: Color(0x55104a90), blurRadius: 6),
+                            ],
+                          ),
+                          child: const Tooltip(
+                            message: 'Close',
+                            child: Icon(Icons.close_rounded,
+                                color: LostChrome.pearl, size: 22),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                  child: ClipRRect(
+                borderRadius: BorderRadius.vertical(
+                    bottom: Radius.circular(cartridge ? 27 : 23)),
+                child: child,
+              )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class PedalApp extends StatelessWidget {
@@ -109,11 +278,13 @@ class PedalApp extends StatelessWidget {
 }
 
 class _AeroDspBrand extends StatelessWidget {
-  const _AeroDspBrand();
+  const _AeroDspBrand({this.compact = false});
+
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -121,28 +292,249 @@ class _AeroDspBrand extends StatelessWidget {
           'AERO>>DSP',
           style: TextStyle(
             color: LostChrome.ice,
-            fontSize: 17,
+            fontSize: compact ? 14 : 17,
             fontWeight: FontWeight.w900,
             fontStyle: FontStyle.italic,
             letterSpacing: -0.9,
-            shadows: [
+            shadows: const [
               Shadow(color: LostChrome.electric, blurRadius: 9),
               Shadow(color: Color(0xff2c55c9), offset: Offset(2, 2)),
             ],
           ),
         ),
-        Text(
-          'PEDALBOARD // V0',
-          style: TextStyle(
-            color: LostChrome.lime,
-            fontSize: 8,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.5,
+        if (!compact)
+          const Text(
+            'PEDALBOARD // V0',
+            style: TextStyle(
+              color: LostChrome.lime,
+              fontSize: 8,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.5,
+            ),
           ),
-        ),
       ],
     );
   }
+}
+
+/// The two primary workspaces intentionally live in the chrome rather than a
+/// modal: switching views must not interrupt the live audio engine.
+class _WorkspaceTabs extends StatelessWidget {
+  const _WorkspaceTabs({
+    required this.compact,
+    required this.tracksSelected,
+    required this.onPedalboard,
+    required this.onTracks,
+  });
+
+  final bool compact;
+  final bool tracksSelected;
+  final VoidCallback onPedalboard;
+  final VoidCallback onTracks;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: compact ? 34 : 40,
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: const Color(0xff061938).withValues(alpha: .9),
+          borderRadius: BorderRadius.circular(compact ? 12 : 15),
+          border: Border.all(color: LostChrome.electric.withValues(alpha: .7)),
+          boxShadow: const [BoxShadow(color: Color(0x4429b9ff), blurRadius: 9)],
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          _WorkspaceTabButton(
+            selected: !tracksSelected,
+            compact: compact,
+            icon: Icons.electric_bolt_rounded,
+            label: 'PEDALS',
+            onTap: onPedalboard,
+          ),
+          _WorkspaceTabButton(
+            selected: tracksSelected,
+            compact: compact,
+            icon: Icons.view_timeline_outlined,
+            label: 'STUDIO',
+            onTap: onTracks,
+          ),
+        ]),
+      );
+}
+
+class _WorkspaceTabButton extends StatelessWidget {
+  const _WorkspaceTabButton({
+    required this.selected,
+    required this.compact,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final bool selected;
+  final bool compact;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(compact ? 9 : 11),
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: compact ? 31 : 79,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(compact ? 9 : 11),
+              gradient: selected
+                  ? const LinearGradient(
+                      colors: [Color(0xffe9fbff), Color(0xff81ddff)])
+                  : null,
+              color: selected ? null : Colors.transparent,
+              boxShadow: selected
+                  ? const [BoxShadow(color: Color(0x6629b9ff), blurRadius: 8)]
+                  : null,
+            ),
+            child: compact
+                ? Icon(icon,
+                    size: 17,
+                    color: selected ? LostChrome.navy : LostChrome.ice)
+                : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(icon,
+                        size: 14,
+                        color: selected ? LostChrome.navy : LostChrome.ice),
+                    const SizedBox(width: 4),
+                    Text(label,
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: .45,
+                            color:
+                                selected ? LostChrome.navy : LostChrome.ice)),
+                  ]),
+          ),
+        ),
+      );
+}
+
+class _PresetHeaderButton extends StatelessWidget {
+  const _PresetHeaderButton({
+    required this.title,
+    required this.onTap,
+    required this.compact,
+  });
+
+  final String title;
+  final VoidCallback? onTap;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final chrome = BoxDecoration(
+      gradient: const LinearGradient(
+        colors: [Color(0x991a5eac), Color(0x774fc9ee), Color(0x992a5598)],
+      ),
+      borderRadius: BorderRadius.circular(compact ? 12 : 15),
+      border: Border.all(color: const Color(0xffa9eaff)),
+      boxShadow: const [
+        BoxShadow(color: Color(0x6639bfff), blurRadius: 12),
+      ],
+    );
+
+    return Tooltip(
+      message: 'Presets: $title',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(compact ? 12 : 15),
+          onTap: onTap,
+          child: Container(
+            height: compact ? 34 : 40,
+            padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 12),
+            decoration: chrome,
+            child: compact
+                ? const Icon(Icons.album, size: 18, color: LostChrome.ice)
+                : Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.album, size: 16, color: LostChrome.ice),
+                      const SizedBox(width: 7),
+                      Flexible(
+                        child: Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -.5,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 3),
+                      const Icon(Icons.expand_more,
+                          size: 19, color: LostChrome.ice),
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WindowCloseButton extends StatelessWidget {
+  const _WindowCloseButton();
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: 'Close AERO>>DSP',
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: SystemNavigator.pop,
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xff326ca9), Color(0xff123969)],
+                ),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xff9edfff)),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x5529b9ff), blurRadius: 10),
+                ],
+              ),
+              child: const Icon(Icons.close_rounded,
+                  size: 23, color: LostChrome.pearl),
+            ),
+          ),
+        ),
+      );
+}
+
+class _WindowDragRegion extends StatelessWidget {
+  const _WindowDragRegion({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: (event) {
+          if (event.kind == ui.PointerDeviceKind.mouse && event.buttons == 1) {
+            unawaited(_windowChromeChannel.invokeMethod<void>('beginMove'));
+          }
+        },
+        child: child,
+      );
 }
 
 class _ChromeBackdrop extends StatelessWidget {
@@ -253,9 +645,39 @@ class _RigScreenState extends State<RigScreen> {
   StreamSubscription<EngineSnapshot>? _subscription;
   StreamSubscription<MeterSnapshot>? _meterSubscription;
   Process? _previewPlayer;
+  OverlayEntry? _toneCheckEntry;
   bool _previewBusy = false;
   bool _previewPlaying = false;
+  bool _tracksWorkspace = false;
   String? _importedPreviewPath;
+
+  void _beginWindowResize(PointerDownEvent event) {
+    if (event.kind != ui.PointerDeviceKind.mouse || event.buttons != 1) {
+      return;
+    }
+
+    const resizeBand = 8.0;
+    final size = MediaQuery.sizeOf(context);
+    final point = event.localPosition;
+    final north = point.dy <= resizeBand;
+    final south = point.dy >= size.height - resizeBand;
+    final west = point.dx <= resizeBand;
+    final east = point.dx >= size.width - resizeBand;
+    final edge = switch ((north, south, west, east)) {
+      (true, _, true, _) => 'northWest',
+      (true, _, _, true) => 'northEast',
+      (_, true, true, _) => 'southWest',
+      (_, true, _, true) => 'southEast',
+      (true, _, _, _) => 'north',
+      (_, true, _, _) => 'south',
+      (_, _, true, _) => 'west',
+      (_, _, _, true) => 'east',
+      _ => null,
+    };
+    if (edge != null) {
+      unawaited(_windowChromeChannel.invokeMethod<void>('beginResize', edge));
+    }
+  }
 
   @override
   void initState() {
@@ -271,6 +693,7 @@ class _RigScreenState extends State<RigScreen> {
 
   @override
   void dispose() {
+    _dismissToneCheck();
     _previewPlayer?.kill();
     _subscription?.cancel();
     _meterSubscription?.cancel();
@@ -280,226 +703,220 @@ class _RigScreenState extends State<RigScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final compactHeader = MediaQuery.sizeOf(context).width < 600;
+    // Studio tabs need enough horizontal room to remain legible. Below this
+    // width the existing touch-friendly icon chrome is the safer layout.
+    final compactHeader = MediaQuery.sizeOf(context).width < 1100;
+    // Leave the two-pixel outer margin unpainted. The Linux runner supplies
+    // an RGBA surface, so the rounded shell can reveal the desktop there.
     return Scaffold(
-      body: _ChromeBackdrop(
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                IconButtonTheme(
-                  data: IconButtonThemeData(
-                    style: IconButton.styleFrom(
-                      // The Pi's 480px-wide touch display needs all primary
-                      // controls in one row, including Daily Drill.
-                      minimumSize: Size.square(compactHeader ? 36 : 48),
-                      padding: EdgeInsets.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      const _AeroDspBrand(),
-                      const Spacer(),
-                      IconButton(
-                        tooltip: 'Tuner',
-                        onPressed: _engine.connected ? _showTuner : null,
-                        icon: Icon(
-                          Icons.tune,
-                          color: _engine.tunerEnabled ? LostChrome.lime : null,
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: 'Daily Drill',
-                        onPressed: _engine.connected ? _showDailyLesson : null,
-                        icon: const Icon(Icons.school_outlined),
-                      ),
-                      IconButton(
-                        tooltip: 'AI Tone Maker',
-                        onPressed: _showToneMaker,
-                        icon: const Icon(Icons.auto_awesome),
-                      ),
-                      IconButton(
-                        tooltip:
-                            _previewPlaying ? 'Stop test audio' : 'Test audio',
-                        onPressed: _engine.connected && !_previewBusy
-                            ? _previewPlaying
-                                ? _stopPreview
-                                : _choosePreview
-                            : null,
-                        icon: _previewBusy
-                            ? const SizedBox.square(
-                                dimension: 17,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(_previewPlaying
-                                ? Icons.stop_circle_outlined
-                                : Icons.music_note),
-                      ),
-                      IconButton(
-                        tooltip: _engine.connected
-                            ? (_engine.bypassed ? 'Engage rig' : 'Bypass rig')
-                            : 'Reconnect engine',
-                        onPressed: _engine.connected
-                            ? () => _client.setBypass(!_engine.bypassed)
-                            : _client.connect,
-                        icon: Icon(
-                          Icons.power_settings_new,
-                          color: !_engine.connected
-                              ? LostChrome.ice
-                              : _engine.bypassed
-                                  ? Theme.of(context).colorScheme.error
-                                  : LostChrome.lime,
-                        ),
-                      ),
-                      if (!compactHeader) ...[
-                        TextButton.icon(
-                          onPressed: _showTone3000,
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                          ),
-                          icon: const Icon(Icons.cloud_download_outlined,
-                              size: 18),
-                          label: const Text('T3K'),
-                        ),
-                        TextButton.icon(
-                          onPressed: _showAudioOutputs,
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                          ),
-                          icon: const Icon(Icons.volume_up_outlined, size: 18),
-                          label: const Text('SND'),
-                        ),
-                      ] else ...[
-                        IconButton(
-                          tooltip: 'TONE3000',
-                          onPressed: _showTone3000,
-                          icon: const Icon(Icons.cloud_download_outlined),
-                        ),
-                        IconButton(
-                          tooltip: 'Output',
-                          onPressed: _showAudioOutputs,
-                          icon: const Icon(Icons.volume_up_outlined),
-                        ),
-                      ],
-                      const SizedBox(width: 6),
-                      Tooltip(
-                        message:
-                            _engine.connected ? 'Engine online' : 'Connecting',
-                        child: _StatusDot(connected: _engine.connected),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                InkWell(
-                  borderRadius: BorderRadius.circular(16),
-                  onTap: _engine.connected ? _showPresets : null,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [
-                          Color(0x991a5eac),
-                          Color(0x774fc9ee),
-                          Color(0x992a5598)
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: const Color(0xffa9eaff)),
-                      boxShadow: const [
-                        BoxShadow(color: Color(0x6639bfff), blurRadius: 16)
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+      backgroundColor: Colors.transparent,
+      body: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _beginWindowResize,
+        child: Padding(
+          padding: const EdgeInsets.all(2),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: LostChrome.ice.withValues(alpha: .42),
+                width: 1,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(13),
+              child: _ChromeBackdrop(
+                child: SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Icon(Icons.album,
-                            size: 17, color: LostChrome.ice),
-                        const SizedBox(width: 7),
-                        Flexible(
-                          child: Text(
-                            _engine.presetTitle,
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: -.8,
+                        IconButtonTheme(
+                          data: IconButtonThemeData(
+                            style: IconButton.styleFrom(
+                              // The Pi's 480px-wide touch display needs all primary
+                              // controls in one row, including Daily Drill.
+                              minimumSize: Size.square(compactHeader ? 34 : 48),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 3),
-                        const Icon(Icons.expand_more,
-                            size: 22, color: LostChrome.ice),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _engine.modelName,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      fontSize: 16,
-                      color: Theme.of(context).colorScheme.secondary),
-                ),
-                const SizedBox(height: 6),
-                _MeterStrip(snapshot: _meters),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final boardHeight = math.max(
-                        118.0,
-                        constraints.maxHeight * .6,
-                      );
-                      final utilityHeight = math.max(
-                        90.0,
-                        constraints.maxHeight - boardHeight - 8,
-                      );
-                      return SingleChildScrollView(
-                        child: ConstrainedBox(
-                          constraints:
-                              BoxConstraints(minHeight: constraints.maxHeight),
-                          child: Column(
+                          child: Row(
                             children: [
-                              SizedBox(
-                                height: boardHeight,
-                                child: Pedalboard(
-                                  snapshot: _engine,
-                                  onSlotOpen: _showSlotControls,
-                                  onSlotToggle: (slot, bypassed) =>
-                                      _toggleSlot(slot, bypassed),
-                                  onEffectOpen: _showEffectControls,
-                                  onEffectToggle: _toggleEffect,
-                                  onLooperOpen: _showLooperControls,
-                                  onAddPedal: _showAddPedal,
+                              _WindowDragRegion(
+                                child: _AeroDspBrand(compact: compactHeader),
+                              ),
+                              SizedBox(width: compactHeader ? 4 : 12),
+                              _WorkspaceTabs(
+                                compact: compactHeader,
+                                tracksSelected: _tracksWorkspace,
+                                onPedalboard: () =>
+                                    setState(() => _tracksWorkspace = false),
+                                onTracks: () =>
+                                    setState(() => _tracksWorkspace = true),
+                              ),
+                              SizedBox(width: compactHeader ? 4 : 10),
+                              if (compactHeader)
+                                SizedBox(
+                                  width: 34,
+                                  child: _PresetHeaderButton(
+                                    title: _engine.presetTitle,
+                                    onTap:
+                                        _engine.connected ? _showPresets : null,
+                                    compact: true,
+                                  ),
+                                )
+                              else
+                                Expanded(
+                                  child: _PresetHeaderButton(
+                                    title: _engine.presetTitle,
+                                    onTap:
+                                        _engine.connected ? _showPresets : null,
+                                    compact: false,
+                                  ),
+                                ),
+                              const SizedBox(width: 8),
+                              IconButton(
+                                tooltip: 'Tuner',
+                                onPressed:
+                                    _engine.connected ? _showTuner : null,
+                                icon: Icon(
+                                  Icons.tune,
+                                  color: _engine.tunerEnabled
+                                      ? LostChrome.lime
+                                      : null,
                                 ),
                               ),
-                              const SizedBox(height: 8),
-                              SizedBox(
-                                height: utilityHeight,
-                                child: _UtilityDeck(
-                                  snapshot: _meters,
-                                  onOpenRiffVault: _showRiffVault,
+                              IconButton(
+                                tooltip: 'Daily Drill',
+                                onPressed:
+                                    _engine.connected ? _showDailyLesson : null,
+                                icon: const Icon(Icons.school_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'AI Tone Maker',
+                                onPressed: _showToneMaker,
+                                icon: const Icon(Icons.auto_awesome),
+                              ),
+                              IconButton(
+                                tooltip: 'Riff Vault',
+                                onPressed: _showRiffVault,
+                                icon: const Icon(Icons.bookmark_added_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'Open Tracks workspace',
+                                onPressed: () =>
+                                    setState(() => _tracksWorkspace = true),
+                                icon: const Icon(Icons.view_timeline_outlined),
+                              ),
+                              IconButton(
+                                tooltip: _previewPlaying
+                                    ? 'Stop test audio'
+                                    : 'Test audio',
+                                onPressed: _engine.connected && !_previewBusy
+                                    ? _previewPlaying
+                                        ? _stopPreview
+                                        : _choosePreview
+                                    : null,
+                                icon: _previewBusy
+                                    ? const SizedBox.square(
+                                        dimension: 17,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2),
+                                      )
+                                    : Icon(_previewPlaying
+                                        ? Icons.stop_circle_outlined
+                                        : Icons.music_note),
+                              ),
+                              IconButton(
+                                tooltip: _engine.connected
+                                    ? (_engine.bypassed
+                                        ? 'Engage rig'
+                                        : 'Bypass rig')
+                                    : 'Reconnect engine',
+                                onPressed: _engine.connected
+                                    ? () => _client.setBypass(!_engine.bypassed)
+                                    : _client.connect,
+                                icon: Icon(
+                                  Icons.power_settings_new,
+                                  color: !_engine.connected
+                                      ? LostChrome.ice
+                                      : _engine.bypassed
+                                          ? Theme.of(context).colorScheme.error
+                                          : LostChrome.lime,
                                 ),
+                              ),
+                              if (!compactHeader) ...[
+                                TextButton.icon(
+                                  onPressed: _showTone3000,
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4),
+                                  ),
+                                  icon: const Icon(
+                                      Icons.cloud_download_outlined,
+                                      size: 18),
+                                  label: const Text('T3K'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: _showAudioOutputs,
+                                  style: TextButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4),
+                                  ),
+                                  icon: const Icon(Icons.volume_up_outlined,
+                                      size: 18),
+                                  label: const Text('SND'),
+                                ),
+                              ] else ...[
+                                IconButton(
+                                  tooltip: 'TONE3000',
+                                  onPressed: _showTone3000,
+                                  icon:
+                                      const Icon(Icons.cloud_download_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: 'Output',
+                                  onPressed: _showAudioOutputs,
+                                  icon: const Icon(Icons.volume_up_outlined),
+                                ),
+                              ],
+                              const SizedBox(width: 6),
+                              Tooltip(
+                                message: _engine.connected
+                                    ? 'Engine online'
+                                    : 'Connecting',
+                                child: _StatusDot(connected: _engine.connected),
+                              ),
+                              if (!compactHeader) ...[
+                                const SizedBox(width: 8),
+                                const _WindowCloseButton(),
+                              ],
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        _MeterStrip(snapshot: _meters),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: IndexedStack(
+                            index: _tracksWorkspace ? 1 : 0,
+                            children: [
+                              _buildPedalboardWorkspace(),
+                              TrackManagerSheet(
+                                client: _client,
+                                catalog: _catalog,
+                                toneSnapshot: _engine.presetTitle,
                               ),
                             ],
                           ),
                         ),
-                      );
-                    },
+                      ],
+                    ),
                   ),
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -507,20 +924,74 @@ class _RigScreenState extends State<RigScreen> {
     );
   }
 
+  Widget _buildPedalboardWorkspace() => LayoutBuilder(
+        builder: (context, constraints) {
+          final regularBoardHeight = math.max(
+            118.0,
+            constraints.maxHeight * .6,
+          );
+          // This is the same visual breakpoint at which NAM tile decorations
+          // are reduced. Use the freed dashboard area for the signal path
+          // rather than allowing a squeezed scope/lagoon row to compete with
+          // it.
+          final compactDashboard = regularBoardHeight - 42 < 300;
+          final boardHeight =
+              compactDashboard ? constraints.maxHeight : regularBoardHeight;
+          final utilityHeight = math.max(
+            90.0,
+            constraints.maxHeight - boardHeight - 8,
+          );
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Column(
+                children: [
+                  SizedBox(
+                    height: boardHeight,
+                    child: Pedalboard(
+                      snapshot: _engine,
+                      onSlotOpen: _showSlotControls,
+                      onSlotToggle: (slot, bypassed) =>
+                          _toggleSlot(slot, bypassed),
+                      onCabinetOpen: _showCabinetControls,
+                      onCabinetToggle: _toggleCabinet,
+                      onControlChanged: _client.setControl,
+                      onEffectOpen: _showEffectControls,
+                      onEffectToggle: _toggleEffect,
+                      onLooperOpen: _showLooperControls,
+                      onAddPedal: _showAddPedal,
+                    ),
+                  ),
+                  if (!compactDashboard) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: utilityHeight,
+                      child: _UtilityDeck(
+                        snapshot: _meters,
+                        onOpenRiffVault: _showRiffVault,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
   void _showModelLibrary({ModelSlot? initialSlot}) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: 0.78,
-        child: ModelLibrarySheet(
-          catalog: _catalog,
-          engineConnected: _engine.connected,
-          selectedPrePath: _engine.preModel,
-          selectedAmpPath: _engine.model,
-          onSelected: _client.selectModel,
-          initialSlot: initialSlot,
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: 'NAM Tone Library',
+      icon: Icons.library_music,
+      heightFactor: .86,
+      child: ModelLibrarySheet(
+        catalog: _catalog,
+        engineConnected: _engine.connected,
+        selectedPrePath: _engine.preModel,
+        selectedAmpPath: _engine.model,
+        onSelected: _client.selectModel,
+        initialSlot: initialSlot,
       ),
     );
   }
@@ -534,10 +1005,12 @@ class _RigScreenState extends State<RigScreen> {
   }
 
   Future<void> _choosePreview() async {
-    final choice = await showModalBottomSheet<PreviewChoice>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
+    final choice = await showAeroControlBay<PreviewChoice>(
+      context,
+      title: 'Test Audio',
+      icon: Icons.music_note,
+      heightFactor: .62,
+      child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
           child: Column(
@@ -713,92 +1186,70 @@ class _RigScreenState extends State<RigScreen> {
   }
 
   void _showTone3000() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: 0.92,
-        child: Tone3000BrowserSheet(
-          catalog: _catalog,
-          engineConnected: _engine.connected,
-          onSelected: _client.selectModel,
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: 'TONE3000 Browser',
+      icon: Icons.cloud_download_outlined,
+      heightFactor: .9,
+      child: Tone3000BrowserSheet(
+        catalog: _catalog,
+        engineConnected: _engine.connected,
+        onSelected: _client.selectModel,
       ),
     );
   }
 
   Future<void> _showToneMaker() async {
-    final application = await showModalBottomSheet<AiToneApplication>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: .92,
-        child: ToneMakerSheet(
-          catalog: _catalog,
-          engineConnected: _engine.connected,
-          onApply: _applyAiTone,
-        ),
+    final application = await showAeroControlBay<AiToneApplication>(
+      context,
+      title: 'AI Tone Maker',
+      icon: Icons.auto_awesome,
+      heightFactor: .9,
+      child: ToneMakerSheet(
+        catalog: _catalog,
+        engineConnected: _engine.connected,
+        onApply: _applyAiTone,
       ),
     );
     if (!mounted || application == null) return;
-    await _showToneMemoryFeedback(application);
+    _showToneMemoryFeedback(application);
   }
 
-  Future<void> _showToneMemoryFeedback(AiToneApplication application) async {
-    final note = TextEditingController();
-    final shouldSave = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('TONE CHECK'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Does this sound like “${application.memoryQuery}”?'),
-            const SizedBox(height: 10),
-            TextField(
-              controller: note,
-              maxLength: 280,
-              decoration: const InputDecoration(
-                labelText: 'OPTIONAL NOTE',
-                hintText: 'Great with bridge humbucker…',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('NOT QUITE'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(context, true),
-            icon: const Icon(Icons.bookmark_added_outlined),
-            label: const Text('YES, SAVE'),
-          ),
-        ],
+  void _showToneMemoryFeedback(AiToneApplication application) {
+    _dismissToneCheck();
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final messenger = ScaffoldMessenger.of(context);
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (context) => _ToneCheckBanner(
+        query: application.memoryQuery,
+        onDismiss: _dismissToneCheck,
+        onNotQuite: () {
+          _dismissToneCheck();
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Tone was not saved.')),
+          );
+        },
+        onSave: () async {
+          try {
+            await _catalog.saveToneMemory(application.memoryCandidate, '');
+            _dismissToneCheck();
+            messenger.showSnackBar(
+              const SnackBar(content: Text('Tone saved to local Tone Memory.')),
+            );
+          } catch (error) {
+            messenger.showSnackBar(SnackBar(content: Text('$error')));
+          }
+        },
       ),
     );
-    final message = shouldSave == true
-        ? 'Tone saved to local Tone Memory.'
-        : 'No tone was saved.';
-    if (shouldSave == true) {
-      try {
-        await _catalog.saveToneMemory(application.memoryCandidate, note.text);
-      } catch (error) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('$error')));
-        }
-        note.dispose();
-        return;
-      }
-    }
-    note.dispose();
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
-    }
+    _toneCheckEntry = entry;
+    overlay.insert(entry);
+  }
+
+  void _dismissToneCheck() {
+    _toneCheckEntry?.remove();
+    _toneCheckEntry = null;
   }
 
   Future<void> _applyAiTone(AiToneApplication application) async {
@@ -814,6 +1265,13 @@ class _RigScreenState extends State<RigScreen> {
       await _client.selectModel(pedal, ModelSlot.pre);
     }
     await _client.selectModel(application.ampModel, ModelSlot.amp);
+    if (application.cabinetIr case final cabinet?) {
+      await _client.selectCabinet(cabinet.path);
+    } else {
+      // An Amp + Cab NAM already contains its cabinet response. Clear any
+      // previous IR so this AI rig cannot run through two cab stages.
+      await _client.clearCabinet();
+    }
     for (final control in application.controls.entries) {
       await _client.setControl(control.key, control.value);
     }
@@ -841,9 +1299,12 @@ class _RigScreenState extends State<RigScreen> {
   }
 
   void _showAudioOutputs() {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => SafeArea(
+    showAeroControlBay<void>(
+      context,
+      title: 'Audio Output',
+      icon: Icons.speaker,
+      heightFactor: .65,
+      child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
           child: FutureBuilder<List<SystemAudioOutput>>(
@@ -925,35 +1386,34 @@ class _RigScreenState extends State<RigScreen> {
   }
 
   void _showPresets() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: 0.9,
-        child: PresetLibrarySheet(
-          client: _client,
-          currentPresetId: _engine.presetId,
-          suggestedName: _engine.preset,
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: 'Preset Bay',
+      icon: Icons.bookmark,
+      heightFactor: .86,
+      child: PresetLibrarySheet(
+        client: _client,
+        currentPresetId: _engine.presetId,
+        suggestedName: _engine.preset,
       ),
     );
   }
 
   void _showSlotControls(ModelSlot slot) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => FractionallySizedBox(
-        heightFactor: 0.9,
-        child: SlotControlsSheet(
-          slot: slot,
-          snapshot: _engine,
-          onChanged: _client.setControl,
-          onChangeTone: () {
-            Navigator.pop(sheetContext);
-            _showModelLibrary(initialSlot: slot);
-          },
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: slot == ModelSlot.pre ? 'Drive NAM' : 'Amp NAM',
+      icon: slot == ModelSlot.pre ? Icons.bolt : Icons.speaker,
+      heightFactor: .7,
+      cartridge: true,
+      child: SlotControlsSheet(
+        slot: slot,
+        snapshot: _engine,
+        onChanged: _client.setControl,
+        onChangeTone: () {
+          Navigator.pop(context);
+          _showModelLibrary(initialSlot: slot);
+        },
       ),
     );
   }
@@ -962,13 +1422,12 @@ class _RigScreenState extends State<RigScreen> {
     try {
       await _client.setTunerEnabled(true);
       if (!mounted) return;
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        builder: (context) => FractionallySizedBox(
-          heightFactor: 0.9,
-          child: TunerSheet(meters: _client.meters),
-        ),
+      await showAeroControlBay<void>(
+        context,
+        title: 'Tuner',
+        icon: Icons.tune,
+        heightFactor: .86,
+        child: TunerSheet(meters: _client.meters),
       );
     } catch (error) {
       if (mounted) {
@@ -991,16 +1450,15 @@ class _RigScreenState extends State<RigScreen> {
       // practice score.
       await _client.setTunerEnabled(true);
       if (!mounted) return;
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        builder: (context) => FractionallySizedBox(
-          heightFactor: 0.92,
-          child: DailyLessonSheet(
-            meters: _client.meters,
-            lessons: DailyLesson.dailySession(DateTime.now()),
-            onMetronomeChanged: _client.setMetronome,
-          ),
+      await showAeroControlBay<void>(
+        context,
+        title: 'Daily Lesson',
+        icon: Icons.school,
+        heightFactor: .9,
+        child: DailyLessonSheet(
+          meters: _client.meters,
+          lessons: DailyLesson.dailySession(DateTime.now()),
+          onMetronomeChanged: _client.setMetronome,
         ),
       );
     } catch (error) {
@@ -1018,13 +1476,12 @@ class _RigScreenState extends State<RigScreen> {
   }
 
   void _showRiffVault() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: .84,
-        child: RiffVaultSheet(client: _client, catalog: _catalog),
-      ),
+    showAeroControlBay<void>(
+      context,
+      title: 'Riff Vault',
+      icon: Icons.inventory_2_outlined,
+      heightFactor: .82,
+      child: RiffVaultSheet(client: _client, catalog: _catalog),
     );
   }
 
@@ -1032,63 +1489,105 @@ class _RigScreenState extends State<RigScreen> {
     final optionalPedal = switch (effect) {
       EffectKind.eq => OptionalPedal.eq,
       EffectKind.chorus => OptionalPedal.chorus,
+      EffectKind.flanger => OptionalPedal.flanger,
+      EffectKind.tremolo => OptionalPedal.tremolo,
+      EffectKind.octaver => OptionalPedal.octaver,
       EffectKind.delay => OptionalPedal.delay,
       EffectKind.reverb => OptionalPedal.reverb,
       EffectKind.gate || EffectKind.compressor => null,
     };
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: 0.82,
-        child: EffectControlsSheet(
-          effect: effect,
-          snapshot: _engine,
-          onChanged: _client.setControl,
-          onRemove:
-              optionalPedal == null ? null : () => _removePedal(optionalPedal),
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: '${effect.label} Pedal',
+      icon: effect.icon,
+      heightFactor: .68,
+      cartridge: true,
+      child: EffectControlsSheet(
+        effect: effect,
+        snapshot: _engine,
+        onChanged: _client.setControl,
+        onRemove:
+            optionalPedal == null ? null : () => _removePedal(optionalPedal),
       ),
     );
   }
 
+  void _showCabinetControls() {
+    showAeroControlBay<void>(
+      context,
+      title: 'Cabinet IR',
+      icon: Icons.speaker_outlined,
+      heightFactor: .7,
+      cartridge: true,
+      child: CabinetControlsSheet(
+        snapshot: _engine,
+        onChanged: _client.setControl,
+        onChooseIr: _chooseCabinetIr,
+        onClear: _client.clearCabinet,
+      ),
+    );
+  }
+
+  Future<void> _chooseCabinetIr() async {
+    try {
+      final result = await Process.run('zenity', [
+        '--file-selection',
+        '--title=Choose a cabinet impulse response',
+        '--file-filter=Wave impulse response | *.wav *.WAV',
+      ]);
+      if (result.exitCode != 0) return;
+      final path = (result.stdout as String).trim();
+      if (path.isEmpty) return;
+      await _client.selectCabinet(path);
+    } on ProcessException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('The system file picker is unavailable')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
   void _showLooperControls() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => FractionallySizedBox(
-        heightFactor: .82,
-        child: LooperControlsSheet(
-          mode: _engine.looperMode,
-          bpm: _engine.looperBpm,
-          bars: _engine.looperBars,
-          onAction: _client.looperAction,
-          onRemove: () => _removePedal(OptionalPedal.looper),
-        ),
+    showAeroControlBay<void>(
+      context,
+      title: 'Looper Pedal',
+      icon: Icons.loop,
+      heightFactor: .72,
+      cartridge: true,
+      child: LooperControlsSheet(
+        mode: _engine.looperMode,
+        bpm: _engine.looperBpm,
+        bars: _engine.looperBars,
+        onAction: _client.looperAction,
+        onRemove: () => _removePedal(OptionalPedal.looper),
       ),
     );
   }
 
   void _showAddPedal() {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => FractionallySizedBox(
-        heightFactor: .82,
-        child: AddPedalSheet(
-          snapshot: _engine,
-          onAdd: (pedal) async {
-            try {
-              await _client.setPedalVisible(pedal, true);
-              if (sheetContext.mounted) Navigator.pop(sheetContext);
-            } catch (error) {
-              if (mounted) {
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text('$error')));
-              }
+    showAeroControlBay<void>(
+      context,
+      title: 'Add a Pedal',
+      icon: Icons.add_circle_outline,
+      heightFactor: .72,
+      child: AddPedalSheet(
+        snapshot: _engine,
+        onAdd: (pedal) async {
+          try {
+            await _client.setPedalVisible(pedal, true);
+            if (mounted) Navigator.pop(context);
+          } catch (error) {
+            if (mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('$error')));
             }
-          },
-        ),
+          }
+        },
       ),
     );
   }
@@ -1148,16 +1647,49 @@ class _RigScreenState extends State<RigScreen> {
       }
     }
   }
+
+  Future<void> _toggleCabinet(bool bypassed) async {
+    try {
+      await _client.setCabinetBypass(bypassed);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
 }
 
-enum EffectKind { gate, compressor, eq, chorus, delay, reverb }
+enum EffectKind {
+  gate,
+  compressor,
+  eq,
+  chorus,
+  flanger,
+  tremolo,
+  octaver,
+  delay,
+  reverb,
+}
 
-enum OptionalPedal { eq, chorus, delay, reverb, looper }
+enum OptionalPedal {
+  eq,
+  chorus,
+  flanger,
+  tremolo,
+  octaver,
+  delay,
+  reverb,
+  looper,
+}
 
 extension OptionalPedalDetails on OptionalPedal {
   String get label => switch (this) {
         OptionalPedal.eq => 'EQ',
         OptionalPedal.chorus => 'CHORUS',
+        OptionalPedal.flanger => 'FLANGER',
+        OptionalPedal.tremolo => 'TREMOLO',
+        OptionalPedal.octaver => 'OCTAVER',
         OptionalPedal.delay => 'DELAY',
         OptionalPedal.reverb => 'REVERB',
         OptionalPedal.looper => 'LOOPER',
@@ -1166,6 +1698,9 @@ extension OptionalPedalDetails on OptionalPedal {
   String get description => switch (this) {
         OptionalPedal.eq => 'Shape low, mid, and high frequencies',
         OptionalPedal.chorus => 'Add width and movement',
+        OptionalPedal.flanger => 'Sweep a metallic moving comb filter',
+        OptionalPedal.tremolo => 'Pulse your volume with an LFO',
+        OptionalPedal.octaver => 'Blend in a gritty octave-down voice',
         OptionalPedal.delay => 'Repeat your signal over time',
         OptionalPedal.reverb => 'Add space and decay',
         OptionalPedal.looper => 'Capture and layer a performance',
@@ -1174,6 +1709,9 @@ extension OptionalPedalDetails on OptionalPedal {
   IconData get icon => switch (this) {
         OptionalPedal.eq => Icons.equalizer,
         OptionalPedal.chorus => Icons.waves,
+        OptionalPedal.flanger => Icons.waterfall_chart,
+        OptionalPedal.tremolo => Icons.vibration,
+        OptionalPedal.octaver => Icons.south,
         OptionalPedal.delay => Icons.repeat,
         OptionalPedal.reverb => Icons.blur_on,
         OptionalPedal.looper => Icons.loop,
@@ -1186,6 +1724,9 @@ extension OptionalPedalDetails on OptionalPedal {
   EffectKind? get effect => switch (this) {
         OptionalPedal.eq => EffectKind.eq,
         OptionalPedal.chorus => EffectKind.chorus,
+        OptionalPedal.flanger => EffectKind.flanger,
+        OptionalPedal.tremolo => EffectKind.tremolo,
+        OptionalPedal.octaver => EffectKind.octaver,
         OptionalPedal.delay => EffectKind.delay,
         OptionalPedal.reverb => EffectKind.reverb,
         OptionalPedal.looper => null,
@@ -1225,6 +1766,9 @@ extension EffectKindDetails on EffectKind {
         EffectKind.compressor => 'COMP',
         EffectKind.eq => 'EQ',
         EffectKind.chorus => 'CHORUS',
+        EffectKind.flanger => 'FLANGER',
+        EffectKind.tremolo => 'TREMOLO',
+        EffectKind.octaver => 'OCTAVER',
         EffectKind.delay => 'DELAY',
         EffectKind.reverb => 'REVERB',
       };
@@ -1234,6 +1778,9 @@ extension EffectKindDetails on EffectKind {
         EffectKind.compressor => Icons.compress,
         EffectKind.eq => Icons.equalizer,
         EffectKind.chorus => Icons.waves,
+        EffectKind.flanger => Icons.waterfall_chart,
+        EffectKind.tremolo => Icons.vibration,
+        EffectKind.octaver => Icons.south,
         EffectKind.delay => Icons.repeat,
         EffectKind.reverb => Icons.blur_on,
       };
@@ -1243,9 +1790,157 @@ extension EffectKindDetails on EffectKind {
         EffectKind.compressor => const Color(0xff1d8ccf),
         EffectKind.eq => const Color(0xff18b1be),
         EffectKind.chorus => const Color(0xff315ccf),
+        EffectKind.flanger => const Color(0xff7156d7),
+        EffectKind.tremolo => const Color(0xff00a99a),
+        EffectKind.octaver => const Color(0xff7a65dd),
         EffectKind.delay => const Color(0xff147cd1),
         EffectKind.reverb => const Color(0xff5466cf),
       };
+}
+
+/// A deliberately small, non-modal check-in after an AI rig is loaded. It is
+/// an overlay rather than a dialog so the guitarist can keep playing while
+/// deciding whether the result belongs in their local Tone Memory.
+class _ToneCheckBanner extends StatefulWidget {
+  const _ToneCheckBanner({
+    required this.query,
+    required this.onDismiss,
+    required this.onNotQuite,
+    required this.onSave,
+  });
+
+  final String query;
+  final VoidCallback onDismiss;
+  final VoidCallback onNotQuite;
+  final Future<void> Function() onSave;
+
+  @override
+  State<_ToneCheckBanner> createState() => _ToneCheckBannerState();
+}
+
+class _ToneCheckBannerState extends State<_ToneCheckBanner> {
+  var _saving = false;
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    await widget.onSave();
+    if (mounted) setState(() => _saving = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: Material(
+            color: Colors.transparent,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(14, 10, 10, 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: LostChrome.ice, width: 1.3),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xff267cc4),
+                      Color(0xff123d7e),
+                      Color(0xff081a42),
+                    ],
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x7729b9ff),
+                      blurRadius: 16,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_awesome,
+                            size: 17, color: LostChrome.lime),
+                        const SizedBox(width: 7),
+                        Text(
+                          'TONE CHECK',
+                          style:
+                              Theme.of(context).textTheme.labelLarge?.copyWith(
+                                    color: LostChrome.pearl,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 1.3,
+                                  ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          onPressed: widget.onDismiss,
+                          icon: const Icon(Icons.close_rounded),
+                          color: LostChrome.pearl,
+                          tooltip: 'Dismiss tone check',
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ],
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4, bottom: 10),
+                      child: Text(
+                        'Does this sound like “${widget.query}”?',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: LostChrome.ice,
+                              fontWeight: FontWeight.w700,
+                            ),
+                      ),
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        OutlinedButton(
+                          onPressed: _saving ? null : widget.onNotQuite,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: LostChrome.pearl,
+                            side: const BorderSide(color: LostChrome.ice),
+                          ),
+                          child: const Text('NOT QUITE'),
+                        ),
+                        const SizedBox(width: 9),
+                        FilledButton.icon(
+                          onPressed: _saving ? null : _save,
+                          icon: _saving
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: LostChrome.navy,
+                                  ),
+                                )
+                              : const Icon(Icons.bookmark_added_outlined),
+                          label: Text(_saving ? 'SAVING' : 'YES, SAVE'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class Pedalboard extends StatelessWidget {
@@ -1253,6 +1948,9 @@ class Pedalboard extends StatelessWidget {
     required this.snapshot,
     required this.onSlotOpen,
     required this.onSlotToggle,
+    required this.onCabinetOpen,
+    required this.onCabinetToggle,
+    required this.onControlChanged,
     required this.onEffectOpen,
     required this.onEffectToggle,
     required this.onLooperOpen,
@@ -1263,6 +1961,9 @@ class Pedalboard extends StatelessWidget {
   final EngineSnapshot snapshot;
   final ValueChanged<ModelSlot> onSlotOpen;
   final Future<void> Function(ModelSlot, bool) onSlotToggle;
+  final VoidCallback onCabinetOpen;
+  final Future<void> Function(bool bypassed) onCabinetToggle;
+  final Future<void> Function(String, double) onControlChanged;
   final ValueChanged<EffectKind> onEffectOpen;
   final Future<void> Function(EffectKind, bool) onEffectToggle;
   final VoidCallback onLooperOpen;
@@ -1272,7 +1973,7 @@ class Pedalboard extends StatelessWidget {
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
           final tileHeight =
-              (constraints.maxHeight - 42).clamp(72.0, 126.0).toDouble();
+              (constraints.maxHeight - 42).clamp(72.0, 520.0).toDouble();
           _PedalTile effectTile(EffectKind effect) => _PedalTile(
                 label: effect.label,
                 category:
@@ -1289,7 +1990,9 @@ class Pedalboard extends StatelessWidget {
                     onEffectToggle(effect, snapshot.effectEnabled(effect)),
               );
           final optionalPedals = OptionalPedal.values
-              .where(snapshot.pedalVisible)
+              .where((pedal) =>
+                  pedal != OptionalPedal.octaver &&
+                  snapshot.pedalVisible(pedal))
               .toList(growable: false);
           return ClipRRect(
             borderRadius: BorderRadius.circular(14),
@@ -1330,83 +2033,115 @@ class Pedalboard extends StatelessWidget {
                               fontSize: 11,
                             )),
                         Spacer(),
-                        Text('SWIPE TO EXPLORE',
+                        Text('DRAG TO EXPLORE',
                             style: TextStyle(
                                 color: Color(0xff9ed9ff), fontSize: 10)),
                       ],
                     ),
                   ),
                   Expanded(
-                    child: Scrollbar(
-                      child: Semantics(
-                        label: 'Scrollable pedal signal path',
-                        child: ListView(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.fromLTRB(9, 3, 9, 16),
-                          children: [
-                            effectTile(EffectKind.gate),
-                            const _SignalArrow(),
-                            effectTile(EffectKind.compressor),
-                            const _SignalArrow(),
-                            _PedalTile(
-                              label: 'DRIVE NAM',
-                              category: PedalCategory.nam,
-                              status: snapshot.preModel == null
-                                  ? 'EMPTY'
-                                  : snapshot.preBypassed
-                                      ? 'BYPASS'
-                                      : 'ON',
-                              icon: Icons.bolt,
-                              active: snapshot.preModel != null &&
-                                  !snapshot.preBypassed,
-                              height: tileHeight,
-                              disabled: !snapshot.connected,
-                              onTap: () => onSlotOpen(ModelSlot.pre),
-                              onFootswitch: () => onSlotToggle(
-                                  ModelSlot.pre, !snapshot.preBypassed),
-                            ),
-                            const _SignalArrow(),
-                            _PedalTile(
-                              label: 'AMP NAM',
-                              category: PedalCategory.nam,
-                              status: snapshot.model == null
-                                  ? 'EMPTY'
-                                  : snapshot.ampBypassed
-                                      ? 'BYPASS'
-                                      : 'ON',
-                              icon: Icons.speaker,
-                              active: snapshot.model != null &&
-                                  !snapshot.ampBypassed,
-                              height: tileHeight,
-                              disabled: !snapshot.connected,
-                              onTap: () => onSlotOpen(ModelSlot.amp),
-                              onFootswitch: () => onSlotToggle(
-                                  ModelSlot.amp, !snapshot.ampBypassed),
-                            ),
-                            for (final pedal in optionalPedals) ...[
+                    child: ScrollConfiguration(
+                      behavior: const _PedalboardScrollBehavior(),
+                      child: Scrollbar(
+                        child: Semantics(
+                          label: 'Scrollable pedal signal path',
+                          child: ListView(
+                            scrollDirection: Axis.horizontal,
+                            padding: EdgeInsets.fromLTRB(
+                                9, tileHeight >= 260 ? 24 : 3, 9, 16),
+                            children: [
+                              effectTile(EffectKind.gate),
                               const _SignalArrow(),
-                              if (pedal.effect case final effect?)
-                                effectTile(effect),
-                              if (pedal == OptionalPedal.looper)
-                                _PedalTile(
-                                  label: 'LOOPER',
-                                  category: PedalCategory.looper,
-                                  status: snapshot.looperMode.toUpperCase(),
-                                  icon: Icons.loop,
-                                  active: snapshot.looperMode != 'stopped',
-                                  height: tileHeight,
-                                  disabled: !snapshot.connected,
-                                  onTap: onLooperOpen,
-                                  onFootswitch: onLooperOpen,
-                                ),
+                              effectTile(EffectKind.compressor),
+                              if (snapshot.octaverVisible) ...[
+                                const _SignalArrow(),
+                                effectTile(EffectKind.octaver),
+                              ],
+                              const _SignalArrow(),
+                              _ChromeDriveNamTile(
+                                status: snapshot.preModel == null
+                                    ? 'EMPTY'
+                                    : snapshot.preBypassed
+                                        ? 'BYPASS'
+                                        : 'ON',
+                                active: snapshot.preModel != null &&
+                                    !snapshot.preBypassed,
+                                height: tileHeight,
+                                disabled: !snapshot.connected,
+                                modelName: snapshot.preModel?.split('/').last,
+                                driveDb: snapshot.pedalDriveDb,
+                                mix: snapshot.pedalMix,
+                                levelDb: snapshot.pedalLevelDb,
+                                onControlChanged: onControlChanged,
+                                onTap: () => onSlotOpen(ModelSlot.pre),
+                                onFootswitch: () => onSlotToggle(
+                                    ModelSlot.pre, !snapshot.preBypassed),
+                              ),
+                              const _SignalArrow(),
+                              _SkylineAmpHeadTile(
+                                status: snapshot.model == null
+                                    ? 'EMPTY'
+                                    : snapshot.ampBypassed
+                                        ? 'BYPASS'
+                                        : 'ON',
+                                active: snapshot.model != null &&
+                                    !snapshot.ampBypassed,
+                                height: tileHeight,
+                                disabled: !snapshot.connected,
+                                modelName: snapshot.model?.split('/').last,
+                                bassDb: snapshot.ampBassDb,
+                                midDb: snapshot.ampMidDb,
+                                trebleDb: snapshot.ampTrebleDb,
+                                volumeDb: snapshot.ampVolumeDb,
+                                onControlChanged: onControlChanged,
+                                onTap: () => onSlotOpen(ModelSlot.amp),
+                                onFootswitch: () => onSlotToggle(
+                                    ModelSlot.amp, !snapshot.ampBypassed),
+                              ),
+                              const _SignalArrow(),
+                              _RoadcaseCabinetTile(
+                                status: snapshot.cabinetIr == null
+                                    ? 'EMPTY'
+                                    : snapshot.cabinetEnabled
+                                        ? 'ON'
+                                        : 'BYPASS',
+                                active: snapshot.cabinetEnabled,
+                                height: tileHeight,
+                                disabled: !snapshot.connected,
+                                irName: snapshot.cabinetIr?.split('/').last,
+                                gainDb: snapshot.cabinetGainDb,
+                                lowCutHz: snapshot.cabinetLowCutHz,
+                                highCutHz: snapshot.cabinetHighCutHz,
+                                onControlChanged: onControlChanged,
+                                onTap: onCabinetOpen,
+                                onFootswitch: () =>
+                                    onCabinetToggle(snapshot.cabinetEnabled),
+                              ),
+                              for (final pedal in optionalPedals) ...[
+                                const _SignalArrow(),
+                                if (pedal.effect case final effect?)
+                                  effectTile(effect),
+                                if (pedal == OptionalPedal.looper)
+                                  _PedalTile(
+                                    label: 'LOOPER',
+                                    category: PedalCategory.looper,
+                                    status: snapshot.looperMode.toUpperCase(),
+                                    icon: Icons.loop,
+                                    active: snapshot.looperMode != 'stopped',
+                                    height: tileHeight,
+                                    disabled: !snapshot.connected,
+                                    onTap: onLooperOpen,
+                                    onFootswitch: onLooperOpen,
+                                  ),
+                              ],
+                              const _SignalArrow(),
+                              _AddPedalTile(
+                                height: tileHeight,
+                                disabled: !snapshot.connected,
+                                onTap: onAddPedal,
+                              ),
                             ],
-                            const _SignalArrow(),
-                            _AddPedalTile(
-                              height: tileHeight,
-                              disabled: !snapshot.connected,
-                              onTap: onAddPedal,
-                            ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
@@ -1500,6 +2235,20 @@ class _AddPedalTile extends StatelessWidget {
   }
 }
 
+/// Lets desktop users grab the pedal signal path directly with a mouse,
+/// matching the touch-first interaction on the device display.
+class _PedalboardScrollBehavior extends MaterialScrollBehavior {
+  const _PedalboardScrollBehavior();
+
+  @override
+  Set<ui.PointerDeviceKind> get dragDevices => {
+        ui.PointerDeviceKind.touch,
+        ui.PointerDeviceKind.mouse,
+        ui.PointerDeviceKind.stylus,
+        ui.PointerDeviceKind.trackpad,
+      };
+}
+
 class _SignalArrow extends StatelessWidget {
   const _SignalArrow();
 
@@ -1508,6 +2257,1295 @@ class _SignalArrow extends StatelessWidget {
         width: 18,
         child: Icon(Icons.chevron_right, size: 18, color: Color(0xff9eeaff)),
       );
+}
+
+/// A NAM-specific stompbox face. Unlike the utility/effect tiles, this is
+/// deliberately shaped like a familiar overdrive pedal so the board reads as
+/// guitar hardware before the player opens its detailed controls.
+class _ChromeDriveNamTile extends StatefulWidget {
+  const _ChromeDriveNamTile({
+    required this.status,
+    required this.active,
+    required this.height,
+    required this.disabled,
+    required this.modelName,
+    required this.driveDb,
+    required this.mix,
+    required this.levelDb,
+    required this.onControlChanged,
+    required this.onTap,
+    required this.onFootswitch,
+  });
+
+  final String status;
+  final bool active;
+  final double height;
+  final bool disabled;
+  final String? modelName;
+  final double driveDb;
+  final double mix;
+  final double levelDb;
+  final Future<void> Function(String, double) onControlChanged;
+  final VoidCallback onTap;
+  final VoidCallback onFootswitch;
+
+  @override
+  State<_ChromeDriveNamTile> createState() => _ChromeDriveNamTileState();
+}
+
+class _ChromeDriveNamTileState extends State<_ChromeDriveNamTile> {
+  late double _driveDb;
+  late double _mix;
+  late double _levelDb;
+
+  @override
+  void initState() {
+    super.initState();
+    _driveDb = widget.driveDb;
+    _mix = widget.mix;
+    _levelDb = widget.levelDb;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChromeDriveNamTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.driveDb != widget.driveDb) _driveDb = widget.driveDb;
+    if (oldWidget.mix != widget.mix) _mix = widget.mix;
+    if (oldWidget.levelDb != widget.levelDb) _levelDb = widget.levelDb;
+  }
+
+  void _adjust(String key, double delta, double minimum, double maximum) {
+    final current = switch (key) {
+      'pedal_drive_db' => _driveDb,
+      'pedal_mix' => _mix,
+      _ => _levelDb,
+    };
+    final value = (current + delta).clamp(minimum, maximum).toDouble();
+    setState(() {
+      switch (key) {
+        case 'pedal_drive_db':
+          _driveDb = value;
+        case 'pedal_mix':
+          _mix = value;
+        default:
+          _levelDb = value;
+      }
+    });
+  }
+
+  void _commit(String key) {
+    final value = switch (key) {
+      'pedal_drive_db' => _driveDb,
+      'pedal_mix' => _mix,
+      _ => _levelDb,
+    };
+    unawaited(widget.onControlChanged(key, value));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final compact = widget.height < 108;
+    final dense = widget.height < 90;
+    final showModelScreen = widget.height >= 300;
+    final roomy = widget.height >= 260;
+    final tall = widget.height >= 390;
+    final name = widget.modelName?.replaceAll('.nam', '') ?? 'CHOOSE A MODEL';
+    final active = widget.active;
+    final disabled = widget.disabled;
+    final status = widget.status;
+    final onTap = widget.onTap;
+    final onFootswitch = widget.onFootswitch;
+    return SizedBox(
+      width: dense
+          ? 112
+          : compact
+              ? 146
+              : tall
+                  ? 236
+                  : roomy
+                      ? 204
+                      : 174,
+      height: widget.height,
+      child: Opacity(
+        opacity: disabled ? .5 : 1,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(dense ? 12 : 18),
+            onTap: disabled ? null : onTap,
+            child: Container(
+              margin: EdgeInsets.symmetric(vertical: dense ? 2 : 3),
+              padding: EdgeInsets.fromLTRB(
+                  dense
+                      ? 6
+                      : roomy
+                          ? 13
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 11
+                          : 6,
+                  dense
+                      ? 6
+                      : roomy
+                          ? 13
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 11
+                          : 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 12 : 18),
+                border: Border.all(
+                    color: active ? LostChrome.pearl : const Color(0xff77b8ee),
+                    width: active ? 1.5 : 1.1),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: active
+                      ? const [
+                          Color(0xff4bd5ff),
+                          Color(0xff197bd0),
+                          Color(0xff0a2865)
+                        ]
+                      : const [
+                          Color(0xff194c82),
+                          Color(0xff12366c),
+                          Color(0xff09204b)
+                        ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: active
+                        ? LostChrome.electric.withValues(alpha: .62)
+                        : Colors.black54,
+                    blurRadius: active ? 15 : 5,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              foregroundDecoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 12 : 18),
+                gradient: const LinearGradient(
+                  begin: Alignment(-1, -1),
+                  end: Alignment(.55, .1),
+                  colors: [
+                    Color(0x55efffff),
+                    Color(0x141de3ff),
+                    Colors.transparent
+                  ],
+                  stops: [0, .28, .58],
+                ),
+              ),
+              child: Column(
+                children: [
+                  Row(children: [
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                          horizontal: dense
+                              ? 3
+                              : roomy
+                                  ? 8
+                                  : 5,
+                          vertical: dense
+                              ? 1
+                              : roomy
+                                  ? 4
+                                  : 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xff063a7c).withValues(alpha: .76),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(
+                            color: LostChrome.ice.withValues(alpha: .78)),
+                      ),
+                      child: DefaultTextStyle(
+                        style: TextStyle(
+                            fontSize: dense
+                                ? 5.5
+                                : roomy
+                                    ? 9
+                                    : 6.5,
+                            color: LostChrome.pearl,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: .35),
+                        child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('NAM'),
+                              Text(' / DRIVE'),
+                            ]),
+                      ),
+                    ),
+                    const Spacer(),
+                    Container(
+                      width: dense
+                          ? 6
+                          : roomy
+                              ? 13
+                              : 8,
+                      height: dense
+                          ? 6
+                          : roomy
+                              ? 13
+                              : 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color:
+                            active ? LostChrome.lime : const Color(0xff071a3a),
+                        boxShadow: active
+                            ? const [
+                                BoxShadow(color: LostChrome.lime, blurRadius: 8)
+                              ]
+                            : null,
+                      ),
+                    ),
+                  ]),
+                  SizedBox(
+                      height: dense
+                          ? 2
+                          : roomy
+                              ? 9
+                              : 4),
+                  Text('DRIVE NAM',
+                      style: TextStyle(
+                          color: LostChrome.pearl,
+                          fontSize: dense
+                              ? 9
+                              : compact
+                                  ? 11
+                                  : roomy
+                                      ? 23
+                                      : 13,
+                          fontWeight: FontWeight.w900,
+                          fontStyle: FontStyle.italic,
+                          letterSpacing: dense ? 0 : .3)),
+                  if (roomy) const Spacer(),
+                  if (!dense) ...[
+                    SizedBox(
+                        height: compact
+                            ? 2
+                            : roomy
+                                ? 10
+                                : 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _ChromeKnob(
+                          label: 'DRIVE',
+                          position: _driveDb / 24,
+                          size: roomy ? (tall ? 58 : 44) : 27,
+                          onDelta: (delta) =>
+                              _adjust('pedal_drive_db', delta * .18, 0, 24),
+                          onCommit: () => _commit('pedal_drive_db'),
+                        ),
+                        SizedBox(width: roomy ? 12 : 5),
+                        _ChromeKnob(
+                          label: 'MIX',
+                          position: _mix,
+                          size: roomy ? (tall ? 58 : 44) : 27,
+                          onDelta: (delta) =>
+                              _adjust('pedal_mix', delta * .01, 0, 1),
+                          onCommit: () => _commit('pedal_mix'),
+                        ),
+                        SizedBox(width: roomy ? 12 : 5),
+                        _ChromeKnob(
+                          label: 'LEVEL',
+                          position: (_levelDb + 24) / 36,
+                          size: roomy ? (tall ? 58 : 44) : 27,
+                          onDelta: (delta) =>
+                              _adjust('pedal_level_db', delta * .22, -24, 12),
+                          onCommit: () => _commit('pedal_level_db'),
+                        ),
+                      ],
+                    ),
+                  ],
+                  if (showModelScreen)
+                    Padding(
+                      padding: EdgeInsets.only(
+                          top: compact
+                              ? 2
+                              : roomy
+                                  ? 12
+                                  : 4),
+                      child: Container(
+                        width: double.infinity,
+                        padding: EdgeInsets.symmetric(
+                            horizontal: roomy ? 9 : 5, vertical: roomy ? 6 : 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xaa021634),
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(
+                              color: LostChrome.ice.withValues(alpha: .62)),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x6615bfff), blurRadius: 5)
+                          ],
+                        ),
+                        child: Text(name,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: LostChrome.ice.withValues(alpha: .95),
+                                fontSize: compact
+                                    ? 6.5
+                                    : roomy
+                                        ? 12
+                                        : 8,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: .25)),
+                      ),
+                    ),
+                  const Spacer(),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(dense ? 6 : 10),
+                    onTap: disabled ? null : onFootswitch,
+                    child: Container(
+                      width: double.infinity,
+                      height: dense
+                          ? 16
+                          : compact
+                              ? 22
+                              : roomy
+                                  ? (tall ? 56 : 42)
+                                  : 29,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(dense ? 6 : 10),
+                        border: Border.all(color: const Color(0xffe5fbff)),
+                        gradient: const LinearGradient(colors: [
+                          Color(0xffe8fbff),
+                          Color(0xff69c6ed),
+                          Color(0xffd7f7ff),
+                        ]),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Color(0x77001842), offset: Offset(0, 2))
+                        ],
+                      ),
+                      child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.power_settings_new,
+                                size: dense
+                                    ? 9
+                                    : roomy
+                                        ? 22
+                                        : 12,
+                                color: const Color(0xff16447f)),
+                            if (!dense) ...[
+                              const SizedBox(width: 4),
+                              Text(status,
+                                  style: TextStyle(
+                                      color: const Color(0xff16447f),
+                                      fontSize: compact
+                                          ? 7
+                                          : roomy
+                                              ? 13
+                                              : 8,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: .55)),
+                            ],
+                          ]),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChromeKnob extends StatelessWidget {
+  const _ChromeKnob({
+    required this.label,
+    required this.position,
+    required this.size,
+    required this.onDelta,
+    required this.onCommit,
+  });
+
+  final String label;
+  final double position;
+  final double size;
+  final ValueChanged<double> onDelta;
+  final VoidCallback onCommit;
+
+  @override
+  Widget build(BuildContext context) =>
+      Column(mainAxisSize: MainAxisSize.min, children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onVerticalDragUpdate: (details) => onDelta(-details.delta.dy),
+          onVerticalDragEnd: (_) => onCommit(),
+          child: Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: LostChrome.ice, width: size > 40 ? 2.8 : 1.7),
+              gradient: const RadialGradient(
+                  center: Alignment(-.3, -.45),
+                  colors: [
+                    Color(0xff9bedff),
+                    Color(0xff2674c1),
+                    Color(0xff08285d)
+                  ]),
+              boxShadow: const [
+                BoxShadow(color: Color(0x8822caff), blurRadius: 5)
+              ],
+            ),
+            child: Transform.rotate(
+              angle: -2.25 + position.clamp(0, 1) * 4.5,
+              child: Align(
+                  alignment: Alignment.topCenter,
+                  child: SizedBox(
+                      width: size > 40 ? 5 : 3,
+                      height: size * .29,
+                      child: ColoredBox(color: LostChrome.pearl))),
+            ),
+          ),
+        ),
+        SizedBox(height: size > 40 ? 3 : 1),
+        Text(label,
+            style: TextStyle(
+                color: LostChrome.pearl,
+                fontSize: size > 40 ? 9 : 5.5,
+                fontWeight: FontWeight.w900)),
+      ]);
+}
+
+/// The amp model is represented as a low, wide head rather than another
+/// stompbox. Its controls map directly to the NAM tone stack.
+class _SkylineAmpHeadTile extends StatefulWidget {
+  const _SkylineAmpHeadTile({
+    required this.status,
+    required this.active,
+    required this.height,
+    required this.disabled,
+    required this.modelName,
+    required this.bassDb,
+    required this.midDb,
+    required this.trebleDb,
+    required this.volumeDb,
+    required this.onControlChanged,
+    required this.onTap,
+    required this.onFootswitch,
+  });
+
+  final String status;
+  final bool active;
+  final double height;
+  final bool disabled;
+  final String? modelName;
+  final double bassDb;
+  final double midDb;
+  final double trebleDb;
+  final double volumeDb;
+  final Future<void> Function(String, double) onControlChanged;
+  final VoidCallback onTap;
+  final VoidCallback onFootswitch;
+
+  @override
+  State<_SkylineAmpHeadTile> createState() => _SkylineAmpHeadTileState();
+}
+
+class _SkylineAmpHeadTileState extends State<_SkylineAmpHeadTile> {
+  late double _bass;
+  late double _mid;
+  late double _treble;
+  late double _volume;
+
+  @override
+  void initState() {
+    super.initState();
+    _bass = widget.bassDb;
+    _mid = widget.midDb;
+    _treble = widget.trebleDb;
+    _volume = widget.volumeDb;
+  }
+
+  @override
+  void didUpdateWidget(covariant _SkylineAmpHeadTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bassDb != widget.bassDb) _bass = widget.bassDb;
+    if (oldWidget.midDb != widget.midDb) _mid = widget.midDb;
+    if (oldWidget.trebleDb != widget.trebleDb) _treble = widget.trebleDb;
+    if (oldWidget.volumeDb != widget.volumeDb) _volume = widget.volumeDb;
+  }
+
+  void _adjust(String key, double delta, double minimum, double maximum) {
+    final current = switch (key) {
+      'amp_bass_db' => _bass,
+      'amp_mid_db' => _mid,
+      'amp_treble_db' => _treble,
+      _ => _volume,
+    };
+    final value = (current + delta).clamp(minimum, maximum).toDouble();
+    setState(() {
+      switch (key) {
+        case 'amp_bass_db':
+          _bass = value;
+        case 'amp_mid_db':
+          _mid = value;
+        case 'amp_treble_db':
+          _treble = value;
+        default:
+          _volume = value;
+      }
+    });
+  }
+
+  void _commit(String key) {
+    final value = switch (key) {
+      'amp_bass_db' => _bass,
+      'amp_mid_db' => _mid,
+      'amp_treble_db' => _treble,
+      _ => _volume,
+    };
+    unawaited(widget.onControlChanged(key, value));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final compact = widget.height < 108;
+    final dense = widget.height < 90;
+    final showGrille = widget.height >= 300;
+    final showAmpModelScreen = widget.height >= 300;
+    final roomy = widget.height >= 260;
+    final tall = widget.height >= 390;
+    final name = widget.modelName?.replaceAll('.nam', '') ?? 'CHOOSE AN AMP';
+    final knobSize = roomy
+        ? (tall ? 54.0 : 42.0)
+        : compact
+            ? 20.0
+            : 27.0;
+    return SizedBox(
+      width: dense
+          ? 118
+          : compact
+              ? 160
+              : roomy
+                  ? (tall ? 270 : 232)
+                  : 198,
+      height: widget.height,
+      child: Opacity(
+        opacity: widget.disabled ? .5 : 1,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.disabled ? null : widget.onTap,
+            borderRadius: BorderRadius.circular(dense ? 12 : 16),
+            child: Container(
+              margin: EdgeInsets.symmetric(vertical: dense ? 2 : 3),
+              padding: EdgeInsets.fromLTRB(
+                  dense
+                      ? 6
+                      : roomy
+                          ? 14
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 12
+                          : 6,
+                  dense
+                      ? 6
+                      : roomy
+                          ? 14
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 11
+                          : 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 12 : 16),
+                border: Border.all(
+                    color: widget.active
+                        ? LostChrome.pearl
+                        : const Color(0xff77b8ee),
+                    width: widget.active ? 1.5 : 1.1),
+                gradient: widget.active
+                    ? const LinearGradient(colors: [
+                        Color(0xff55dcff),
+                        Color(0xff1a73c6),
+                        Color(0xff09275c),
+                      ])
+                    : const LinearGradient(colors: [
+                        Color(0xff194b82),
+                        Color(0xff12366c),
+                        Color(0xff09204b),
+                      ]),
+                boxShadow: [
+                  BoxShadow(
+                      color: widget.active
+                          ? LostChrome.electric.withValues(alpha: .62)
+                          : Colors.black54,
+                      blurRadius: widget.active ? 15 : 5,
+                      offset: const Offset(0, 3)),
+                ],
+              ),
+              foregroundDecoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 12 : 16),
+                gradient: const LinearGradient(
+                    begin: Alignment(-1, -1),
+                    end: Alignment(.55, .1),
+                    colors: [
+                      Color(0x55efffff),
+                      Color(0x141de3ff),
+                      Colors.transparent
+                    ],
+                    stops: [
+                      0,
+                      .28,
+                      .58
+                    ]),
+              ),
+              child: Column(children: [
+                if (!dense)
+                  SizedBox(
+                    height: 0,
+                    child: Transform.translate(
+                      offset: Offset(0, roomy ? -19 : -11),
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: Container(
+                          width: roomy ? 92 : 67,
+                          height: roomy ? 18 : 12,
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: LostChrome.ice.withValues(alpha: .9),
+                                width: roomy ? 3 : 2),
+                            borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(18)),
+                            boxShadow: const [
+                              BoxShadow(color: Color(0x6626caff), blurRadius: 7)
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                Row(children: [
+                  Container(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: dense
+                            ? 3
+                            : roomy
+                                ? 8
+                                : 5,
+                        vertical: dense
+                            ? 1
+                            : roomy
+                                ? 4
+                                : 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xff063a7c).withValues(alpha: .76),
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(
+                          color: LostChrome.ice.withValues(alpha: .78)),
+                    ),
+                    child: DefaultTextStyle(
+                      style: TextStyle(
+                          fontSize: dense
+                              ? 5.5
+                              : roomy
+                                  ? 9
+                                  : 6.5,
+                          color: LostChrome.pearl,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: .35),
+                      child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [Text('NAM'), Text(' / AMP')]),
+                    ),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    onTap: widget.disabled ? null : widget.onFootswitch,
+                    borderRadius: BorderRadius.circular(22),
+                    child: Container(
+                      width: dense
+                          ? 16
+                          : roomy
+                              ? 38
+                              : 25,
+                      height: dense
+                          ? 16
+                          : roomy
+                              ? 38
+                              : 25,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: LostChrome.ice, width: roomy ? 2 : 1),
+                        gradient: const LinearGradient(colors: [
+                          Color(0xffe7fbff),
+                          Color(0xff56bdea),
+                          Color(0xffd9f8ff)
+                        ]),
+                        boxShadow: widget.active
+                            ? const [
+                                BoxShadow(color: LostChrome.lime, blurRadius: 9)
+                              ]
+                            : null,
+                      ),
+                      child: Icon(Icons.power_settings_new,
+                          size: dense
+                              ? 9
+                              : roomy
+                                  ? 21
+                                  : 14,
+                          color: const Color(0xff16447f)),
+                    ),
+                  ),
+                ]),
+                SizedBox(
+                    height: dense
+                        ? 2
+                        : roomy
+                            ? 8
+                            : 4),
+                Text('NAM HEAD',
+                    style: TextStyle(
+                        color: LostChrome.pearl,
+                        fontSize: dense
+                            ? 8
+                            : roomy
+                                ? 22
+                                : 12,
+                        fontWeight: FontWeight.w900,
+                        fontStyle: FontStyle.italic,
+                        letterSpacing: dense ? 0 : .4)),
+                if (showGrille) ...[
+                  SizedBox(
+                      height: dense
+                          ? 2
+                          : roomy
+                              ? 10
+                              : 4),
+                  Container(
+                    width: double.infinity,
+                    height: roomy ? 31 : 10,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(5),
+                      border: Border.all(
+                          color: LostChrome.ice.withValues(alpha: .7)),
+                      gradient: const LinearGradient(colors: [
+                        Color(0xff03132e),
+                        Color(0xff2d75ad),
+                        Color(0xff03132e)
+                      ]),
+                    ),
+                    child: Row(
+                      children: List.generate(
+                          roomy ? 100 : 60,
+                          (index) => Expanded(
+                                child: Container(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: .12),
+                                  color: index.isEven
+                                      ? const Color(0xff010817)
+                                      : const Color(0xff7edfff)
+                                          .withValues(alpha: .38),
+                                ),
+                              )),
+                    ),
+                  ),
+                ],
+                if (roomy) const Spacer(),
+                if (!dense) ...[
+                  SizedBox(height: roomy ? 10 : 2),
+                  Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _ChromeKnob(
+                            label: 'BASS',
+                            position: (_bass + 12) / 24,
+                            size: knobSize,
+                            onDelta: (d) =>
+                                _adjust('amp_bass_db', d * .18, -12, 12),
+                            onCommit: () => _commit('amp_bass_db')),
+                        _ChromeKnob(
+                            label: 'MID',
+                            position: (_mid + 12) / 24,
+                            size: knobSize,
+                            onDelta: (d) =>
+                                _adjust('amp_mid_db', d * .18, -12, 12),
+                            onCommit: () => _commit('amp_mid_db')),
+                        _ChromeKnob(
+                            label: 'TREBLE',
+                            position: (_treble + 12) / 24,
+                            size: knobSize,
+                            onDelta: (d) =>
+                                _adjust('amp_treble_db', d * .18, -12, 12),
+                            onCommit: () => _commit('amp_treble_db')),
+                      ]),
+                  SizedBox(
+                      height: roomy
+                          ? 10
+                          : showAmpModelScreen
+                              ? 4
+                              : 0),
+                  Row(children: [
+                    _ChromeKnob(
+                        label: 'VOL',
+                        position: (_volume + 24) / 36,
+                        size: roomy
+                            ? knobSize * 1.22
+                            : showAmpModelScreen
+                                ? 31
+                                : 25,
+                        onDelta: (d) =>
+                            _adjust('amp_volume_db', d * .22, -24, 12),
+                        onCommit: () => _commit('amp_volume_db')),
+                    if (showAmpModelScreen) ...[
+                      const SizedBox(width: 7),
+                      Expanded(
+                          child: Container(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: roomy ? 8 : 5, vertical: roomy ? 6 : 3),
+                        decoration: BoxDecoration(
+                            color: const Color(0xaa021634),
+                            borderRadius: BorderRadius.circular(5),
+                            border: Border.all(
+                                color: LostChrome.ice.withValues(alpha: .62))),
+                        child: Text(name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                color: LostChrome.ice,
+                                fontSize: roomy ? 11 : 7,
+                                fontWeight: FontWeight.w900)),
+                      )),
+                    ],
+                  ]),
+                ],
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The cabinet is a permanent part of the rig, so it gets its own 4x12-style
+/// enclosure rather than reading as another generic effect stompbox.
+class _RoadcaseCabinetTile extends StatefulWidget {
+  const _RoadcaseCabinetTile({
+    required this.status,
+    required this.active,
+    required this.height,
+    required this.disabled,
+    required this.irName,
+    required this.gainDb,
+    required this.lowCutHz,
+    required this.highCutHz,
+    required this.onControlChanged,
+    required this.onTap,
+    required this.onFootswitch,
+  });
+
+  final String status;
+  final bool active;
+  final double height;
+  final bool disabled;
+  final String? irName;
+  final double gainDb;
+  final double lowCutHz;
+  final double highCutHz;
+  final Future<void> Function(String, double) onControlChanged;
+  final VoidCallback onTap;
+  final VoidCallback onFootswitch;
+
+  @override
+  State<_RoadcaseCabinetTile> createState() => _RoadcaseCabinetTileState();
+}
+
+class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
+  late double _gain;
+  late double _lowCut;
+  late double _highCut;
+
+  @override
+  void initState() {
+    super.initState();
+    _gain = widget.gainDb;
+    _lowCut = widget.lowCutHz;
+    _highCut = widget.highCutHz;
+  }
+
+  @override
+  void didUpdateWidget(covariant _RoadcaseCabinetTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.gainDb != widget.gainDb) _gain = widget.gainDb;
+    if (oldWidget.lowCutHz != widget.lowCutHz) _lowCut = widget.lowCutHz;
+    if (oldWidget.highCutHz != widget.highCutHz) _highCut = widget.highCutHz;
+  }
+
+  void _adjust(String control, double delta, double minimum, double maximum) {
+    final current = switch (control) {
+      'cabinet_gain_db' => _gain,
+      'cabinet_low_cut_hz' => _lowCut,
+      _ => _highCut,
+    };
+    final value = (current + delta).clamp(minimum, maximum).toDouble();
+    setState(() {
+      switch (control) {
+        case 'cabinet_gain_db':
+          _gain = value;
+        case 'cabinet_low_cut_hz':
+          _lowCut = value;
+        default:
+          _highCut = value;
+      }
+    });
+  }
+
+  void _commit(String control) {
+    final value = switch (control) {
+      'cabinet_gain_db' => _gain,
+      'cabinet_low_cut_hz' => _lowCut,
+      _ => _highCut,
+    };
+    unawaited(widget.onControlChanged(control, value));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dense = widget.height < 90;
+    final compact = widget.height < 108;
+    final roomy = widget.height >= 260;
+    final tall = widget.height >= 390;
+    final showGrille = widget.height >= 185;
+    final showControls = widget.height >= 260;
+    final knobSize = tall ? 52.0 : 40.0;
+    final irName = widget.irName?.replaceAll('.wav', '') ?? 'LOAD AN IR';
+    final active = widget.active;
+    return SizedBox(
+      width: dense
+          ? 118
+          : compact
+              ? 155
+              : roomy
+                  ? (tall ? 252 : 218)
+                  : 190,
+      height: widget.height,
+      child: Opacity(
+        opacity: widget.disabled ? .5 : 1,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.disabled ? null : widget.onTap,
+            borderRadius: BorderRadius.circular(dense ? 11 : 14),
+            child: Container(
+              margin: EdgeInsets.symmetric(vertical: dense ? 2 : 3),
+              padding: EdgeInsets.fromLTRB(
+                  dense
+                      ? 6
+                      : roomy
+                          ? 13
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 11
+                          : 6,
+                  dense
+                      ? 6
+                      : roomy
+                          ? 13
+                          : 8,
+                  dense
+                      ? 4
+                      : roomy
+                          ? 11
+                          : 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 11 : 14),
+                border: Border.all(
+                    color: active ? LostChrome.pearl : const Color(0xff76b7ec),
+                    width: active ? 1.6 : 1.1),
+                gradient: active
+                    ? const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Color(0xff38bce6),
+                          Color(0xff1764b6),
+                          Color(0xff071d52),
+                        ],
+                      )
+                    : const LinearGradient(colors: [
+                        Color(0xff164777),
+                        Color(0xff103265),
+                        Color(0xff071a42),
+                      ]),
+                boxShadow: [
+                  BoxShadow(
+                      color: active
+                          ? LostChrome.electric.withValues(alpha: .58)
+                          : Colors.black54,
+                      blurRadius: active ? 15 : 5,
+                      offset: const Offset(0, 3)),
+                ],
+              ),
+              foregroundDecoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(dense ? 11 : 14),
+                gradient: const LinearGradient(
+                    begin: Alignment(-1, -1),
+                    end: Alignment(.4, .15),
+                    colors: [
+                      Color(0x66efffff),
+                      Color(0x1812bcff),
+                      Colors.transparent
+                    ],
+                    stops: [
+                      0,
+                      .3,
+                      .62
+                    ]),
+              ),
+              child: Column(children: [
+                Row(children: [
+                  Container(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: dense
+                            ? 3
+                            : roomy
+                                ? 8
+                                : 5,
+                        vertical: dense
+                            ? 1
+                            : roomy
+                                ? 4
+                                : 2),
+                    decoration: BoxDecoration(
+                        color: const Color(0xff063a7c).withValues(alpha: .8),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(
+                            color: LostChrome.ice.withValues(alpha: .8))),
+                    child: Text('CAB / IR',
+                        style: TextStyle(
+                            color: LostChrome.pearl,
+                            fontSize: dense
+                                ? 5.5
+                                : roomy
+                                    ? 9
+                                    : 6.5,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: .35)),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    onTap: widget.disabled ? null : widget.onFootswitch,
+                    borderRadius: BorderRadius.circular(22),
+                    child: Container(
+                      width: dense
+                          ? 16
+                          : roomy
+                              ? 38
+                              : 25,
+                      height: dense
+                          ? 16
+                          : roomy
+                              ? 38
+                              : 25,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: LostChrome.ice, width: roomy ? 2 : 1),
+                        gradient: const LinearGradient(colors: [
+                          Color(0xffe7fbff),
+                          Color(0xff56bdea),
+                          Color(0xffd9f8ff),
+                        ]),
+                        boxShadow: active
+                            ? const [
+                                BoxShadow(color: LostChrome.lime, blurRadius: 9)
+                              ]
+                            : null,
+                      ),
+                      child: Icon(Icons.power_settings_new,
+                          size: dense
+                              ? 9
+                              : roomy
+                                  ? 21
+                                  : 14,
+                          color: const Color(0xff16447f)),
+                    ),
+                  ),
+                ]),
+                SizedBox(
+                    height: dense
+                        ? 2
+                        : roomy
+                            ? 8
+                            : 4),
+                Text('IR CAB',
+                    style: TextStyle(
+                        color: LostChrome.pearl,
+                        fontSize: dense
+                            ? 8
+                            : roomy
+                                ? 19
+                                : 12,
+                        fontWeight: FontWeight.w900,
+                        fontStyle: FontStyle.italic,
+                        letterSpacing: dense ? 0 : .3)),
+                if (showGrille) ...[
+                  SizedBox(height: roomy ? 10 : 4),
+                  Container(
+                    width: double.infinity,
+                    height: tall
+                        ? 115
+                        : roomy
+                            ? 82
+                            : 40,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(
+                          color: LostChrome.ice.withValues(alpha: .8)),
+                      color: const Color(0xff061a3d),
+                    ),
+                    child: Stack(alignment: Alignment.center, children: [
+                      Positioned.fill(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: CustomPaint(
+                              painter: const _CrossHatchGrillePainter()),
+                        ),
+                      ),
+                      Container(
+                        width: tall
+                            ? 76
+                            : roomy
+                                ? 57
+                                : 28,
+                        height: tall
+                            ? 76
+                            : roomy
+                                ? 57
+                                : 28,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: LostChrome.ice.withValues(alpha: .78),
+                              width: tall ? 3 : 2),
+                          gradient: const RadialGradient(colors: [
+                            Color(0xffd5fbff),
+                            Color(0xff277fc4),
+                            Color(0xff092653),
+                            Color(0xff020a21),
+                          ], stops: [
+                            0,
+                            .12,
+                            .42,
+                            1
+                          ]),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x883bdcff), blurRadius: 8)
+                          ],
+                        ),
+                      ),
+                    ]),
+                  ),
+                ],
+                if (showControls) ...[
+                  const Spacer(),
+                  Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _ChromeKnob(
+                            label: 'LEVEL',
+                            position: (_gain + 24) / 36,
+                            size: knobSize,
+                            onDelta: (d) =>
+                                _adjust('cabinet_gain_db', d * .22, -24, 12),
+                            onCommit: () => _commit('cabinet_gain_db')),
+                        _ChromeKnob(
+                            label: 'LOW CUT',
+                            position: (_lowCut - 20) / 480,
+                            size: knobSize,
+                            onDelta: (d) =>
+                                _adjust('cabinet_low_cut_hz', d * 3.2, 20, 500),
+                            onCommit: () => _commit('cabinet_low_cut_hz')),
+                        _ChromeKnob(
+                            label: 'HIGH CUT',
+                            position: (_highCut - 1000) / 19000,
+                            size: knobSize,
+                            onDelta: (d) => _adjust(
+                                'cabinet_high_cut_hz', d * 120, 1000, 20000),
+                            onCommit: () => _commit('cabinet_high_cut_hz')),
+                      ]),
+                  SizedBox(height: roomy ? 10 : 3),
+                  Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.symmetric(
+                        horizontal: roomy ? 8 : 5, vertical: roomy ? 5 : 2),
+                    decoration: BoxDecoration(
+                        color: const Color(0xaa021634),
+                        borderRadius: BorderRadius.circular(5),
+                        border: Border.all(
+                            color: LostChrome.ice.withValues(alpha: .62))),
+                    child: Text(irName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: LostChrome.ice,
+                            fontSize: roomy ? 10 : 7,
+                            fontWeight: FontWeight.w900)),
+                  ),
+                ] else if (!dense) ...[
+                  const Spacer(),
+                  Text(widget.status,
+                      style: TextStyle(
+                          color: active
+                              ? LostChrome.lime
+                              : const Color(0xffa6d7f2),
+                          fontSize: compact ? 8 : 10,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: .7)),
+                ],
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CrossHatchGrillePainter extends CustomPainter {
+  const _CrossHatchGrillePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final first = Paint()
+      ..color = const Color(0xff47d7ee).withValues(alpha: .58)
+      ..strokeWidth = 1.2;
+    final second = Paint()
+      ..color = const Color(0xffc1fbff).withValues(alpha: .42)
+      ..strokeWidth = 1.0;
+    const gap = 7.0;
+    for (var offset = -size.height; offset < size.width; offset += gap) {
+      canvas.drawLine(
+          Offset(offset, 0), Offset(offset + size.height, size.height), first);
+      canvas.drawLine(
+          Offset(offset, size.height), Offset(offset + size.height, 0), second);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CrossHatchGrillePainter oldDelegate) => false;
 }
 
 class _PedalTile extends StatelessWidget {
@@ -1537,13 +3575,19 @@ class _PedalTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final compact = height < 108;
     final dense = height < 90;
+    final roomy = height >= 260;
+    final tall = height >= 390;
     final face = active ? category.color : const Color(0xff123968);
     return SizedBox(
       width: dense
           ? 88
           : compact
               ? 105
-              : 124,
+              : tall
+                  ? 170
+                  : roomy
+                      ? 150
+                      : 124,
       height: height,
       child: Opacity(
         opacity: disabled ? 0.5 : 1,
@@ -1559,14 +3603,26 @@ class _PedalTile extends StatelessWidget {
                     ? 5
                     : compact
                         ? 7
-                        : 9,
-                dense ? 4 : 7,
+                        : roomy
+                            ? 14
+                            : 9,
+                dense
+                    ? 4
+                    : roomy
+                        ? 12
+                        : 7,
                 dense
                     ? 5
                     : compact
                         ? 7
-                        : 9,
-                dense ? 4 : 7,
+                        : roomy
+                            ? 14
+                            : 9,
+                dense
+                    ? 4
+                    : roomy
+                        ? 12
+                        : 7,
               ),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -1597,7 +3653,16 @@ class _PedalTile extends StatelessWidget {
                     children: [
                       Container(
                         padding: EdgeInsets.symmetric(
-                            horizontal: dense ? 3 : 5, vertical: dense ? 1 : 2),
+                            horizontal: dense
+                                ? 3
+                                : roomy
+                                    ? 8
+                                    : 5,
+                            vertical: dense
+                                ? 1
+                                : roomy
+                                    ? 4
+                                    : 2),
                         decoration: BoxDecoration(
                           color: category.color.withValues(alpha: .32),
                           borderRadius: BorderRadius.circular(5),
@@ -1608,7 +3673,11 @@ class _PedalTile extends StatelessWidget {
                           category.label,
                           style: TextStyle(
                             color: LostChrome.pearl,
-                            fontSize: dense ? 6 : 7,
+                            fontSize: dense
+                                ? 6
+                                : roomy
+                                    ? 10
+                                    : 7,
                             letterSpacing: dense ? .3 : .6,
                             fontWeight: FontWeight.w900,
                           ),
@@ -1616,8 +3685,16 @@ class _PedalTile extends StatelessWidget {
                       ),
                       const Spacer(),
                       Container(
-                        width: dense ? 5 : 7,
-                        height: dense ? 5 : 7,
+                        width: dense
+                            ? 5
+                            : roomy
+                                ? 13
+                                : 7,
+                        height: dense
+                            ? 5
+                            : roomy
+                                ? 13
+                                : 7,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: active
@@ -1633,25 +3710,34 @@ class _PedalTile extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (roomy) const Spacer(),
                   SizedBox(
                       height: dense
                           ? 1
                           : compact
                               ? 3
-                              : 6),
+                              : roomy
+                                  ? 13
+                                  : 6),
                   Icon(icon,
                       size: dense
                           ? 17
                           : compact
                               ? 23
-                              : 31,
+                              : tall
+                                  ? 72
+                                  : roomy
+                                      ? 52
+                                      : 31,
                       color: LostChrome.pearl),
                   SizedBox(
                       height: dense
                           ? 0
                           : compact
                               ? 2
-                              : 4),
+                              : roomy
+                                  ? 10
+                                  : 4),
                   Text(label,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1661,7 +3747,11 @@ class _PedalTile extends StatelessWidget {
                               ? 9
                               : compact
                                   ? 11
-                                  : 14,
+                                  : tall
+                                      ? 27
+                                      : roomy
+                                          ? 20
+                                          : 14,
                           letterSpacing: compact ? 0 : .2)),
                   if (!dense)
                     Text(status,
@@ -1671,7 +3761,11 @@ class _PedalTile extends StatelessWidget {
                           color: active
                               ? LostChrome.lime
                               : LostChrome.ice.withValues(alpha: .75),
-                          fontSize: compact ? 8 : 9,
+                          fontSize: compact
+                              ? 8
+                              : roomy
+                                  ? 13
+                                  : 9,
                           fontWeight: FontWeight.w800,
                           letterSpacing: .8,
                         )),
@@ -1684,7 +3778,11 @@ class _PedalTile extends StatelessWidget {
                           ? 15
                           : compact
                               ? 22
-                              : 28,
+                              : tall
+                                  ? 56
+                                  : roomy
+                                      ? 43
+                                      : 28,
                       width: double.infinity,
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
@@ -1701,15 +3799,19 @@ class _PedalTile extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(Icons.power_settings_new,
-                              size: dense ? 9 : 13,
+                              size: dense
+                                  ? 9
+                                  : roomy
+                                      ? 22
+                                      : 13,
                               color: const Color(0xff16447f)),
                           if (!compact) ...[
                             const SizedBox(width: 4),
                             Text(
                               active ? 'ON' : 'OFF',
-                              style: const TextStyle(
-                                color: Color(0xff16447f),
-                                fontSize: 9,
+                              style: TextStyle(
+                                color: const Color(0xff16447f),
+                                fontSize: roomy ? 13 : 9,
                                 fontWeight: FontWeight.w900,
                               ),
                             ),
@@ -1904,11 +4006,6 @@ class _PresetLibrarySheetState extends State<PresetLibrarySheet> {
                   onPressed: _busyId == null ? _refresh : null,
                   icon: const Icon(Icons.refresh),
                 ),
-                IconButton(
-                  tooltip: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
               ],
             ),
             if (_error != null)
@@ -2022,11 +4119,6 @@ class AddPedalSheet extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text('ADD A PEDAL',
                     style: Theme.of(context).textTheme.titleLarge),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
               ],
             ),
             const Text(
@@ -2134,36 +4226,135 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Text('$label CONTROLS',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
+            Text('$label CONTROLS',
+                style: const TextStyle(
+                    color: LostChrome.ice,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .8)),
+            const SizedBox(height: 3),
+            const Text(
+                'MODEL TRIM  •  Slide vertically for precise adjustment.',
+                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
             Expanded(
-              child: ListView(
-                children: [
-                  for (final control in _controls)
-                    _ControlSlider(
-                      definition: control,
-                      value: _values[control.keyName]!,
-                      onChanged: (value) =>
-                          setState(() => _values[control.keyName] = value),
-                      onChangeEnd: (value) => _commit(control, value),
-                    ),
-                ],
+              child: _VerticalControlBank(
+                controls: _controls,
+                values: _values,
+                onChanged: (control, value) =>
+                    setState(() => _values[control.keyName] = value),
+                onChangeEnd: _commit,
               ),
             ),
             OutlinedButton.icon(
               onPressed: widget.onChangeTone,
               icon: const Icon(Icons.library_music),
               label: const Text('CHANGE TONE'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CabinetControlsSheet extends StatefulWidget {
+  const CabinetControlsSheet({
+    required this.snapshot,
+    required this.onChanged,
+    required this.onChooseIr,
+    required this.onClear,
+    super.key,
+  });
+
+  final EngineSnapshot snapshot;
+  final Future<void> Function(String, double) onChanged;
+  final Future<void> Function() onChooseIr;
+  final Future<void> Function() onClear;
+
+  @override
+  State<CabinetControlsSheet> createState() => _CabinetControlsSheetState();
+}
+
+class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
+  late final Map<String, double> _values;
+
+  static const _controls = [
+    _ControlDefinition('cabinet_gain_db', 'LEVEL', -24, 12, 72, 'dB'),
+    _ControlDefinition('cabinet_low_cut_hz', 'LOW CUT', 20, 500, 48, 'Hz'),
+    _ControlDefinition(
+        'cabinet_high_cut_hz', 'HIGH CUT', 1000, 20000, 52, 'Hz'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _values = {
+      'cabinet_gain_db': widget.snapshot.cabinetGainDb,
+      'cabinet_low_cut_hz': widget.snapshot.cabinetLowCutHz,
+      'cabinet_high_cut_hz': widget.snapshot.cabinetHighCutHz,
+    };
+  }
+
+  Future<void> _commit(_ControlDefinition control, double value) async {
+    try {
+      await widget.onChanged(control.keyName, value);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name =
+        widget.snapshot.cabinetIr?.split('/').last ?? 'No cabinet IR loaded';
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('CABINET RESPONSE',
+                style: TextStyle(
+                    color: LostChrome.electric,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: .9)),
+            const SizedBox(height: 3),
+            Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: LostChrome.ice, fontSize: 13)),
+            const Text('WAV IR • Runs after the amp head',
+                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _VerticalControlBank(
+                controls: _controls,
+                values: _values,
+                onChanged: (control, value) =>
+                    setState(() => _values[control.keyName] = value),
+                onChangeEnd: _commit,
+              ),
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: widget.onChooseIr,
+                    icon: const Icon(Icons.folder_open),
+                    label: const Text('CHANGE IR'),
+                  ),
+                ),
+                if (widget.snapshot.cabinetIr != null) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: widget.onClear,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('CLEAR'),
+                  ),
+                ],
+              ],
             ),
           ],
         ),
@@ -2221,6 +4412,25 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
             _ControlDefinition('chorus_mix', 'MIX', 0, 1, 20, '%',
                 percent: true),
           ],
+        EffectKind.flanger => const [
+            _ControlDefinition('flanger_rate_hz', 'RATE', .05, 5, 40, 'Hz'),
+            _ControlDefinition('flanger_depth', 'DEPTH', 0, 1, 20, '%',
+                percent: true),
+            _ControlDefinition(
+                'flanger_feedback', 'FEEDBACK', -.85, .85, 34, '%',
+                percent: true),
+            _ControlDefinition('flanger_mix', 'MIX', 0, 1, 20, '%',
+                percent: true),
+          ],
+        EffectKind.tremolo => const [
+            _ControlDefinition('tremolo_rate_hz', 'RATE', .1, 18, 55, 'Hz'),
+            _ControlDefinition('tremolo_depth', 'DEPTH', 0, 1, 20, '%',
+                percent: true),
+          ],
+        EffectKind.octaver => const [
+            _ControlDefinition('octaver_mix', 'OCTAVE MIX', 0, 1, 20, '%',
+                percent: true),
+          ],
         EffectKind.delay => const [
             _ControlDefinition('delay_time_ms', 'TIME', 20, 1800, 89, 'ms'),
             _ControlDefinition('delay_feedback', 'FEEDBACK', 0, .92, 23, '%',
@@ -2256,33 +4466,21 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Icon(detail.icon, color: detail.color),
-                const SizedBox(width: 8),
-                Text('${detail.label} PEDAL',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const Spacer(),
-                IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close)),
-              ],
-            ),
-            const Text('Settings are saved with your preset.',
-                style: TextStyle(color: Color(0xffa2d5f5))),
+            Text('${detail.label.toUpperCase()} PARAMETERS',
+                style: TextStyle(
+                    color: detail.color,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: .9)),
+            const Text('Settings are saved with your preset. Drag vertically.',
+                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
             const SizedBox(height: 8),
             Expanded(
-              child: ListView(
-                children: [
-                  for (final control in _controls)
-                    _ControlSlider(
-                      definition: control,
-                      value: _values[control.keyName]!,
-                      onChanged: (value) =>
-                          setState(() => _values[control.keyName] = value),
-                      onChangeEnd: (value) => _commit(control, value),
-                    ),
-                ],
+              child: _VerticalControlBank(
+                controls: _controls,
+                values: _values,
+                onChanged: (control, value) =>
+                    setState(() => _values[control.keyName] = value),
+                onChangeEnd: _commit,
               ),
             ),
             if (widget.onRemove != null) ...[
@@ -2366,10 +4564,6 @@ class _LooperControlsSheetState extends State<LooperControlsSheet> {
                 const Text('30 SECOND LOOPER',
                     style:
                         TextStyle(fontWeight: FontWeight.w900, fontSize: 19)),
-                const Spacer(),
-                IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close)),
               ]),
               Text(
                   'Now: ${widget.mode.toUpperCase()}  •  loop audio clears after a restart',
@@ -2974,11 +5168,6 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
                   onPressed: _showHistory,
                   icon: const Icon(Icons.history),
                 ),
-                IconButton(
-                  tooltip: 'Close daily drill',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
               ],
             ),
             Text(_lesson.subtitle,
@@ -3480,6 +5669,1757 @@ String _practiceDate(DateTime value) {
   return '${months[value.month - 1]} ${value.day}, ${value.year} • $hour:${value.minute.toString().padLeft(2, '0')} $period';
 }
 
+enum TrackInput { guitar, vocal, backing }
+
+enum TrackRecordMode { diAndRig, diOnly }
+
+enum TrackPlaybackSource { rig, di }
+
+extension on TrackInput {
+  String get label => switch (this) {
+        TrackInput.guitar => 'GUITAR IN',
+        TrackInput.vocal => 'VOCAL IN',
+        TrackInput.backing => 'BACKING',
+      };
+
+  String get shortLabel => switch (this) {
+        TrackInput.guitar => 'GUITAR',
+        TrackInput.vocal => 'VOCAL',
+        TrackInput.backing => 'BACKING',
+      };
+
+  IconData get icon => switch (this) {
+        TrackInput.guitar => Icons.electric_bolt_rounded,
+        TrackInput.vocal => Icons.mic_none_rounded,
+        TrackInput.backing => Icons.music_note_rounded,
+      };
+
+  Color get color => switch (this) {
+        TrackInput.guitar => LostChrome.electric,
+        TrackInput.vocal => const Color(0xffff8bd5),
+        TrackInput.backing => LostChrome.lime,
+      };
+}
+
+class TrackLane {
+  const TrackLane({
+    required this.id,
+    required this.name,
+    required this.input,
+    this.takePath,
+    this.cleanTakePath,
+    this.durationSeconds,
+    this.recordMode = TrackRecordMode.diAndRig,
+    this.playbackSource = TrackPlaybackSource.rig,
+    this.muted = false,
+    this.solo = false,
+    this.volume = 1,
+    this.pan = 0,
+    this.clipStartSeconds = 0,
+    this.toneSnapshot,
+    this.riffId,
+  });
+
+  factory TrackLane.fromJson(Map<String, dynamic> json) => TrackLane(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        input: TrackInput.values.byName(json['input'] as String),
+        takePath: json['take_path'] as String?,
+        cleanTakePath: json['clean_take_path'] as String?,
+        durationSeconds: (json['duration_seconds'] as num?)?.toDouble(),
+        recordMode: TrackRecordMode.values.byName(
+            json['record_mode'] as String? ?? TrackRecordMode.diAndRig.name),
+        playbackSource: TrackPlaybackSource.values.byName(
+            json['playback_source'] as String? ?? TrackPlaybackSource.rig.name),
+        muted: json['muted'] as bool? ?? false,
+        solo: json['solo'] as bool? ?? false,
+        volume: (json['volume'] as num?)?.toDouble() ?? 1,
+        pan: (json['pan'] as num?)?.toDouble() ?? 0,
+        clipStartSeconds: (json['clip_start_seconds'] as num?)?.toDouble() ?? 0,
+        toneSnapshot: json['tone_snapshot'] as String?,
+        riffId: json['riff_id'] as String?,
+      );
+
+  final String id;
+  final String name;
+  final TrackInput input;
+  final String? takePath;
+  final String? cleanTakePath;
+  final double? durationSeconds;
+  final TrackRecordMode recordMode;
+  final TrackPlaybackSource playbackSource;
+  final bool muted;
+  final bool solo;
+  final double volume;
+  final double pan;
+  final double clipStartSeconds;
+  final String? toneSnapshot;
+  final String? riffId;
+
+  bool get hasTake => takePath != null;
+  String? get playbackPath => playbackSource == TrackPlaybackSource.di
+      ? cleanTakePath ?? takePath
+      : takePath ?? cleanTakePath;
+
+  TrackLane copyWith({
+    String? name,
+    TrackInput? input,
+    String? takePath,
+    String? cleanTakePath,
+    double? durationSeconds,
+    TrackRecordMode? recordMode,
+    TrackPlaybackSource? playbackSource,
+    bool? muted,
+    bool? solo,
+    double? volume,
+    double? pan,
+    double? clipStartSeconds,
+    String? toneSnapshot,
+    String? riffId,
+  }) =>
+      TrackLane(
+        id: id,
+        name: name ?? this.name,
+        input: input ?? this.input,
+        takePath: takePath ?? this.takePath,
+        cleanTakePath: cleanTakePath ?? this.cleanTakePath,
+        durationSeconds: durationSeconds ?? this.durationSeconds,
+        recordMode: recordMode ?? this.recordMode,
+        playbackSource: playbackSource ?? this.playbackSource,
+        muted: muted ?? this.muted,
+        solo: solo ?? this.solo,
+        volume: volume ?? this.volume,
+        pan: pan ?? this.pan,
+        clipStartSeconds: clipStartSeconds ?? this.clipStartSeconds,
+        toneSnapshot: toneSnapshot ?? this.toneSnapshot,
+        riffId: riffId ?? this.riffId,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'input': input.name,
+        if (takePath != null) 'take_path': takePath,
+        if (cleanTakePath != null) 'clean_take_path': cleanTakePath,
+        if (durationSeconds != null) 'duration_seconds': durationSeconds,
+        'record_mode': recordMode.name,
+        'playback_source': playbackSource.name,
+        'muted': muted,
+        'solo': solo,
+        'volume': volume,
+        'pan': pan,
+        'clip_start_seconds': clipStartSeconds,
+        if (toneSnapshot != null) 'tone_snapshot': toneSnapshot,
+        if (riffId != null) 'riff_id': riffId,
+      };
+}
+
+class TrackProject {
+  const TrackProject({
+    required this.id,
+    required this.name,
+    required this.createdAt,
+    required this.tracks,
+    this.bpm = 100,
+    this.timeSignature = '4/4',
+    this.countInBars = 1,
+  });
+
+  factory TrackProject.fromJson(Map<String, dynamic> json) => TrackProject(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+            json['created_at_ms'] as int? ?? 0),
+        tracks: (json['tracks'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TrackLane.fromJson)
+            .toList(growable: false),
+        bpm: (json['bpm'] as num?)?.toInt() ?? 100,
+        timeSignature: json['time_signature'] as String? ?? '4/4',
+        countInBars: (json['count_in_bars'] as num?)?.toInt() ?? 1,
+      );
+
+  final String id;
+  final String name;
+  final DateTime createdAt;
+  final List<TrackLane> tracks;
+  final int bpm;
+  final String timeSignature;
+  final int countInBars;
+
+  TrackProject copyWith({
+    String? name,
+    List<TrackLane>? tracks,
+    int? bpm,
+    String? timeSignature,
+    int? countInBars,
+  }) =>
+      TrackProject(
+        id: id,
+        name: name ?? this.name,
+        createdAt: createdAt,
+        tracks: tracks ?? this.tracks,
+        bpm: bpm ?? this.bpm,
+        timeSignature: timeSignature ?? this.timeSignature,
+        countInBars: countInBars ?? this.countInBars,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'created_at_ms': createdAt.millisecondsSinceEpoch,
+        'tracks': tracks.map((track) => track.toJson()).toList(),
+        'bpm': bpm,
+        'time_signature': timeSignature,
+        'count_in_bars': countInBars,
+      };
+}
+
+class TrackProjectStore {
+  TrackProjectStore({String? path}) : path = path ?? _defaultPath();
+
+  final String path;
+
+  static String _defaultPath() {
+    final configured = Platform.environment['PEDAL_TRACK_PROJECT_FILE'];
+    if (configured != null && configured.isNotEmpty) return configured;
+    final stateHome = Platform.environment['XDG_STATE_HOME'];
+    final home = Platform.environment['HOME'] ?? '.';
+    final root =
+        stateHome?.isNotEmpty == true ? stateHome! : '$home/.local/state';
+    return '$root/aero-dsp/track-projects.json';
+  }
+
+  Future<List<TrackProject>> load() async {
+    try {
+      final decoded =
+          jsonDecode(await File(path).readAsString()) as List<dynamic>;
+      return decoded
+          .whereType<Map<String, dynamic>>()
+          .map(TrackProject.fromJson)
+          .toList(growable: false);
+    } on FileSystemException {
+      return const [];
+    } on FormatException {
+      return const [];
+    }
+  }
+
+  Future<void> save(List<TrackProject> projects) async {
+    final destination = File(path);
+    await destination.parent.create(recursive: true);
+    final temporary = File('$path.new');
+    await temporary.writeAsString(
+        jsonEncode(projects.map((item) => item.toJson()).toList()));
+    await temporary.rename(path);
+  }
+}
+
+class TrackManagerSheet extends StatefulWidget {
+  TrackManagerSheet({
+    required this.client,
+    required this.catalog,
+    required this.toneSnapshot,
+    TrackProjectStore? store,
+    super.key,
+  }) : store = store ?? TrackProjectStore();
+
+  final ControlClient client;
+  final CatalogClient catalog;
+  final String toneSnapshot;
+  final TrackProjectStore store;
+
+  @override
+  State<TrackManagerSheet> createState() => _TrackManagerSheetState();
+}
+
+class _TrackManagerSheetState extends State<TrackManagerSheet> {
+  List<TrackProject> _projects = const [];
+  String? _selectedProjectId;
+  bool _loading = true;
+  String? _busyTrackId;
+  String? _error;
+  var _metronomeEnabled = false;
+  var _metronomeBpm = 100;
+  final List<Process> _players = [];
+  Timer? _loopTimer;
+  Timer? _playheadTimer;
+  var _transportPlaying = false;
+  var _transportLooping = false;
+  var _transportGeneration = 0;
+  var _transportPositionSeconds = 0.0;
+  StreamSubscription<MeterSnapshot>? _meterSubscription;
+  String? _armedTrackId;
+  String? _countingInTrackId;
+  var _liveInputLevel = 0.0;
+
+  TrackProject? get _project {
+    for (final project in _projects) {
+      if (project.id == _selectedProjectId) return project;
+    }
+    return _projects.isEmpty ? null : _projects.first;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _meterSubscription = widget.client.meters.listen((meter) {
+      final normalized = ((meter.inputDb + 60) / 60).clamp(0.0, 1.0);
+      if (mounted) setState(() => _liveInputLevel = normalized);
+    });
+  }
+
+  @override
+  void dispose() {
+    _stopTransport(repaint: false);
+    _meterSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _stopTransport({bool repaint = true}) async {
+    _transportGeneration++;
+    _loopTimer?.cancel();
+    _loopTimer = null;
+    _playheadTimer?.cancel();
+    _playheadTimer = null;
+    for (final player in _players) {
+      player.kill(ProcessSignal.sigterm);
+    }
+    _players.clear();
+    if (repaint && mounted) {
+      setState(() {
+        _transportPlaying = false;
+        _transportPositionSeconds = 0;
+      });
+    }
+  }
+
+  Future<void> _playTracks(Iterable<TrackLane> tracks,
+      {bool restart = true}) async {
+    final selected = tracks
+        .where((track) => track.playbackPath != null)
+        .toList(growable: false);
+    if (selected.isEmpty) {
+      setState(() => _error = 'Record or attach audio to a track first.');
+      return;
+    }
+    if (restart) await _stopTransport();
+    final generation = ++_transportGeneration;
+    final startedAt = DateTime.now();
+    if (mounted) {
+      setState(() {
+        _transportPlaying = true;
+        _transportPositionSeconds = 0;
+      });
+    }
+    _playheadTimer?.cancel();
+    _playheadTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
+      if (!mounted || generation != _transportGeneration) return;
+      setState(() => _transportPositionSeconds =
+          DateTime.now().difference(startedAt).inMilliseconds / 1000);
+    });
+    final hasSolo = selected.any((track) => track.solo);
+    final audible =
+        selected.where((track) => !track.muted && (!hasSolo || track.solo));
+    var endSeconds = 0.0;
+    for (final track in audible) {
+      final duration = track.durationSeconds ?? 0;
+      endSeconds = math.max(endSeconds, track.clipStartSeconds + duration);
+      unawaited(_launchTrack(track, generation));
+    }
+    if (endSeconds > 0) {
+      _loopTimer?.cancel();
+      _loopTimer =
+          Timer(Duration(milliseconds: (endSeconds * 1000).ceil()), () {
+        if (!mounted || generation != _transportGeneration) return;
+        if (_transportLooping) {
+          unawaited(_playTracks(selected));
+        } else {
+          unawaited(_stopTransport());
+        }
+      });
+    }
+  }
+
+  Future<void> _launchTrack(TrackLane track, int generation) async {
+    final path = track.playbackPath;
+    if (path == null) return;
+    if (track.clipStartSeconds > 0) {
+      await Future<void>.delayed(
+          Duration(milliseconds: (track.clipStartSeconds * 1000).round()));
+    }
+    if (!mounted || generation != _transportGeneration) return;
+    try {
+      final player = await Process.start('pw-play', [
+        '--volume',
+        track.volume.clamp(0.0, 1.0).toStringAsFixed(2),
+        path,
+      ]);
+      if (generation != _transportGeneration) {
+        player.kill(ProcessSignal.sigterm);
+        return;
+      }
+      _players.add(player);
+      unawaited(player.exitCode.then((_) => _players.remove(player)));
+    } on ProcessException {
+      if (mounted) {
+        setState(() =>
+            _error = 'PipeWire playback is not available on this device.');
+      }
+    }
+  }
+
+  Future<void> _load() async {
+    final projects = await widget.store.load();
+    if (!mounted) return;
+    setState(() {
+      _projects = projects;
+      _selectedProjectId = projects.isEmpty ? null : projects.first.id;
+      _loading = false;
+    });
+  }
+
+  Future<void> _persist(List<TrackProject> projects, {String? selected}) async {
+    setState(() {
+      _projects = projects;
+      _selectedProjectId = selected ?? _selectedProjectId;
+    });
+    try {
+      await widget.store.save(projects);
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Could not save project: $error');
+    }
+  }
+
+  Future<String?> _askName(String title, String initial) async {
+    final controller = TextEditingController(text: initial);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(labelText: 'Project name'),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCEL')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text.trim()),
+              child: const Text('CREATE')),
+        ],
+      ),
+    );
+    controller.dispose();
+    return name?.isNotEmpty == true ? name : null;
+  }
+
+  Future<void> _newProject() async {
+    final name = await _askName('NEW PROJECT', 'Untitled Project');
+    if (name == null) return;
+    final now = DateTime.now();
+    final project = TrackProject(
+      id: 'project-${now.microsecondsSinceEpoch}',
+      name: name,
+      createdAt: now,
+      tracks: [
+        TrackLane(
+          id: 'track-${now.microsecondsSinceEpoch}',
+          name: 'Guitar 1',
+          input: TrackInput.guitar,
+        ),
+      ],
+    );
+    await _persist([..._projects, project], selected: project.id);
+  }
+
+  Future<void> _addTrack() async {
+    final project = _project;
+    if (project == null) return;
+    final input = await showDialog<TrackInput>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('ADD TRACK'),
+        children: TrackInput.values
+            .map((input) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, input),
+                  child: Row(children: [
+                    Icon(input.icon, color: input.color),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(input.shortLabel)),
+                    if (input != TrackInput.guitar)
+                      const Text('SOON', style: TextStyle(fontSize: 10)),
+                  ]),
+                ))
+            .toList(growable: false),
+      ),
+    );
+    if (input == null) return;
+    final count =
+        project.tracks.where((track) => track.input == input).length + 1;
+    final track = TrackLane(
+      id: 'track-${DateTime.now().microsecondsSinceEpoch}',
+      name:
+          '${input.shortLabel.substring(0, 1)}${input.shortLabel.substring(1).toLowerCase()} $count',
+      input: input,
+    );
+    await _replaceProject(project.copyWith(tracks: [...project.tracks, track]));
+  }
+
+  Future<void> _replaceProject(TrackProject replacement) async {
+    await _persist(_projects
+        .map((project) => project.id == replacement.id ? replacement : project)
+        .toList(growable: false));
+  }
+
+  Future<void> _changeInput(TrackLane track, TrackInput input) async {
+    final project = _project;
+    if (project == null) return;
+    final tracks = project.tracks
+        .map((item) => item.id == track.id ? item.copyWith(input: input) : item)
+        .toList(growable: false);
+    await _replaceProject(project.copyWith(tracks: tracks));
+  }
+
+  Future<void> _updateTrack(TrackLane track, TrackLane replacement) async {
+    final project = _project;
+    if (project == null) return;
+    await _replaceProject(project.copyWith(
+      tracks: project.tracks
+          .map((item) => item.id == track.id ? replacement : item)
+          .toList(growable: false),
+    ));
+  }
+
+  Future<void> _reampTrack(TrackLane track) async {
+    final cleanPath = track.cleanTakePath;
+    if (cleanPath == null) {
+      setState(() => _error = 'This track has no clean DI source to reamp.');
+      return;
+    }
+    setState(() {
+      _busyTrackId = track.id;
+      _error = null;
+    });
+    try {
+      final preview = await widget.client.renderPreview(
+        source: PreviewSource.file,
+        path: cleanPath,
+        processed: true,
+      );
+      if (!mounted) return;
+      await _updateTrack(
+          track,
+          track.copyWith(
+            takePath: preview.path,
+            durationSeconds: preview.durationSeconds,
+            playbackSource: TrackPlaybackSource.rig,
+            toneSnapshot: widget.toneSnapshot,
+          ));
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Reamp failed: $error');
+    } finally {
+      if (mounted) setState(() => _busyTrackId = null);
+    }
+  }
+
+  Future<void> _trimExistingTrack(TrackLane track) async {
+    final cleanPath = track.cleanTakePath;
+    final processedPath = track.takePath;
+    final duration = track.durationSeconds;
+    if (cleanPath == null || processedPath == null || duration == null) {
+      setState(() => _error =
+          'This track does not have a paired DI and rig take to trim.');
+      return;
+    }
+    final selection = await showDialog<_TakeRange>(
+      context: context,
+      builder: (context) => _GuitarTakeTrimDialog(
+        availableSeconds: duration,
+        capacitySeconds: duration,
+      ),
+    );
+    if (selection == null) return;
+    setState(() => _busyTrackId = track.id);
+    try {
+      final trimmed = await widget.client.trimRiff(
+        name: '${track.name} trim',
+        cleanPath: cleanPath,
+        processedPath: processedPath,
+        startSeconds: selection.start,
+        endSeconds: selection.end,
+      );
+      if (!mounted) return;
+      await _updateTrack(
+          track,
+          track.copyWith(
+            cleanTakePath: trimmed.cleanPath,
+            takePath: trimmed.processedPath,
+            durationSeconds: trimmed.durationSeconds,
+            riffId: trimmed.id,
+          ));
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Trim failed: $error');
+    } finally {
+      if (mounted) setState(() => _busyTrackId = null);
+    }
+  }
+
+  Future<void> _attachBackingTrack(TrackLane source) async {
+    final riffId = source.riffId;
+    final project = _project;
+    if (riffId == null || project == null) {
+      setState(() =>
+          _error = 'Save a guitar take before attaching its backing tracks.');
+      return;
+    }
+    setState(() => _busyTrackId = source.id);
+    try {
+      final choices = (await widget.catalog.listBackingTracks(riffId))
+          .where((track) => track.status == 'ready' && track.path != null)
+          .toList(growable: false);
+      if (!mounted) return;
+      if (choices.isEmpty) {
+        setState(() => _error =
+            'No finished backing tracks exist for this take yet. Create one from Riff Vault first.');
+        return;
+      }
+      final selected = await showDialog<BackingTrack>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: const Text('ADD BACKING TRACK'),
+          children: choices
+              .map((track) => SimpleDialogOption(
+                    onPressed: () => Navigator.pop(context, track),
+                    child: ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.auto_awesome,
+                          color: LostChrome.lime),
+                      title: Text(track.style),
+                      subtitle: Text('${track.durationSeconds} sec'),
+                    ),
+                  ))
+              .toList(growable: false),
+        ),
+      );
+      if (selected == null || !mounted) return;
+      final lane = TrackLane(
+        id: 'track-${DateTime.now().microsecondsSinceEpoch}',
+        name:
+            'Backing ${project.tracks.where((track) => track.input == TrackInput.backing).length + 1}',
+        input: TrackInput.backing,
+        takePath: selected.path,
+        durationSeconds: selected.durationSeconds.toDouble(),
+        toneSnapshot: 'AI backing • ${selected.style}',
+      );
+      await _replaceProject(
+          project.copyWith(tracks: [...project.tracks, lane]));
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Could not attach backing track: $error');
+      }
+    } finally {
+      if (mounted) setState(() => _busyTrackId = null);
+    }
+  }
+
+  Future<void> _openTrackControls(TrackLane track) async {
+    var name = track.name;
+    var mode = track.recordMode;
+    var source = track.playbackSource;
+    var volume = track.volume;
+    var pan = track.pan;
+    var start = track.clipStartSeconds;
+    final values = await showDialog<_TrackControlValues>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('${track.name.toUpperCase()} CONTROLS'),
+          content: SizedBox(
+            width: 360,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextFormField(
+                initialValue: name,
+                maxLength: 40,
+                decoration: const InputDecoration(labelText: 'Track name'),
+                onChanged: (value) => name = value.trim(),
+              ),
+              DropdownButtonFormField<TrackRecordMode>(
+                initialValue: mode,
+                decoration: const InputDecoration(labelText: 'Record mode'),
+                items: const [
+                  DropdownMenuItem(
+                      value: TrackRecordMode.diAndRig,
+                      child: Text('DI + RIG (REAMP READY)')),
+                  DropdownMenuItem(
+                      value: TrackRecordMode.diOnly, child: Text('DI ONLY')),
+                ],
+                onChanged: (value) => setDialogState(() => mode = value!),
+              ),
+              DropdownButtonFormField<TrackPlaybackSource>(
+                initialValue: source,
+                decoration: const InputDecoration(labelText: 'Monitor source'),
+                items: const [
+                  DropdownMenuItem(
+                      value: TrackPlaybackSource.rig,
+                      child: Text('CURRENT RIG TAKE')),
+                  DropdownMenuItem(
+                      value: TrackPlaybackSource.di, child: Text('CLEAN DI')),
+                ],
+                onChanged: (value) => setDialogState(() => source = value!),
+              ),
+              const SizedBox(height: 8),
+              Text('VOLUME  ${(volume * 100).round()}%',
+                  style: const TextStyle(fontWeight: FontWeight.w900)),
+              Slider(
+                  value: volume,
+                  min: 0,
+                  max: 1,
+                  activeColor: LostChrome.lime,
+                  onChanged: (value) => setDialogState(() => volume = value)),
+              Text(
+                  'PAN  ${pan == 0 ? 'CENTER' : pan < 0 ? 'LEFT' : 'RIGHT'}',
+                  style: const TextStyle(fontWeight: FontWeight.w900)),
+              Slider(
+                  value: pan,
+                  min: -1,
+                  max: 1,
+                  activeColor: LostChrome.electric,
+                  onChanged: (value) => setDialogState(() => pan = value)),
+              Text('TIMELINE OFFSET  ${start.toStringAsFixed(1)} SEC',
+                  style: const TextStyle(fontWeight: FontWeight.w900)),
+              Slider(
+                  value: start,
+                  min: 0,
+                  max: 30,
+                  divisions: 60,
+                  activeColor: LostChrome.electric,
+                  onChanged: (value) => setDialogState(() => start = value)),
+              if (track.toneSnapshot != null)
+                Text('RECORDED WITH ${track.toneSnapshot}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Color(0xffa2d5f5), fontSize: 10)),
+            ]),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL')),
+            FilledButton(
+                onPressed: () => Navigator.pop(
+                    context,
+                    _TrackControlValues(
+                        name, mode, source, volume, pan, start)),
+                child: const Text('SAVE')),
+          ],
+        ),
+      ),
+    );
+    if (values == null) return;
+    await _updateTrack(
+        track,
+        track.copyWith(
+          name: values.name.isEmpty ? track.name : values.name,
+          recordMode: values.recordMode,
+          playbackSource: values.playbackSource,
+          volume: values.volume,
+          pan: values.pan,
+          clipStartSeconds: values.clipStartSeconds,
+        ));
+  }
+
+  Future<void> _removeTrack(TrackLane track) async {
+    final project = _project;
+    if (project == null) return;
+    await _replaceProject(project.copyWith(
+        tracks: project.tracks
+            .where((item) => item.id != track.id)
+            .toList(growable: false)));
+  }
+
+  Future<void> _duplicateTrack(TrackLane track) async {
+    final project = _project;
+    if (project == null) return;
+    final duplicate = TrackLane(
+      id: 'track-${DateTime.now().microsecondsSinceEpoch}',
+      name: '${track.name} copy',
+      input: track.input,
+      takePath: track.takePath,
+      cleanTakePath: track.cleanTakePath,
+      durationSeconds: track.durationSeconds,
+      recordMode: track.recordMode,
+      playbackSource: track.playbackSource,
+      volume: track.volume,
+      pan: track.pan,
+      clipStartSeconds: math.min(30, track.clipStartSeconds + 1),
+      toneSnapshot: track.toneSnapshot,
+      riffId: track.riffId,
+    );
+    await _replaceProject(
+        project.copyWith(tracks: [...project.tracks, duplicate]));
+  }
+
+  Future<void> _armTrackForCapture(
+      TrackLane track, TrackProject project) async {
+    final beatsPerBar =
+        int.tryParse(project.timeSignature.split('/').first) ?? 4;
+    final countInSeconds = project.countInBars * beatsPerBar * 60 / project.bpm;
+    final clickWasEnabled = _metronomeEnabled;
+    try {
+      if (!clickWasEnabled) {
+        await widget.client.setMetronome(true, project.bpm);
+      }
+      if (!mounted) return;
+      setState(() {
+        _armedTrackId = track.id;
+        _countingInTrackId = track.id;
+        _error = null;
+        _metronomeEnabled = true;
+        _metronomeBpm = project.bpm;
+      });
+      await Future<void>.delayed(
+          Duration(milliseconds: (countInSeconds * 1000).round()));
+      if (!mounted || _armedTrackId != track.id) return;
+      if (!clickWasEnabled) {
+        await widget.client.setMetronome(false, project.bpm);
+      }
+      if (!mounted || _armedTrackId != track.id) return;
+      setState(() {
+        _countingInTrackId = null;
+        _metronomeEnabled = clickWasEnabled;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'TAKE IS ROLLING — play now, then tap record again to trim and save.'),
+      ));
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _armedTrackId = null;
+          _countingInTrackId = null;
+          _error = 'Could not start count-in: $error';
+        });
+      }
+    }
+  }
+
+  Future<void> _record(TrackLane track) async {
+    if (track.input != TrackInput.guitar) {
+      setState(() => _error =
+          '${track.input.shortLabel} recording is coming in a later audio-engine pass.');
+      return;
+    }
+    final project = _project;
+    if (project == null) return;
+    if (_armedTrackId != track.id && project.countInBars > 0) {
+      await _armTrackForCapture(track, project);
+      return;
+    }
+    if (_armedTrackId == track.id) {
+      setState(() {
+        _armedTrackId = null;
+        _countingInTrackId = null;
+      });
+    }
+    setState(() {
+      _busyTrackId = track.id;
+      _error = null;
+    });
+    late RiffBufferStatus buffer;
+    try {
+      buffer = await widget.client.riffBufferStatus();
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _busyTrackId = null;
+          _error = 'Could not read the guitar take buffer: $error';
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    final selection = await showDialog<_TakeRange>(
+      context: context,
+      builder: (context) => _GuitarTakeTrimDialog(
+        availableSeconds: buffer.availableSeconds,
+        capacitySeconds: buffer.capacitySeconds,
+      ),
+    );
+    if (selection == null || !mounted) {
+      if (mounted) setState(() => _busyTrackId = null);
+      return;
+    }
+    setState(() {
+      _busyTrackId = track.id;
+      _error = null;
+    });
+    try {
+      final take = await widget.client.saveRiff(
+        '${project.name} • ${track.name}',
+        trimStartSeconds: selection.start,
+        trimEndSeconds: selection.end,
+      );
+      if (!mounted) return;
+      final updated = project.tracks
+          .map((item) => item.id == track.id
+              ? item
+                  .copyWith(
+                      takePath: take.processedPath,
+                      cleanTakePath: take.cleanPath,
+                      durationSeconds: take.durationSeconds)
+                  .copyWith(
+                    playbackSource: item.recordMode == TrackRecordMode.diOnly
+                        ? TrackPlaybackSource.di
+                        : TrackPlaybackSource.rig,
+                    toneSnapshot: widget.toneSnapshot,
+                    riffId: take.id,
+                  )
+              : item)
+          .toList(growable: false);
+      await _replaceProject(project.copyWith(tracks: updated));
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _busyTrackId = null);
+    }
+  }
+
+  Future<void> _showMetronome() async {
+    final project = _project;
+    var enabled = _metronomeEnabled;
+    var bpm = project?.bpm ?? _metronomeBpm;
+    var timeSignature = project?.timeSignature ?? '4/4';
+    var countInBars = project?.countInBars ?? 1;
+    final chosen = await showDialog<_MetronomeChoice>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.timer_outlined, color: LostChrome.lime),
+            SizedBox(width: 9),
+            Text('METRONOME'),
+          ]),
+          content: SizedBox(
+            width: 310,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              SwitchListTile(
+                value: enabled,
+                onChanged: (value) => setDialogState(() => enabled = value),
+                title: Text(enabled ? 'CLICK ON' : 'CLICK OFF'),
+                activeThumbColor: LostChrome.lime,
+              ),
+              const SizedBox(height: 6),
+              Text('$bpm BPM',
+                  style: const TextStyle(
+                      fontSize: 31,
+                      fontWeight: FontWeight.w900,
+                      color: LostChrome.pearl)),
+              Slider(
+                value: bpm.toDouble(),
+                min: 30,
+                max: 300,
+                divisions: 270,
+                label: '$bpm BPM',
+                activeColor: LostChrome.lime,
+                onChanged: (value) => setDialogState(() => bpm = value.round()),
+              ),
+              Row(children: [
+                Expanded(
+                    child: DropdownButtonFormField<String>(
+                  initialValue: timeSignature,
+                  decoration:
+                      const InputDecoration(labelText: 'Time signature'),
+                  items: const ['4/4', '3/4', '6/8']
+                      .map((value) =>
+                          DropdownMenuItem(value: value, child: Text(value)))
+                      .toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => timeSignature = value!),
+                )),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: DropdownButtonFormField<int>(
+                  initialValue: countInBars,
+                  decoration: const InputDecoration(labelText: 'Count-in'),
+                  items: const [0, 1, 2]
+                      .map((value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value == 0 ? 'OFF' : '$value BAR')))
+                      .toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => countInBars = value!),
+                )),
+              ]),
+              const Text('The click plays through the active audio output.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+            ]),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context,
+                    _MetronomeChoice(enabled, bpm, timeSignature, countInBars)),
+                child: const Text('APPLY')),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null) return;
+    try {
+      await widget.client.setMetronome(chosen.enabled, chosen.bpm);
+      if (mounted) {
+        setState(() {
+          _metronomeEnabled = chosen.enabled;
+          _metronomeBpm = chosen.bpm;
+        });
+        if (project != null) {
+          await _replaceProject(project.copyWith(
+            bpm: chosen.bpm,
+            timeSignature: chosen.timeSignature,
+            countInBars: chosen.countInBars,
+          ));
+        }
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Metronome: $error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final project = _project;
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 2, 6, 2),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(12, 7, 8, 7),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xff105494), Color(0xff0b2a61)],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border:
+                Border.all(color: LostChrome.electric.withValues(alpha: .78)),
+            boxShadow: const [
+              BoxShadow(color: Color(0x4429b9ff), blurRadius: 12)
+            ],
+          ),
+          child: Row(children: [
+            const Icon(Icons.multitrack_audio, color: LostChrome.lime),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('STUDIO // TRACKS',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w900, letterSpacing: 1.1)),
+                  Text(
+                    project?.name ?? 'CREATE A PROJECT TO BEGIN',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: Color(0xffa2d5f5),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: _transportPlaying ? 'Stop project' : 'Play project',
+              onPressed: _transportPlaying
+                  ? _stopTransport
+                  : () => _playTracks(project?.tracks ?? const []),
+              icon: Icon(
+                  _transportPlaying
+                      ? Icons.stop_circle_outlined
+                      : Icons.play_circle_outline,
+                  color: _transportPlaying
+                      ? const Color(0xffff7892)
+                      : LostChrome.lime),
+            ),
+            IconButton(
+              tooltip:
+                  _transportLooping ? 'Turn project loop off' : 'Loop project',
+              onPressed: () =>
+                  setState(() => _transportLooping = !_transportLooping),
+              icon: Icon(Icons.repeat_rounded,
+                  color: _transportLooping ? LostChrome.lime : LostChrome.ice),
+            ),
+            IconButton(
+              tooltip: 'Metronome — $_metronomeBpm BPM',
+              onPressed: _showMetronome,
+              icon: Icon(Icons.timer_outlined,
+                  color: _metronomeEnabled ? LostChrome.lime : LostChrome.ice),
+            ),
+            IconButton(
+                tooltip: 'New project',
+                onPressed: _newProject,
+                icon: const Icon(Icons.create_new_folder_outlined)),
+          ]),
+        ),
+        const SizedBox(height: 7),
+        const Text(
+            'A full session workspace — capture guitar from the rolling three-minute buffer, place clips, then build the arrangement.',
+            style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+        const SizedBox(height: 10),
+        if (project == null)
+          Expanded(child: _TrackEmpty(onNewProject: _newProject))
+        else ...[
+          _ProjectRail(
+            projects: _projects,
+            selectedId: project.id,
+            onSelected: (id) => setState(() => _selectedProjectId = id),
+          ),
+          const SizedBox(height: 8),
+          if (_error != null)
+            Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(_error!,
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error))),
+          Expanded(
+            child: ListView.separated(
+              itemCount: project.tracks.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (_, index) => _TrackLaneCard(
+                track: project.tracks[index],
+                busy: _busyTrackId == project.tracks[index].id,
+                armed: _armedTrackId == project.tracks[index].id,
+                countingIn: _countingInTrackId == project.tracks[index].id,
+                liveLevel: project.tracks[index].input == TrackInput.guitar
+                    ? _liveInputLevel
+                    : 0,
+                playheadSeconds: _transportPositionSeconds,
+                onInputChanged: (input) =>
+                    _changeInput(project.tracks[index], input),
+                onRecord: () => _record(project.tracks[index]),
+                onPlay: () => _playTracks([project.tracks[index]]),
+                onSettings: () => _openTrackControls(project.tracks[index]),
+                onReamp: () => _reampTrack(project.tracks[index]),
+                onTrim: () => _trimExistingTrack(project.tracks[index]),
+                onBacking: () => _attachBackingTrack(project.tracks[index]),
+                onDuplicate: () => _duplicateTrack(project.tracks[index]),
+                onMute: () => _updateTrack(
+                    project.tracks[index],
+                    project.tracks[index]
+                        .copyWith(muted: !project.tracks[index].muted)),
+                onSolo: () => _updateTrack(
+                    project.tracks[index],
+                    project.tracks[index]
+                        .copyWith(solo: !project.tracks[index].solo)),
+                onRemove: () => _removeTrack(project.tracks[index]),
+              ),
+            ),
+          ),
+          const SizedBox(height: 9),
+          FilledButton.icon(
+            onPressed: _addTrack,
+            icon: const Icon(Icons.add),
+            label: const Text('ADD TRACK'),
+            style:
+                FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+class _TakeRange {
+  const _TakeRange(this.start, this.end);
+  final double start;
+  final double end;
+}
+
+class _MetronomeChoice {
+  const _MetronomeChoice(
+      this.enabled, this.bpm, this.timeSignature, this.countInBars);
+  final bool enabled;
+  final int bpm;
+  final String timeSignature;
+  final int countInBars;
+}
+
+class _TrackControlValues {
+  const _TrackControlValues(
+    this.name,
+    this.recordMode,
+    this.playbackSource,
+    this.volume,
+    this.pan,
+    this.clipStartSeconds,
+  );
+  final String name;
+  final TrackRecordMode recordMode;
+  final TrackPlaybackSource playbackSource;
+  final double volume;
+  final double pan;
+  final double clipStartSeconds;
+}
+
+class _GuitarTakeTrimDialog extends StatefulWidget {
+  const _GuitarTakeTrimDialog({
+    required this.availableSeconds,
+    required this.capacitySeconds,
+  });
+
+  final double availableSeconds;
+  final double capacitySeconds;
+
+  @override
+  State<_GuitarTakeTrimDialog> createState() => _GuitarTakeTrimDialogState();
+}
+
+class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
+  late RangeValues _range;
+
+  @override
+  void initState() {
+    super.initState();
+    _range = RangeValues(0, widget.availableSeconds);
+  }
+
+  String _clock(double seconds) {
+    final total = seconds.round();
+    return '${total ~/ 60}:${(total % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final available = widget.availableSeconds;
+    final sliderMaximum = math.max(.1, available);
+    final selected = _range.end - _range.start;
+    return AlertDialog(
+      title: const Row(children: [
+        Icon(Icons.content_cut_rounded, color: LostChrome.lime),
+        SizedBox(width: 9),
+        Text('TRIM GUITAR TAKE'),
+      ]),
+      content: SizedBox(
+        width: 420,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            available < widget.capacitySeconds
+                ? 'Only ${_clock(available)} of guitar is available so far. Play longer to fill the three-minute buffer.'
+                : 'The rolling three-minute guitar buffer is full. Choose the section to keep.',
+            style: const TextStyle(color: Color(0xffa2d5f5)),
+          ),
+          const SizedBox(height: 16),
+          _TrimTimeline(
+            range: _range,
+            maximum: available,
+            accent: LostChrome.electric,
+          ),
+          RangeSlider(
+            values: _range,
+            min: 0,
+            max: sliderMaximum,
+            divisions: available >= 2 ? available.round() : null,
+            labels: RangeLabels(_clock(_range.start), _clock(_range.end)),
+            activeColor: LostChrome.lime,
+            onChanged: available < 1
+                ? null
+                : (range) => setState(() => _range = range),
+          ),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text('START  ${_clock(_range.start)}',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w900, color: LostChrome.ice)),
+            Text('END  ${_clock(_range.end)}',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w900, color: LostChrome.ice)),
+          ]),
+          const SizedBox(height: 9),
+          Text('KEEPING ${_clock(selected)} • THE REST WILL BE TRIMMED',
+              style: const TextStyle(
+                  fontSize: 10,
+                  color: LostChrome.lime,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: .75)),
+        ]),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('CANCEL')),
+        FilledButton.icon(
+          onPressed: available < .1 || selected < .1
+              ? null
+              : () =>
+                  Navigator.pop(context, _TakeRange(_range.start, _range.end)),
+          icon: const Icon(Icons.save_alt_rounded),
+          label: const Text('SAVE TAKE'),
+        ),
+      ],
+    );
+  }
+}
+
+class _TrimTimeline extends StatelessWidget {
+  const _TrimTimeline(
+      {required this.range, required this.maximum, required this.accent});
+  final RangeValues range;
+  final double maximum;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 64,
+        child: CustomPaint(
+          painter: _TrimTimelinePainter(
+              range: range, maximum: maximum, accent: accent),
+          child: const SizedBox.expand(),
+        ),
+      );
+}
+
+class _TrimTimelinePainter extends CustomPainter {
+  const _TrimTimelinePainter(
+      {required this.range, required this.maximum, required this.accent});
+  final RangeValues range;
+  final double maximum;
+  final Color accent;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final lane = RRect.fromRectAndRadius(
+        Rect.fromLTWH(0, 9, size.width, size.height - 18),
+        const Radius.circular(9));
+    canvas.drawRRect(lane, Paint()..color = const Color(0xff061938));
+    final selectedStart =
+        maximum == 0 ? 0.0 : range.start / maximum * size.width;
+    final selectedEnd = maximum == 0 ? 0.0 : range.end / maximum * size.width;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromLTRB(selectedStart, 9, selectedEnd, size.height - 9),
+            const Radius.circular(9)),
+        Paint()..color = accent.withValues(alpha: .72));
+    final bars = math.max(18, (size.width / 8).floor());
+    for (var index = 0; index < bars; index++) {
+      final x = index * size.width / bars;
+      final height = 5 + math.sin(index * .71).abs() * (size.height - 25);
+      canvas.drawLine(
+          Offset(x, size.height / 2 - height / 2),
+          Offset(x, size.height / 2 + height / 2),
+          Paint()
+            ..color = LostChrome.pearl.withValues(alpha: .48)
+            ..strokeWidth = 2);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrimTimelinePainter oldDelegate) =>
+      oldDelegate.range != range || oldDelegate.maximum != maximum;
+}
+
+class _TrackEmpty extends StatelessWidget {
+  const _TrackEmpty({required this.onNewProject});
+  final VoidCallback onNewProject;
+  @override
+  Widget build(BuildContext context) => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.folder_copy_outlined,
+              size: 42, color: LostChrome.electric),
+          const SizedBox(height: 10),
+          const Text('START A PROJECT',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
+          const SizedBox(height: 5),
+          const Text('Build a guitar session one track at a time.',
+              textAlign: TextAlign.center),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+              onPressed: onNewProject,
+              icon: const Icon(Icons.add),
+              label: const Text('NEW PROJECT')),
+        ]),
+      );
+}
+
+class _ProjectRail extends StatelessWidget {
+  const _ProjectRail(
+      {required this.projects,
+      required this.selectedId,
+      required this.onSelected});
+  final List<TrackProject> projects;
+  final String selectedId;
+  final ValueChanged<String> onSelected;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 39,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: projects.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 7),
+          itemBuilder: (_, index) {
+            final project = projects[index];
+            final selected = project.id == selectedId;
+            return ChoiceChip(
+              selected: selected,
+              onSelected: (_) => onSelected(project.id),
+              label: Text(project.name, overflow: TextOverflow.ellipsis),
+              labelStyle: TextStyle(
+                  color: selected ? LostChrome.navy : LostChrome.ice,
+                  fontWeight: FontWeight.w800),
+              backgroundColor: const Color(0xff123c72),
+              selectedColor: LostChrome.lime,
+              side: BorderSide(
+                  color: selected
+                      ? LostChrome.lime
+                      : LostChrome.electric.withValues(alpha: .55)),
+            );
+          },
+        ),
+      );
+}
+
+class _TrackLaneCard extends StatelessWidget {
+  const _TrackLaneCard({
+    required this.track,
+    required this.busy,
+    required this.armed,
+    required this.countingIn,
+    required this.liveLevel,
+    required this.playheadSeconds,
+    required this.onInputChanged,
+    required this.onRecord,
+    required this.onPlay,
+    required this.onSettings,
+    required this.onReamp,
+    required this.onTrim,
+    required this.onBacking,
+    required this.onDuplicate,
+    required this.onMute,
+    required this.onSolo,
+    required this.onRemove,
+  });
+  final TrackLane track;
+  final bool busy;
+  final bool armed;
+  final bool countingIn;
+  final double liveLevel;
+  final double playheadSeconds;
+  final ValueChanged<TrackInput> onInputChanged;
+  final VoidCallback onRecord;
+  final VoidCallback onPlay;
+  final VoidCallback onSettings;
+  final VoidCallback onReamp;
+  final VoidCallback onTrim;
+  final VoidCallback onBacking;
+  final VoidCallback onDuplicate;
+  final VoidCallback onMute;
+  final VoidCallback onSolo;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 104,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(15),
+          color: const Color(0xff082554),
+          border: Border.all(color: track.input.color.withValues(alpha: .8)),
+          boxShadow: [
+            BoxShadow(
+                color: track.input.color.withValues(alpha: .12), blurRadius: 10)
+          ],
+        ),
+        child: Row(children: [
+          SizedBox(
+            width: 122,
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(track.input.icon,
+                          color: track.input.color, size: 22),
+                      const SizedBox(width: 5),
+                      _TrackLevelMeter(
+                          level: liveLevel, color: track.input.color),
+                    ]),
+                    Row(children: [
+                      _TrackToggle(
+                          label: 'M', active: track.muted, onTap: onMute),
+                      const SizedBox(width: 4),
+                      _TrackToggle(
+                          label: 'S', active: track.solo, onTap: onSolo),
+                    ]),
+                    const Spacer(),
+                    Text(track.name.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: LostChrome.pearl,
+                            fontWeight: FontWeight.w900)),
+                    DropdownButtonHideUnderline(
+                      child: DropdownButton<TrackInput>(
+                        value: track.input,
+                        isDense: true,
+                        dropdownColor: const Color(0xff103d76),
+                        style: TextStyle(
+                            color: track.input.color,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 9),
+                        items: TrackInput.values
+                            .map((input) => DropdownMenuItem(
+                                value: input, child: Text(input.label)))
+                            .toList(),
+                        onChanged: (input) {
+                          if (input != null) onInputChanged(input);
+                        },
+                      ),
+                    ),
+                  ]),
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Stack(children: [
+                Positioned.fill(
+                    child: CustomPaint(
+                        painter: _TrackWaveformPainter(
+                            track: track, playheadSeconds: playheadSeconds))),
+                Positioned(
+                  left: 8,
+                  top: 5,
+                  child: Text(
+                      track.hasTake
+                          ? '${track.durationSeconds?.toStringAsFixed(1)} SEC TAKE'
+                          : 'EMPTY TIMELINE',
+                      style: TextStyle(
+                          color: track.hasTake
+                              ? LostChrome.pearl
+                              : LostChrome.ice.withValues(alpha: .55),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 9,
+                          letterSpacing: .8)),
+                ),
+                if (track.toneSnapshot != null)
+                  Positioned(
+                    left: 8,
+                    bottom: 4,
+                    child: Text('RIG: ${track.toneSnapshot}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: Color(0xffa2d5f5), fontSize: 8)),
+                  ),
+              ]),
+            ),
+          ),
+          SizedBox(
+            width: 76,
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 1,
+              runSpacing: 0,
+              children: [
+                IconButton(
+                  tooltip: track.input == TrackInput.guitar
+                      ? armed
+                          ? countingIn
+                              ? 'Count-in running'
+                              : 'Save armed guitar take'
+                          : 'Save latest guitar take'
+                      : 'Recording coming soon',
+                  onPressed: busy ? null : onRecord,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 17,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : Icon(
+                          armed
+                              ? Icons.radio_button_checked
+                              : Icons.fiber_manual_record,
+                          color: track.input == TrackInput.guitar
+                              ? armed
+                                  ? LostChrome.lime
+                                  : const Color(0xffff5b7b)
+                              : LostChrome.ice.withValues(alpha: .45)),
+                ),
+                IconButton(
+                  tooltip: 'Play this track',
+                  onPressed: track.hasTake ? onPlay : null,
+                  icon: const Icon(Icons.play_arrow_rounded, size: 19),
+                ),
+                IconButton(
+                  tooltip: 'Track controls',
+                  onPressed: onSettings,
+                  icon: const Icon(Icons.tune_rounded, size: 18),
+                ),
+                if (track.cleanTakePath != null)
+                  IconButton(
+                    tooltip: 'Reamp clean DI with current rig',
+                    onPressed: busy ? null : onReamp,
+                    icon: const Icon(Icons.bolt_rounded,
+                        size: 18, color: LostChrome.lime),
+                  ),
+                if (track.cleanTakePath != null && track.takePath != null)
+                  IconButton(
+                    tooltip: 'Trim this take again',
+                    onPressed: busy ? null : onTrim,
+                    icon: const Icon(Icons.content_cut_rounded, size: 18),
+                  ),
+                if (track.riffId != null)
+                  IconButton(
+                    tooltip: 'Add a finished backing track for this take',
+                    onPressed: busy ? null : onBacking,
+                    icon: const Icon(Icons.auto_awesome_rounded,
+                        size: 18, color: LostChrome.lime),
+                  ),
+                IconButton(
+                  tooltip: 'Duplicate this clip',
+                  onPressed: onDuplicate,
+                  icon: const Icon(Icons.copy_rounded, size: 17),
+                ),
+                IconButton(
+                    tooltip: 'Remove track',
+                    onPressed: onRemove,
+                    icon: const Icon(Icons.close_rounded, size: 18)),
+              ]
+                  .map((button) => IconButtonTheme(
+                        data: IconButtonThemeData(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size.square(30),
+                            padding: EdgeInsets.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                        child: button,
+                      ))
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 2),
+        ]),
+      );
+}
+
+class _TrackToggle extends StatelessWidget {
+  const _TrackToggle(
+      {required this.label, required this.active, required this.onTap});
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(5),
+        child: Container(
+          width: 23,
+          height: 19,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: active ? LostChrome.lime : const Color(0xff123d70),
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(
+                color: active
+                    ? LostChrome.lime
+                    : LostChrome.ice.withValues(alpha: .45)),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  color: active ? LostChrome.navy : LostChrome.ice,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900)),
+        ),
+      );
+}
+
+/// A deliberately small input activity light.  The engine supplies a single
+/// live input meter today, so it is shown on guitar lanes instead of implying
+/// that we already have a post-mix meter for every track.
+class _TrackLevelMeter extends StatelessWidget {
+  const _TrackLevelMeter({required this.level, required this.color});
+  final double level;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 7,
+        height: 22,
+        alignment: Alignment.bottomCenter,
+        decoration: BoxDecoration(
+          color: const Color(0xff031635),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withValues(alpha: .55)),
+        ),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 80),
+          height: math.max(2, 20 * level.clamp(0.0, 1.0)),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(3),
+            boxShadow: [
+              BoxShadow(color: color.withValues(alpha: .55), blurRadius: 4)
+            ],
+          ),
+        ),
+      );
+}
+
+class _TrackWaveformPainter extends CustomPainter {
+  const _TrackWaveformPainter(
+      {required this.track, required this.playheadSeconds});
+  final TrackLane track;
+  final double playheadSeconds;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final mid = size.height / 2;
+    canvas.drawLine(Offset.zero.translate(0, mid), Offset(size.width, mid),
+        Paint()..color = LostChrome.ice.withValues(alpha: .18));
+    final startX = (track.clipStartSeconds.clamp(0, 30) / 30) * size.width;
+    final visibleWidth = math.max(20.0, size.width - startX);
+    final bars = math.max(12, (visibleWidth / 7).floor());
+    final seed = track.id.hashCode.abs();
+    final paint = Paint()
+      ..color = track.input.color.withValues(alpha: track.hasTake ? .78 : .16);
+    for (var index = 0; index < bars; index++) {
+      final phase = (seed % 29) * .12 + index * .62;
+      final shaped = .2 + .8 * math.pow(math.sin(phase).abs(), 1.8);
+      final envelope =
+          track.hasTake ? .45 + .55 * math.sin(index / bars * math.pi) : .22;
+      final height = math.max(3.0, mid * shaped * envelope);
+      final x = startX + index * visibleWidth / bars;
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(
+              Rect.fromCenter(
+                  center: Offset(x, mid), width: 3, height: height * 2),
+              const Radius.circular(2)),
+          paint);
+    }
+    if (track.hasTake) {
+      final cursorX = (playheadSeconds.clamp(0, 30) / 30) * size.width;
+      canvas.drawLine(
+          Offset(cursorX, 0),
+          Offset(cursorX, size.height),
+          Paint()
+            ..color = LostChrome.lime.withValues(alpha: .85)
+            ..strokeWidth = 1.2);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrackWaveformPainter oldDelegate) =>
+      oldDelegate.track != track ||
+      oldDelegate.playheadSeconds != playheadSeconds;
+}
+
 class RiffVaultSheet extends StatefulWidget {
   const RiffVaultSheet(
       {required this.client, required this.catalog, super.key});
@@ -3564,12 +7504,9 @@ class _RiffVaultSheetState extends State<RiffVaultSheet> {
                     style:
                         TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                 const Spacer(),
-                IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close)),
               ]),
               const Text(
-                  'Save the most recent 30 seconds as clean DI and your current rig.',
+                  'Save up to the most recent 3 minutes as clean DI and your current rig.',
                   style: TextStyle(color: Color(0xffa2d5f5))),
               const SizedBox(height: 8),
               Row(children: [
@@ -3773,12 +7710,6 @@ class _TunerSheetState extends State<TunerSheet> {
                     const Text('CLEAN INPUT TUNER',
                         style: TextStyle(
                             fontSize: 19, fontWeight: FontWeight.w900)),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'Close tuner',
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close),
-                    ),
                   ],
                 ),
                 const Text(
@@ -4128,7 +8059,7 @@ class _BackingTrackNotice extends StatelessWidget {
         decoration: BoxDecoration(
           color: const Color(0xff12386b),
           border: Border.all(color: LostChrome.electric),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(15),
         ),
         child: Text(text, style: const TextStyle(color: Color(0xffd9f4ff))),
       );
@@ -4280,6 +8211,40 @@ class _ControlDefinition {
       : '${value >= 0 ? '+' : ''}${value.toStringAsFixed(1)} $unit';
 }
 
+class _VerticalControlBank extends StatelessWidget {
+  const _VerticalControlBank({
+    required this.controls,
+    required this.values,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
+
+  final List<_ControlDefinition> controls;
+  final Map<String, double> values;
+  final void Function(_ControlDefinition, double) onChanged;
+  final Future<void> Function(_ControlDefinition, double) onChangeEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+      children: [
+        for (final control in controls)
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: _ControlSlider(
+              definition: control,
+              value: values[control.keyName]!,
+              onChanged: (value) => onChanged(control, value),
+              onChangeEnd: (value) => onChangeEnd(control, value),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _ControlSlider extends StatelessWidget {
   const _ControlSlider({
     required this.definition,
@@ -4295,26 +8260,51 @@ class _ControlSlider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Text(definition.label,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-            const Spacer(),
-            Text(definition.format(value)),
-          ],
-        ),
-        Slider(
-          value: value.clamp(definition.minimum, definition.maximum),
-          min: definition.minimum,
-          max: definition.maximum,
-          divisions: definition.divisions,
-          label: definition.format(value),
-          onChanged: onChanged,
-          onChangeEnd: onChangeEnd,
-        ),
-      ],
+    return Container(
+      width: 126,
+      decoration: BoxDecoration(
+        color: const Color(0xaa061b42),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: LostChrome.electric.withValues(alpha: .78)),
+        boxShadow: const [BoxShadow(color: Color(0x6629b9ff), blurRadius: 10)],
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 10),
+          Text(definition.label,
+              style: const TextStyle(
+                  fontWeight: FontWeight.w900, letterSpacing: .7)),
+          const SizedBox(height: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: LostChrome.electric.withValues(alpha: .18),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(definition.format(value),
+                style: const TextStyle(
+                    color: LostChrome.ice, fontWeight: FontWeight.w800)),
+          ),
+          Expanded(
+            child: RotatedBox(
+              quarterTurns: 3,
+              child: Slider(
+                value: value.clamp(definition.minimum, definition.maximum),
+                min: definition.minimum,
+                max: definition.maximum,
+                divisions: definition.divisions,
+                label: definition.format(value),
+                onChanged: onChanged,
+                onChangeEnd: onChangeEnd,
+              ),
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(bottom: 11),
+            child: Icon(Icons.drag_indicator, color: LostChrome.ice, size: 18),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -4433,37 +8423,27 @@ class _ToneMakerSheetState extends State<ToneMakerSheet> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                const Icon(Icons.auto_awesome, color: LostChrome.lime),
-                const SizedBox(width: 7),
-                Text('TONE MAKER',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const Spacer(),
-                IconButton(
-                  tooltip: 'Refresh connection status',
-                  onPressed: _busy ? null : _loadStatus,
-                  icon: const Icon(Icons.refresh),
-                ),
-                IconButton(
-                  tooltip: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
+            _AquaToneConsoleHeader(
+              busy: _busy,
+              onRefresh: _loadStatus,
             ),
-            Text(
-              'Describe a sound. The device first checks your confirmed Tone Memory, then plans TONE3000 candidates if it needs something new.',
-              style: TextStyle(color: LostChrome.ice.withValues(alpha: .78)),
-            ),
-            const SizedBox(height: 10),
-            if (_busy) const LinearProgressIndicator(),
+            const SizedBox(height: 9),
             if (_error != null) ...[
               const SizedBox(height: 8),
               Text(_error!,
                   style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ],
-            if (status == null)
+            if (_busy)
+              Expanded(
+                child: _AiToneMatrixLoader(
+                  stage: status == null
+                      ? 'SYNCING SIGNAL LINKS'
+                      : recommendation == null
+                          ? 'SCANNING THE TONE ARCHIVE'
+                          : 'ASSEMBLING YOUR RIG',
+                ),
+              )
+            else if (status == null)
               const Expanded(child: Center(child: CircularProgressIndicator()))
             else if (!status.available && !status.toneMemoryAvailable)
               Expanded(
@@ -4491,45 +8471,11 @@ class _ToneMakerSheetState extends State<ToneMakerSheet> {
                       const _ToneMemoryReadyBanner(),
                       const SizedBox(height: 10),
                     ],
-                    TextField(
+                    _AquaTonePrompt(
                       controller: _prompt,
-                      minLines: 2,
-                      maxLines: 4,
-                      textInputAction: TextInputAction.newline,
-                      decoration: const InputDecoration(
-                        labelText: 'WHAT SHOULD THIS RIG SOUND LIKE?',
-                        hintText:
-                            'Tight high-gain thrash rhythm with a dry, cutting lead…',
-                        prefixIcon: Icon(Icons.graphic_eq),
-                      ),
-                    ),
-                    const SizedBox(height: 7),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 5,
-                      children: [
-                        _PromptChip(
-                          label: 'THRASH',
-                          onTap: () => _useExample(
-                              'Tight high-gain thrash rhythm with a dry, cutting lead'),
-                        ),
-                        _PromptChip(
-                          label: 'SHOEGAZE',
-                          onTap: () => _useExample(
-                              'Wide shoegaze wall with soft compression and washed ambience'),
-                        ),
-                        _PromptChip(
-                          label: 'CLEAN',
-                          onTap: () => _useExample(
-                              'Warm glassy clean with light breakup and a little space'),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    FilledButton.icon(
-                      onPressed: _busy ? null : _recommend,
-                      icon: const Icon(Icons.auto_awesome),
-                      label: const Text('PLAN MY TONE'),
+                      busy: _busy,
+                      onPlan: _recommend,
+                      onExample: _useExample,
                     ),
                     if (recommendation != null) ...[
                       const SizedBox(height: 14),
@@ -4563,6 +8509,393 @@ class _ToneMakerSheetState extends State<ToneMakerSheet> {
       ),
     );
   }
+}
+
+/// The loading view deliberately fills the console rather than leaving a thin
+/// platform progress bar stranded at the top.  It is all Canvas work: no image
+/// assets, shaders, or per-dot widgets to burden the Pi display.
+class _AiToneMatrixLoader extends StatefulWidget {
+  const _AiToneMatrixLoader({required this.stage});
+
+  final String stage;
+
+  @override
+  State<_AiToneMatrixLoader> createState() => _AiToneMatrixLoaderState();
+}
+
+class _AiToneMatrixLoaderState extends State<_AiToneMatrixLoader>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border:
+                Border.all(color: LostChrome.electric.withValues(alpha: .8)),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xff124f92), Color(0xff092957), Color(0xff04132e)],
+            ),
+            boxShadow: const [
+              BoxShadow(color: Color(0x5529b9ff), blurRadius: 18),
+            ],
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: LostChrome.lime,
+                        boxShadow: [
+                          BoxShadow(color: LostChrome.lime, blurRadius: 9),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Text(
+                        widget.stage,
+                        style: const TextStyle(
+                          color: LostChrome.lime,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.45,
+                        ),
+                      ),
+                    ),
+                    const Text(
+                      'LIVE',
+                      style: TextStyle(
+                        color: LostChrome.ice,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Divider(color: Color(0x665fdcff), height: 13),
+              ),
+              Expanded(
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) => CustomPaint(
+                      painter: _AiToneMatrixPainter(phase: _controller.value),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 3, 16, 15),
+                child: Row(
+                  children: [
+                    Icon(Icons.bolt_rounded,
+                        color: LostChrome.electric, size: 16),
+                    SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'MATCHING HARDWARE, CAPTURES, AND CABINET RESPONSE',
+                        style: TextStyle(
+                          color: LostChrome.ice,
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: .8,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+class _AiToneMatrixPainter extends CustomPainter {
+  const _AiToneMatrixPainter({required this.phase});
+
+  final double phase;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final columns = (size.width / 30).floor().clamp(10, 22);
+    final rows = (size.height / 30).floor().clamp(8, 15);
+    final horizontalGap = size.width / (columns + 1);
+    final verticalGap = size.height / (rows + 1);
+    final baseRadius = math.min(horizontalGap, verticalGap) * .135;
+
+    final haze = Paint()
+      ..shader = RadialGradient(
+        center: Alignment(phase * 2 - 1, -.15),
+        radius: 1.15,
+        colors: [
+          LostChrome.electric.withValues(alpha: .21),
+          LostChrome.electric.withValues(alpha: 0),
+        ],
+      ).createShader(Offset.zero & size);
+    canvas.drawRect(Offset.zero & size, haze);
+
+    final signalX = (phase * (columns + 5)) - 2.5;
+    for (var row = 0; row < rows; row++) {
+      for (var column = 0; column < columns; column++) {
+        final x = horizontalGap * (column + 1);
+        final y = verticalGap * (row + 1);
+        final stagger = math.sin(row * 1.65 + phase * math.pi * 2) * .65;
+        final distance = (column - signalX - stagger).abs();
+        final beam = math.max(0.0, 1 - distance / 3.4);
+        final wave =
+            (math.sin(column * .78 - phase * math.pi * 4 + row) + 1) / 2;
+        final active = math.max(beam, wave * .16);
+        final color = Color.lerp(const Color(0xff17477d),
+            row.isEven ? LostChrome.electric : LostChrome.lime, active)!;
+        if (active > .48) {
+          canvas.drawCircle(
+            Offset(x, y),
+            baseRadius * (2.6 + active * 1.9),
+            Paint()
+              ..color = color.withValues(alpha: active * .22)
+              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+          );
+        }
+        canvas.drawCircle(
+          Offset(x, y),
+          baseRadius * (1 + active * 1.35),
+          Paint()..color = color.withValues(alpha: .32 + active * .68),
+        );
+        if (active > .72) {
+          canvas.drawCircle(Offset(x - baseRadius * .35, y - baseRadius * .4),
+              baseRadius * .42, Paint()..color = LostChrome.pearl);
+        }
+      }
+    }
+
+    final scanX = (phase * (size.width + 80)) - 40;
+    final scan = Paint()
+      ..shader = LinearGradient(
+        colors: [
+          LostChrome.electric.withValues(alpha: 0),
+          LostChrome.ice.withValues(alpha: .88),
+          LostChrome.electric.withValues(alpha: 0),
+        ],
+      ).createShader(Rect.fromLTWH(scanX - 15, 0, 30, size.height));
+    canvas.drawRect(Rect.fromLTWH(scanX - 15, 0, 30, size.height), scan);
+  }
+
+  @override
+  bool shouldRepaint(covariant _AiToneMatrixPainter oldDelegate) =>
+      phase != oldDelegate.phase;
+}
+
+class _AquaToneConsoleHeader extends StatelessWidget {
+  const _AquaToneConsoleHeader({
+    required this.busy,
+    required this.onRefresh,
+  });
+
+  final bool busy;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.fromLTRB(13, 10, 8, 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(17),
+          border: Border.all(color: LostChrome.ice.withValues(alpha: .9)),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xff258cd0), Color(0xff104b91), Color(0xff08265b)],
+          ),
+          boxShadow: const [
+            BoxShadow(color: Color(0x5529b9ff), blurRadius: 14),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 39,
+              height: 39,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: LostChrome.pearl, width: 1.5),
+                gradient: const RadialGradient(
+                  center: Alignment(-.3, -.35),
+                  colors: [
+                    Color(0xff86efff),
+                    Color(0xff1b77c8),
+                    Color(0xff092d67)
+                  ],
+                ),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x9929d8ff), blurRadius: 11)
+                ],
+              ),
+              child: const Icon(Icons.auto_awesome,
+                  color: LostChrome.lime, size: 21),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('AQUA SIGNAL CONSOLE',
+                      style: TextStyle(
+                          color: LostChrome.pearl,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.05)),
+                  SizedBox(height: 2),
+                  Text('DESCRIBE → DISCOVER → BUILD A RIG',
+                      style: TextStyle(
+                          color: LostChrome.ice,
+                          fontSize: 8,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: .8)),
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: 'Refresh connection status',
+              onPressed: busy ? null : onRefresh,
+              icon: const Icon(Icons.refresh_rounded),
+              color: LostChrome.pearl,
+            ),
+          ],
+        ),
+      );
+}
+
+class _AquaTonePrompt extends StatelessWidget {
+  const _AquaTonePrompt({
+    required this.controller,
+    required this.busy,
+    required this.onPlan,
+    required this.onExample,
+  });
+
+  final TextEditingController controller;
+  final bool busy;
+  final VoidCallback onPlan;
+  final ValueChanged<String> onExample;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(11),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(17),
+          color: const Color(0xaa061b42),
+          border: Border.all(color: LostChrome.electric.withValues(alpha: .85)),
+          boxShadow: const [
+            BoxShadow(color: Color(0x3329b9ff), blurRadius: 12)
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.graphic_eq, color: LostChrome.lime, size: 17),
+                SizedBox(width: 7),
+                Text('SIGNAL REQUEST',
+                    style: TextStyle(
+                        color: LostChrome.ice,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1.05)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              minLines: 2,
+              maxLines: 3,
+              textInputAction: TextInputAction.newline,
+              style: const TextStyle(
+                  color: LostChrome.pearl, fontWeight: FontWeight.w700),
+              decoration: InputDecoration(
+                hintText:
+                    'Tight high-gain thrash rhythm with a dry, cutting lead…',
+                hintStyle:
+                    TextStyle(color: LostChrome.ice.withValues(alpha: .55)),
+                filled: true,
+                fillColor: const Color(0xff061733),
+                contentPadding: const EdgeInsets.all(12),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xff64d8ff)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xff64d8ff)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 5,
+              children: [
+                _PromptChip(
+                    label: 'THRASH',
+                    onTap: () => onExample(
+                        'Tight high-gain thrash rhythm with a dry, cutting lead')),
+                _PromptChip(
+                    label: 'SHOEGAZE',
+                    onTap: () => onExample(
+                        'Wide shoegaze wall with soft compression and washed ambience')),
+                _PromptChip(
+                    label: 'CLEAN',
+                    onTap: () => onExample(
+                        'Warm glassy clean with light breakup and a little space')),
+              ],
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: busy ? null : onPlan,
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('SCAN FOR RIGS'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(48),
+                backgroundColor: LostChrome.lime,
+                foregroundColor: LostChrome.navy,
+                textStyle: const TextStyle(
+                    fontWeight: FontWeight.w900, letterSpacing: .85),
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 class _PromptChip extends StatelessWidget {
@@ -4648,33 +8981,45 @@ class _AiPlanCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final plan = recommendation.plan;
+    final activeRig = recommendation.rigs[selectedRig];
     final enabledEffects = plan.effects.entries
         .where((entry) => entry.value)
         .map((entry) => entry.key.toUpperCase())
         .join(' • ');
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xdd155bb1), Color(0xdd0a2b63)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xff39b9ef), Color(0xff19599e), Color(0xff071b47)],
         ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: LostChrome.ice.withValues(alpha: .8)),
-        boxShadow: const [BoxShadow(color: Color(0x6639bfff), blurRadius: 14)],
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: LostChrome.ice, width: 1.7),
+        boxShadow: const [
+          BoxShadow(color: Color(0x8829c7ff), blurRadius: 23, spreadRadius: 1),
+          BoxShadow(
+              color: Color(0x88000214), blurRadius: 18, offset: Offset(0, 10)),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('AI RIG PLAN — PICK ONE',
+          const Text('✦  SIGNAL LOCKED — PICK A RIG',
               style: TextStyle(
                   color: LostChrome.lime,
-                  fontSize: 10,
+                  fontSize: 12,
                   letterSpacing: 1.2,
                   fontWeight: FontWeight.w900)),
-          const SizedBox(height: 5),
+          const SizedBox(height: 7),
           Text(plan.summary,
-              style: const TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
+              style: const TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w800, height: 1.25)),
+          const SizedBox(height: 13),
+          _AquaSignalChain(rig: activeRig),
+          const SizedBox(height: 9),
+          _AquaIntentRail(intent: plan.intent),
+          const SizedBox(height: 7),
           Text(
             switch (recommendation.rankingProvider) {
               'tone_memory' => 'TONE MEMORY • YOUR CONFIRMED CACHED RIG',
@@ -4716,6 +9061,207 @@ class _AiPlanCard extends StatelessWidget {
   }
 }
 
+class _AquaSignalChain extends StatelessWidget {
+  const _AquaSignalChain({required this.rig});
+
+  final AiToneRig rig;
+
+  @override
+  Widget build(BuildContext context) {
+    final cabLabel = switch (rig.cabinetMode) {
+      'selected' => rig.cabinet?.name ?? 'IR CAB',
+      'embedded' => 'CAB IN NAM',
+      'not_found' => 'NO IR MATCH',
+      _ => 'IR OFF',
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+            color: LostChrome.ice.withValues(alpha: .74), width: 1.4),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xdd124a88), Color(0xee071d4a)],
+        ),
+        boxShadow: const [BoxShadow(color: Color(0x333ddcff), blurRadius: 13)],
+      ),
+      child: Row(
+        children: [
+          _AquaSignalNode(
+              icon: Icons.flash_on_rounded,
+              label: 'DRIVE',
+              name: rig.pedal?.name ?? 'CLEAN',
+              color: LostChrome.electric),
+          const _AquaSignalLink(),
+          _AquaSignalNode(
+              icon: Icons.speaker_rounded,
+              label: 'NAM HEAD',
+              name: rig.amp.name,
+              color: LostChrome.ice),
+          const _AquaSignalLink(),
+          _AquaSignalNode(
+              icon: Icons.graphic_eq_rounded,
+              label: 'IR CAB',
+              name: cabLabel,
+              color: rig.cabinetMode == 'selected'
+                  ? LostChrome.lime
+                  : LostChrome.ice.withValues(alpha: .65)),
+        ],
+      ),
+    );
+  }
+}
+
+class _AquaSignalLink extends StatelessWidget {
+  const _AquaSignalLink();
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Container(
+              height: 3,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    LostChrome.electric,
+                    LostChrome.lime,
+                    LostChrome.electric
+                  ],
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              color: const Color(0xff0c3674),
+              child: const Icon(Icons.arrow_forward_rounded,
+                  size: 19, color: LostChrome.electric),
+            ),
+          ],
+        ),
+      );
+}
+
+class _AquaSignalNode extends StatelessWidget {
+  const _AquaSignalNode({
+    required this.icon,
+    required this.label,
+    required this.name,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String name;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 104,
+        child: Column(
+          children: [
+            Container(
+              width: 74,
+              height: 74,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: color, width: 3),
+                gradient: color == LostChrome.lime
+                    ? const RadialGradient(
+                        center: Alignment(-.3, -.35),
+                        colors: [
+                          Color(0xffe7ff8d),
+                          Color(0xff72bc42),
+                          Color(0xff1d5947)
+                        ],
+                      )
+                    : const RadialGradient(
+                        center: Alignment(-.3, -.35),
+                        colors: [
+                          Color(0xff67e6ff),
+                          Color(0xff1872c1),
+                          Color(0xff09275c)
+                        ],
+                      ),
+                boxShadow: [
+                  BoxShadow(color: color.withValues(alpha: .68), blurRadius: 16)
+                ],
+              ),
+              child: Icon(icon, color: LostChrome.pearl, size: 34),
+            ),
+            const SizedBox(height: 6),
+            Text(label,
+                style: TextStyle(
+                    color: color,
+                    fontSize: 9,
+                    letterSpacing: .55,
+                    fontWeight: FontWeight.w900)),
+            Text(name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style:
+                    const TextStyle(fontSize: 9, fontWeight: FontWeight.w800)),
+          ],
+        ),
+      );
+}
+
+class _AquaIntentRail extends StatelessWidget {
+  const _AquaIntentRail({required this.intent});
+
+  final Map<String, String> intent;
+
+  @override
+  Widget build(BuildContext context) {
+    final values = [
+      ('GAIN', intent['gain'] ?? 'CUSTOM'),
+      ('FEEL', intent['tightness'] ?? 'BALANCED'),
+      ('SPACE', intent['space'] ?? 'DRY'),
+    ];
+    return Row(
+      children: [
+        for (final (label, value) in values) ...[
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xff226cb1), Color(0xff113f82)],
+                ),
+                borderRadius: BorderRadius.circular(11),
+                border: Border.all(color: LostChrome.electric, width: 1.2),
+                boxShadow: const [
+                  BoxShadow(color: Color(0x3329c5ff), blurRadius: 7)
+                ],
+              ),
+              child: Column(
+                children: [
+                  Text(label,
+                      style: const TextStyle(
+                          fontSize: 8,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: .7)),
+                  const SizedBox(height: 2),
+                  Text(value.toUpperCase(),
+                      style: const TextStyle(
+                          color: LostChrome.lime,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900)),
+                ],
+              ),
+            ),
+          ),
+          if (label != values.last.$1) const SizedBox(width: 5),
+        ],
+      ],
+    );
+  }
+}
+
 class _AiRigChoice extends StatelessWidget {
   const _AiRigChoice({
     required this.index,
@@ -4739,17 +9285,29 @@ class _AiRigChoice extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 160),
-            padding: const EdgeInsets.all(9),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color:
-                  selected ? const Color(0xaa41bfff) : const Color(0x44265a9e),
-              borderRadius: BorderRadius.circular(10),
+              gradient: selected
+                  ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xff43c7f7), Color(0xff207fc4)],
+                    )
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xff154f91), Color(0xff0a2c62)],
+                    ),
+              borderRadius: BorderRadius.circular(15),
               border: Border.all(
                 color: selected
                     ? LostChrome.lime
                     : LostChrome.ice.withValues(alpha: .38),
-                width: selected ? 1.5 : 1,
+                width: selected ? 2 : 1,
               ),
+              boxShadow: selected
+                  ? const [BoxShadow(color: Color(0x6634c9ff), blurRadius: 13)]
+                  : null,
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -4759,7 +9317,7 @@ class _AiRigChoice extends StatelessWidget {
                       ? Icons.radio_button_checked
                       : Icons.radio_button_off,
                   color: selected ? LostChrome.lime : LostChrome.ice,
-                  size: 20,
+                  size: 23,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -4768,7 +9326,7 @@ class _AiRigChoice extends StatelessWidget {
                     children: [
                       Text('RIG ${index + 1} • ${rig.label.toUpperCase()}',
                           style: const TextStyle(
-                              fontSize: 10,
+                              fontSize: 11,
                               letterSpacing: .75,
                               fontWeight: FontWeight.w900)),
                       const SizedBox(height: 2),
@@ -4778,6 +9336,7 @@ class _AiRigChoice extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                             color: LostChrome.pearl,
+                            fontSize: 15,
                             fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 2),
@@ -4785,8 +9344,28 @@ class _AiRigChoice extends StatelessWidget {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                              fontSize: 10,
+                              fontSize: 11,
                               color: LostChrome.ice.withValues(alpha: .78))),
+                      const SizedBox(height: 2),
+                      Text(
+                        switch (rig.cabinetMode) {
+                          'selected' =>
+                            'IR CAB: ${rig.cabinet?.name ?? 'SELECTED'}',
+                          'embedded' => 'CAB: INCLUDED IN AMP NAM',
+                          'not_found' => 'IR CAB: NO MATCH FOUND',
+                          _ => 'IR CAB: MANUAL / OFF',
+                        },
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: rig.cabinetMode == 'selected'
+                              ? LostChrome.lime
+                              : LostChrome.ice.withValues(alpha: .72),
+                          fontSize: 9,
+                          letterSpacing: .45,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
                       if (rig.rankingConfidence != null) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -5344,11 +9923,56 @@ class _StatusDot extends StatelessWidget {
   }
 }
 
-class _UtilityDeck extends StatelessWidget {
+class _UtilityDeck extends StatefulWidget {
   const _UtilityDeck({required this.snapshot, required this.onOpenRiffVault});
 
   final MeterSnapshot snapshot;
   final VoidCallback onOpenRiffVault;
+
+  @override
+  State<_UtilityDeck> createState() => _UtilityDeckState();
+}
+
+class _UtilityDeckState extends State<_UtilityDeck> {
+  static const _historyLength = 88;
+  late final List<double> _inputHistory;
+  late final List<double> _outputHistory;
+  late double _lastInputDb;
+  late double _lastOutputDb;
+  var _historyRevision = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _inputHistory = List<double>.filled(_historyLength, 0, growable: true);
+    _outputHistory = List<double>.filled(_historyLength, 0, growable: true);
+    _lastInputDb = widget.snapshot.inputDb;
+    _lastOutputDb = widget.snapshot.outputDb;
+    _appendSnapshot(widget.snapshot);
+  }
+
+  @override
+  void didUpdateWidget(covariant _UtilityDeck oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.snapshot.inputDb != _lastInputDb ||
+        widget.snapshot.outputDb != _lastOutputDb) {
+      _appendSnapshot(widget.snapshot);
+    }
+  }
+
+  double _level(double db) => ((db.clamp(-60, 0) + 60) / 60).toDouble();
+
+  void _appendSnapshot(MeterSnapshot snapshot) {
+    _lastInputDb = snapshot.inputDb;
+    _lastOutputDb = snapshot.outputDb;
+    _inputHistory
+      ..removeAt(0)
+      ..add(_level(snapshot.inputDb));
+    _outputHistory
+      ..removeAt(0)
+      ..add(_level(snapshot.outputDb));
+    _historyRevision++;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -5362,16 +9986,17 @@ class _UtilityDeck extends StatelessWidget {
             accent: LostChrome.electric,
             action: IconButton(
               tooltip: 'Riff Vault',
-              onPressed: onOpenRiffVault,
+              onPressed: widget.onOpenRiffVault,
               constraints: const BoxConstraints.tightFor(width: 25, height: 25),
               padding: EdgeInsets.zero,
               icon: const Icon(Icons.bookmark_added_outlined, size: 16),
             ),
             child: CustomPaint(
               painter: _AudioScopePainter(
-                inputDb: snapshot.inputDb,
-                outputDb: snapshot.outputDb,
-                clipped: snapshot.clipped,
+                inputHistory: _inputHistory,
+                outputHistory: _outputHistory,
+                clipped: widget.snapshot.clipped,
+                revision: _historyRevision,
               ),
               child: const SizedBox.expand(),
             ),
@@ -5431,9 +10056,10 @@ class _ChromeUtilityPanel extends StatelessWidget {
                 const SizedBox(width: 5),
                 Text(title,
                     style: const TextStyle(
-                      fontSize: 9,
+                      fontSize: 10,
                       letterSpacing: 1.1,
                       fontWeight: FontWeight.w900,
+                      color: LostChrome.pearl,
                     )),
                 const Spacer(),
                 if (action != null) action!,
@@ -5452,10 +10078,10 @@ class _ChromeUtilityPanel extends StatelessWidget {
             const SizedBox(height: 2),
             Text(detail,
                 style: TextStyle(
-                    color: LostChrome.ice.withValues(alpha: .62),
+                    color: LostChrome.pearl.withValues(alpha: .9),
                     fontWeight: FontWeight.w700,
                     letterSpacing: .8,
-                    fontSize: 7)),
+                    fontSize: 8.5)),
             const SizedBox(height: 4),
             Expanded(child: child),
           ],
@@ -5691,7 +10317,7 @@ class _AeroLagoonTankState extends State<_AeroLagoonTank>
                               Text('AERO LAGOON',
                                   style: TextStyle(
                                     color: LostChrome.pearl,
-                                    fontSize: 8,
+                                    fontSize: 9,
                                     fontWeight: FontWeight.w900,
                                     letterSpacing: .9,
                                   )),
@@ -5732,7 +10358,7 @@ class _LagoonStatus extends StatelessWidget {
             Text('AQUA',
                 style: TextStyle(
                   color: LostChrome.pearl,
-                  fontSize: 7,
+                  fontSize: 8,
                   letterSpacing: .7,
                   fontWeight: FontWeight.w900,
                 )),
@@ -6103,19 +10729,34 @@ class _AeroLagoonPainter extends CustomPainter {
 
 class _AudioScopePainter extends CustomPainter {
   const _AudioScopePainter({
-    required this.inputDb,
-    required this.outputDb,
+    required this.inputHistory,
+    required this.outputHistory,
     required this.clipped,
+    required this.revision,
   });
 
-  final double inputDb;
-  final double outputDb;
+  final List<double> inputHistory;
+  final List<double> outputHistory;
   final bool clipped;
-
-  double _level(double db) => ((db.clamp(-60, 0) + 60) / 60).toDouble();
+  final int revision;
 
   @override
   void paint(Canvas canvas, Size size) {
+    final bounds = Offset.zero & size;
+    canvas.save();
+    canvas.clipRect(bounds);
+
+    final laneFill = Paint()
+      ..color = LostChrome.electric.withValues(alpha: .035);
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * .08, size.width, size.height * .34),
+      laneFill,
+    );
+    laneFill.color = LostChrome.lime.withValues(alpha: .025);
+    canvas.drawRect(
+      Rect.fromLTWH(0, size.height * .58, size.width, size.height * .34),
+      laneFill,
+    );
     final grid = Paint()
       ..color = LostChrome.ice.withValues(alpha: .13)
       ..strokeWidth = 1;
@@ -6127,63 +10768,106 @@ class _AudioScopePainter extends CustomPainter {
       final y = size.height * row / 3;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
     }
-    _wave(
+    final centerLine = Paint()
+      ..color = LostChrome.ice.withValues(alpha: .22)
+      ..strokeWidth = 1;
+    canvas.drawLine(Offset(0, size.height * .27),
+        Offset(size.width, size.height * .27), centerLine);
+    canvas.drawLine(Offset(0, size.height * .73),
+        Offset(size.width, size.height * .73), centerLine);
+
+    // New samples arrive on the right and travel left through a fixed frame.
+    // The fixed lane height makes the scope legible even when a strong signal
+    // arrives; energy changes glow and the trace position, never panel height.
+    _trace(
       canvas,
       size,
-      _level(inputDb),
-      size.height * .35,
+      inputHistory,
+      size.height * .27,
       LostChrome.electric,
-      2.2,
+      0,
     );
-    _wave(
+    _trace(
       canvas,
       size,
-      _level(outputDb),
-      size.height * .7,
+      outputHistory,
+      size.height * .73,
       clipped ? const Color(0xffff6c8c) : LostChrome.lime,
-      3.4,
+      1,
     );
+    _scanMarker(canvas, size);
+    canvas.restore();
   }
 
-  void _wave(
+  void _trace(
     Canvas canvas,
     Size size,
-    double level,
+    List<double> history,
     double center,
     Color color,
-    double cycles,
+    int lane,
   ) {
+    if (history.isEmpty) return;
     final path = Path();
-    final amplitude = math.max(2.0, size.height * (.04 + level * .2));
-    for (var x = 0.0; x <= size.width; x += 2) {
-      final progress = x / size.width;
-      final envelope = .55 + .45 * math.sin(progress * math.pi);
-      final y = center +
-          math.sin(progress * math.pi * cycles * 2) * amplitude * envelope;
-      if (x == 0) {
+    final availableHeight = size.height * .17;
+    var peak = 0.0;
+    Offset? peakPoint;
+    for (var index = 0; index < history.length; index++) {
+      final progress = index / (history.length - 1);
+      final x = size.width * progress;
+      final level = history[index].clamp(0.0, 1.0);
+      // A restrained carrier gives the level history the recognizable motion of
+      // a scope without inventing an audio waveform we do not receive.
+      final carrier =
+          math.sin((index * .57) + lane * 1.8) * (2.5 + level * 4.5);
+      final y = center - (level - .5) * availableHeight + carrier;
+      if (index == 0) {
         path.moveTo(x, y);
       } else {
         path.lineTo(x, y);
       }
+      if (level >= peak) {
+        peak = level;
+        peakPoint = Offset(x, y);
+      }
     }
     final glow = Paint()
-      ..color = color.withValues(alpha: .32)
+      ..color = color.withValues(alpha: .18 + peak * .28)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 5
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+      ..strokeWidth = 4.5
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
     canvas.drawPath(path, glow);
     final line = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4;
+      ..strokeWidth = 1.55;
     canvas.drawPath(path, line);
+    if (peakPoint != null && peak > .22) {
+      final bloom = Paint()
+        ..color = color.withValues(alpha: .20 + peak * .3)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+      canvas.drawCircle(peakPoint, 5 + peak * 3, bloom);
+      canvas.drawCircle(peakPoint, 1.9, Paint()..color = color);
+    }
+  }
+
+  void _scanMarker(Canvas canvas, Size size) {
+    final x = size.width - 3;
+    final sweep = Paint()
+      ..shader = LinearGradient(
+        colors: [
+          LostChrome.electric.withValues(alpha: 0),
+          LostChrome.electric.withValues(alpha: .6),
+          LostChrome.ice.withValues(alpha: .9),
+        ],
+      ).createShader(Rect.fromLTWH(size.width - 24, 0, 24, size.height))
+      ..strokeWidth = 1.2;
+    canvas.drawLine(Offset(x, 0), Offset(x, size.height), sweep);
   }
 
   @override
   bool shouldRepaint(covariant _AudioScopePainter oldDelegate) =>
-      inputDb != oldDelegate.inputDb ||
-      outputDb != oldDelegate.outputDb ||
-      clipped != oldDelegate.clipped;
+      revision != oldDelegate.revision || clipped != oldDelegate.clipped;
 }
 
 class _MeterStrip extends StatelessWidget {
@@ -6311,6 +10995,11 @@ class EngineSnapshot {
     required this.ampMidDb,
     required this.ampTrebleDb,
     required this.ampVolumeDb,
+    required this.cabinetEnabled,
+    required this.cabinetIr,
+    required this.cabinetGainDb,
+    required this.cabinetLowCutHz,
+    required this.cabinetHighCutHz,
     required this.gateEnabled,
     required this.gateThresholdDb,
     required this.compressorEnabled,
@@ -6326,6 +11015,19 @@ class EngineSnapshot {
     required this.chorusRateHz,
     required this.chorusDepth,
     required this.chorusMix,
+    required this.flangerEnabled,
+    required this.flangerVisible,
+    required this.flangerRateHz,
+    required this.flangerDepth,
+    required this.flangerFeedback,
+    required this.flangerMix,
+    required this.tremoloEnabled,
+    required this.tremoloVisible,
+    required this.tremoloRateHz,
+    required this.tremoloDepth,
+    required this.octaverEnabled,
+    required this.octaverVisible,
+    required this.octaverMix,
     required this.delayEnabled,
     required this.delayVisible,
     required this.delayTimeMs,
@@ -6361,6 +11063,11 @@ class EngineSnapshot {
         ampMidDb = 0,
         ampTrebleDb = 0,
         ampVolumeDb = 0,
+        cabinetEnabled = false,
+        cabinetIr = null,
+        cabinetGainDb = 0,
+        cabinetLowCutHz = 80,
+        cabinetHighCutHz = 8000,
         gateEnabled = false,
         gateThresholdDb = -55,
         compressorEnabled = false,
@@ -6376,6 +11083,19 @@ class EngineSnapshot {
         chorusRateHz = .8,
         chorusDepth = .5,
         chorusMix = .35,
+        flangerEnabled = false,
+        flangerVisible = false,
+        flangerRateHz = .3,
+        flangerDepth = .55,
+        flangerFeedback = .25,
+        flangerMix = .4,
+        tremoloEnabled = false,
+        tremoloVisible = false,
+        tremoloRateHz = 4,
+        tremoloDepth = .55,
+        octaverEnabled = false,
+        octaverVisible = false,
+        octaverMix = .45,
         delayEnabled = false,
         delayVisible = false,
         delayTimeMs = 360,
@@ -6411,6 +11131,12 @@ class EngineSnapshot {
       ampMidDb: (json['amp_mid_db'] as num?)?.toDouble() ?? 0,
       ampTrebleDb: (json['amp_treble_db'] as num?)?.toDouble() ?? 0,
       ampVolumeDb: (json['amp_volume_db'] as num?)?.toDouble() ?? 0,
+      cabinetEnabled: json['cabinet_enabled'] as bool? ?? false,
+      cabinetIr: json['cabinet_ir'] as String?,
+      cabinetGainDb: (json['cabinet_gain_db'] as num?)?.toDouble() ?? 0,
+      cabinetLowCutHz: (json['cabinet_low_cut_hz'] as num?)?.toDouble() ?? 80,
+      cabinetHighCutHz:
+          (json['cabinet_high_cut_hz'] as num?)?.toDouble() ?? 8000,
       gateEnabled: json['gate_enabled'] as bool? ?? false,
       gateThresholdDb: (json['gate_threshold_db'] as num?)?.toDouble() ?? -55,
       compressorEnabled: json['compressor_enabled'] as bool? ?? false,
@@ -6427,6 +11153,19 @@ class EngineSnapshot {
       chorusRateHz: (json['chorus_rate_hz'] as num?)?.toDouble() ?? .8,
       chorusDepth: (json['chorus_depth'] as num?)?.toDouble() ?? .5,
       chorusMix: (json['chorus_mix'] as num?)?.toDouble() ?? .35,
+      flangerEnabled: json['flanger_enabled'] as bool? ?? false,
+      flangerVisible: json['flanger_visible'] as bool? ?? false,
+      flangerRateHz: (json['flanger_rate_hz'] as num?)?.toDouble() ?? .3,
+      flangerDepth: (json['flanger_depth'] as num?)?.toDouble() ?? .55,
+      flangerFeedback: (json['flanger_feedback'] as num?)?.toDouble() ?? .25,
+      flangerMix: (json['flanger_mix'] as num?)?.toDouble() ?? .4,
+      tremoloEnabled: json['tremolo_enabled'] as bool? ?? false,
+      tremoloVisible: json['tremolo_visible'] as bool? ?? false,
+      tremoloRateHz: (json['tremolo_rate_hz'] as num?)?.toDouble() ?? 4,
+      tremoloDepth: (json['tremolo_depth'] as num?)?.toDouble() ?? .55,
+      octaverEnabled: json['octaver_enabled'] as bool? ?? false,
+      octaverVisible: json['octaver_visible'] as bool? ?? false,
+      octaverMix: (json['octaver_mix'] as num?)?.toDouble() ?? .45,
       delayEnabled: json['delay_enabled'] as bool? ?? false,
       delayVisible: json['delay_visible'] as bool? ?? false,
       delayTimeMs: (json['delay_time_ms'] as num?)?.toDouble() ?? 360,
@@ -6463,6 +11202,11 @@ class EngineSnapshot {
   final double ampMidDb;
   final double ampTrebleDb;
   final double ampVolumeDb;
+  final bool cabinetEnabled;
+  final String? cabinetIr;
+  final double cabinetGainDb;
+  final double cabinetLowCutHz;
+  final double cabinetHighCutHz;
   final bool gateEnabled;
   final double gateThresholdDb;
   final bool compressorEnabled;
@@ -6478,6 +11222,19 @@ class EngineSnapshot {
   final double chorusRateHz;
   final double chorusDepth;
   final double chorusMix;
+  final bool flangerEnabled;
+  final bool flangerVisible;
+  final double flangerRateHz;
+  final double flangerDepth;
+  final double flangerFeedback;
+  final double flangerMix;
+  final bool tremoloEnabled;
+  final bool tremoloVisible;
+  final double tremoloRateHz;
+  final double tremoloDepth;
+  final bool octaverEnabled;
+  final bool octaverVisible;
+  final double octaverMix;
   final bool delayEnabled;
   final bool delayVisible;
   final double delayTimeMs;
@@ -6502,6 +11259,9 @@ class EngineSnapshot {
         EffectKind.compressor => compressorEnabled,
         EffectKind.eq => eqEnabled,
         EffectKind.chorus => chorusEnabled,
+        EffectKind.flanger => flangerEnabled,
+        EffectKind.tremolo => tremoloEnabled,
+        EffectKind.octaver => octaverEnabled,
         EffectKind.delay => delayEnabled,
         EffectKind.reverb => reverbEnabled,
       };
@@ -6509,6 +11269,9 @@ class EngineSnapshot {
   bool pedalVisible(OptionalPedal pedal) => switch (pedal) {
         OptionalPedal.eq => eqVisible,
         OptionalPedal.chorus => chorusVisible,
+        OptionalPedal.flanger => flangerVisible,
+        OptionalPedal.tremolo => tremoloVisible,
+        OptionalPedal.octaver => octaverVisible,
         OptionalPedal.delay => delayVisible,
         OptionalPedal.reverb => reverbVisible,
         OptionalPedal.looper => looperVisible,
@@ -6530,6 +11293,17 @@ class EngineSnapshot {
             'chorus_depth': chorusDepth,
             'chorus_mix': chorusMix,
           },
+        EffectKind.flanger => {
+            'flanger_rate_hz': flangerRateHz,
+            'flanger_depth': flangerDepth,
+            'flanger_feedback': flangerFeedback,
+            'flanger_mix': flangerMix,
+          },
+        EffectKind.tremolo => {
+            'tremolo_rate_hz': tremoloRateHz,
+            'tremolo_depth': tremoloDepth,
+          },
+        EffectKind.octaver => {'octaver_mix': octaverMix},
         EffectKind.delay => {
             'delay_time_ms': delayTimeMs,
             'delay_feedback': delayFeedback,
@@ -6621,6 +11395,22 @@ class RiffCapture {
   final String cleanPath;
   final String processedPath;
   final String preset;
+}
+
+class RiffBufferStatus {
+  const RiffBufferStatus({
+    required this.availableSeconds,
+    required this.capacitySeconds,
+  });
+
+  factory RiffBufferStatus.fromJson(Map<String, dynamic> json) =>
+      RiffBufferStatus(
+        availableSeconds: (json['available_seconds'] as num?)?.toDouble() ?? 0,
+        capacitySeconds: (json['capacity_seconds'] as num?)?.toDouble() ?? 180,
+      );
+
+  final double availableSeconds;
+  final double capacitySeconds;
 }
 
 class SystemAudioOutput {
@@ -6747,6 +11537,12 @@ class ControlClient {
         timeoutMessage: 'Bypass change timed out',
       );
 
+  Future<void> setCabinetBypass(bool bypassed) => _request(
+        'set_cabinet_bypass',
+        {'bypassed': bypassed},
+        timeoutMessage: 'Cabinet bypass change timed out',
+      );
+
   Future<void> setEffectBypass(EffectKind effect, bool bypassed) => _request(
         'set_effect_bypass',
         {'effect': effect.wireName, 'bypassed': bypassed},
@@ -6794,12 +11590,52 @@ class ControlClient {
         .toList(growable: false);
   }
 
-  Future<RiffCapture> saveRiff(String name) async {
+  Future<RiffBufferStatus> riffBufferStatus() async {
+    final response = await _requestRaw(
+      'riff_buffer_status',
+      const {},
+      timeoutMessage: 'Guitar take buffer status timed out',
+    );
+    return RiffBufferStatus.fromJson(
+        response['payload'] as Map<String, dynamic>);
+  }
+
+  Future<RiffCapture> saveRiff(
+    String name, {
+    double? trimStartSeconds,
+    double? trimEndSeconds,
+  }) async {
     final response = await _requestRaw(
       'save_riff',
-      {'name': name},
+      {
+        'name': name,
+        if (trimStartSeconds != null) 'trim_start_seconds': trimStartSeconds,
+        if (trimEndSeconds != null) 'trim_end_seconds': trimEndSeconds,
+      },
       timeout: const Duration(seconds: 15),
       timeoutMessage: 'Saving the Riff Vault take timed out',
+    );
+    return RiffCapture.fromJson(response['payload'] as Map<String, dynamic>);
+  }
+
+  Future<RiffCapture> trimRiff({
+    required String name,
+    required String cleanPath,
+    required String processedPath,
+    required double startSeconds,
+    required double endSeconds,
+  }) async {
+    final response = await _requestRaw(
+      'trim_riff',
+      {
+        'name': name,
+        'clean_path': cleanPath,
+        'processed_path': processedPath,
+        'trim_start_seconds': startSeconds,
+        'trim_end_seconds': endSeconds,
+      },
+      timeout: const Duration(seconds: 15),
+      timeoutMessage: 'Trimming the guitar take timed out',
     );
     return RiffCapture.fromJson(response['payload'] as Map<String, dynamic>);
   }
@@ -6808,6 +11644,19 @@ class ControlClient {
         'clear_model',
         {'slot': slot.name},
         timeoutMessage: 'Clearing the model timed out',
+      );
+
+  Future<void> clearCabinet() => _request(
+        'clear_cabinet',
+        const {},
+        timeoutMessage: 'Clearing the cabinet timed out',
+      );
+
+  Future<void> selectCabinet(String path) => _request(
+        'select_cabinet',
+        {'path': path},
+        timeout: const Duration(seconds: 15),
+        timeoutMessage: 'Cabinet IR preparation timed out',
       );
 
   Future<void> setControl(String control, double value) => _request(
@@ -7133,6 +11982,7 @@ class AiTonePlan {
     required this.summary,
     required this.pedalQuery,
     required this.ampQuery,
+    required this.intent,
     required this.controls,
     required this.effects,
   });
@@ -7141,6 +11991,9 @@ class AiTonePlan {
         summary: json['summary'] as String,
         pedalQuery: json['pedal_query'] as String,
         ampQuery: json['amp_query'] as String,
+        intent: (json['intent'] as Map<String, dynamic>? ?? const {}).map(
+          (key, value) => MapEntry(key, value.toString()),
+        ),
         controls: (json['controls'] as Map<String, dynamic>).map(
           (key, value) => MapEntry(key, (value as num).toDouble()),
         ),
@@ -7152,6 +12005,7 @@ class AiTonePlan {
   final String summary;
   final String pedalQuery;
   final String ampQuery;
+  final Map<String, String> intent;
   final Map<String, double> controls;
   final Map<String, bool> effects;
 }
@@ -7190,17 +12044,23 @@ class AiToneRig {
     required this.rationale,
     required this.pedal,
     required this.amp,
+    required this.cabinet,
+    required this.cabinetMode,
     this.rankingConfidence,
     this.rankingScore,
   });
 
   factory AiToneRig.fromJson(Map<String, dynamic> json) {
     final pedal = json['pedal'];
+    final cabinet = json['cabinet'];
     return AiToneRig(
       label: json['label'] as String,
       rationale: json['rationale'] as String,
       pedal: pedal is Map<String, dynamic> ? RemoteTone.fromJson(pedal) : null,
       amp: RemoteTone.fromJson(json['amp'] as Map<String, dynamic>),
+      cabinet:
+          cabinet is Map<String, dynamic> ? RemoteTone.fromJson(cabinet) : null,
+      cabinetMode: json['cabinet_mode'] as String? ?? 'manual',
       rankingConfidence: (json['ranking_confidence'] as num?)?.toDouble(),
       rankingScore: (json['ranking_score'] as num?)?.toDouble(),
     );
@@ -7210,6 +12070,8 @@ class AiToneRig {
   final String rationale;
   final RemoteTone? pedal;
   final RemoteTone amp;
+  final RemoteTone? cabinet;
+  final String cabinetMode;
   final double? rankingConfidence;
   final double? rankingScore;
 
@@ -7221,11 +12083,24 @@ class AiToneRig {
   }
 }
 
+class CabinetIr {
+  const CabinetIr({required this.name, required this.path});
+
+  factory CabinetIr.fromJson(Map<String, dynamic> json) => CabinetIr(
+        name: json['name'] as String? ?? 'AI cabinet IR',
+        path: json['path'] as String,
+      );
+
+  final String name;
+  final String path;
+}
+
 class AiToneApplication {
   const AiToneApplication({
     required this.summary,
     required this.preModel,
     required this.ampModel,
+    required this.cabinetIr,
     required this.controls,
     required this.effects,
     required this.memoryCandidate,
@@ -7233,6 +12108,7 @@ class AiToneApplication {
 
   factory AiToneApplication.fromJson(Map<String, dynamic> json) {
     final preModel = json['pre_model'];
+    final cabinetIr = json['cabinet_ir'];
     return AiToneApplication(
       summary: json['summary'] as String,
       preModel: preModel is Map<String, dynamic>
@@ -7240,6 +12116,9 @@ class AiToneApplication {
           : null,
       ampModel:
           CatalogModel.fromJson(json['amp_model'] as Map<String, dynamic>),
+      cabinetIr: cabinetIr is Map<String, dynamic>
+          ? CabinetIr.fromJson(cabinetIr)
+          : null,
       controls: (json['controls'] as Map<String, dynamic>).map(
         (key, value) => MapEntry(key, (value as num).toDouble()),
       ),
@@ -7254,6 +12133,7 @@ class AiToneApplication {
   final String summary;
   final CatalogModel? preModel;
   final CatalogModel ampModel;
+  final CabinetIr? cabinetIr;
   final Map<String, double> controls;
   final Map<String, bool> effects;
   final Map<String, dynamic> memoryCandidate;

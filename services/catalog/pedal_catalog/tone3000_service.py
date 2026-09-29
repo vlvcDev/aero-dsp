@@ -10,6 +10,7 @@ from typing import Any
 
 from .tone3000 import (
     DEFAULT_BASE_URL,
+    IR_FORMAT,
     PkceSession,
     Tone3000Client,
     Tone3000Error,
@@ -107,15 +108,43 @@ class Tone3000Service:
             raise Tone3000Error("TONE3000 returned invalid tone details")
         return {"tone": self._tone_summary(tone), "models": self.models(tone_id)}
 
-    def models(self, tone_id: str) -> list[dict[str, Any]]:
-        payload = self.client.list_models(tone_id)
+    def models(self, tone_id: str, *, format: str = "nam") -> list[dict[str, Any]]:
+        # Keep the established A2 filter for NAMs. IRs are WAV captures rather
+        # than neural models, so they must not be filtered by NAM architecture.
+        if format == "nam":
+            payload = self.client.list_models(tone_id)
+        elif format == IR_FORMAT:
+            payload = self.client.list_models(tone_id, architecture=None)
+        else:
+            raise Tone3000Error("Unsupported TONE3000 model format")
         self._sync_tokens()
         return [self._model_summary(item, tone_id) for item in self._items(payload)]
 
     def search(self, query: str, *, role: str) -> list[dict[str, Any]]:
         """Return a deliberately small, compatible candidate list for AI tone making."""
-        gears = ("pedal",) if role == "pedal" else ("amp", "amp-cab")
-        payload = self.client.search_tones(query, gears=gears, page_size=5)
+        if role == "pedal":
+            gears = ("pedal",)
+            format = "nam"
+            architecture: int | None = 2
+        elif role == "amp":
+            gears = ("amp", "amp-cab")
+            format = "nam"
+            architecture = 2
+        elif role == "cabinet":
+            # TONE3000's API enum calls this `cab`, while the human-facing
+            # label is “Cabinet IR”. Using `cabinet` silently returns no hits.
+            gears = ("cab",)
+            format = IR_FORMAT
+            architecture = None
+        else:
+            raise Tone3000Error("Unsupported AI tone search role")
+        payload = self.client.search_tones(
+            query,
+            gears=gears,
+            page_size=5,
+            format=format,
+            architecture=architecture,
+        )
         self._sync_tokens()
         return [self._tone_summary(item) for item in self._items(payload)]
 
@@ -130,14 +159,27 @@ class Tone3000Service:
             raise Tone3000Error("TONE3000 tone has no compatible NAM A2 models")
         return self.download(tone_id, models[0]["id"], models_dir)
 
+    def download_best_ir(self, tone_id: str, irs_dir: Path) -> tuple[Path, str]:
+        """Install the first catalog-sorted cabinet IR as a WAV file."""
+        models = self.models(tone_id, format=IR_FORMAT)
+        if not models:
+            raise Tone3000Error("TONE3000 cabinet has no downloadable IR files")
+        return self.download(tone_id, models[0]["id"], irs_dir, format=IR_FORMAT)
+
     def download(
         self,
         tone_id: str,
         model_id: str,
         models_dir: Path,
+        *,
+        format: str = "nam",
     ) -> tuple[Path, str]:
         model = next(
-            (item for item in self.models(tone_id) if item["id"] == str(model_id)),
+            (
+                item
+                for item in self.models(tone_id, format=format)
+                if item["id"] == str(model_id)
+            ),
             None,
         )
         if model is None:
@@ -146,7 +188,8 @@ class Tone3000Service:
         safe_name = (safe_name or f"tone3000-{model_id}")[:80]
         safe_id = re.sub(r"[^A-Za-z0-9_-]+", "-", str(model_id)).strip("-")
         safe_id = (safe_id or "model")[:40]
-        destination = models_dir / f"{safe_name}-{safe_id}.nam"
+        extension = ".wav" if format == IR_FORMAT else ".nam"
+        destination = models_dir / f"{safe_name}-{safe_id}{extension}"
         sha256 = self.client.download_model(
             model["download_url"],
             destination,

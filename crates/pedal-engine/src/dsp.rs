@@ -424,6 +424,22 @@ impl<P> SwapMailbox<P> {
         slot.retired.take();
         slot.pending = Some(prepared);
     }
+
+    /// Non-blocking handoff for a processor that owns its own active state.
+    /// The replaced value is retained in the mailbox and dropped next time a
+    /// control-thread stage occurs, never from the audio callback.
+    pub fn swap_pending(&self, active: &mut P) -> bool {
+        match self.slot.try_lock() {
+            Ok(mut slot) => {
+                let Some(prepared) = slot.pending.take() else {
+                    return false;
+                };
+                slot.retired = Some(std::mem::replace(active, prepared));
+                true
+            }
+            Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => false,
+        }
+    }
 }
 
 pub struct SwappableProcessor<P> {

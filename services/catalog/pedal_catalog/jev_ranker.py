@@ -89,9 +89,9 @@ class JevRigRanker:
     ) -> list[JevRigMatch] | None:
         """Return the top three matches, or ``None`` when Jev is uncertain.
 
-        TONE3000 searches are capped at five candidates per role, leaving at
-        most 25 independent Score questions in one bounded request. Ordinary
-        deterministic code handles the final ordering.
+        The selector retains at most five candidates per role after diverse
+        searches, leaving at most 25 independent Score questions in one
+        bounded request. Ordinary deterministic code handles final ordering.
         """
 
         if not self.available:
@@ -186,6 +186,7 @@ def _candidate_brief(candidate: dict[str, Any] | None) -> dict[str, str] | None:
         "name": str(candidate.get("name", ""))[:160],
         "author": str(candidate.get("author", ""))[:100],
         "gear": str(candidate.get("gear", ""))[:100],
+        "search_context": str(candidate.get("search_context", ""))[:100],
     }
 
 

@@ -1,7 +1,9 @@
 use crate::EngineState;
+use crate::cabinet::{CabinetImpulse, CabinetParameters, CabinetProcessor};
 use crate::dsp::{
     AmpControlProcessor, AmpParameters, AmpProcessor, BypassProcessor, MonoProcessor,
     PedalControlProcessor, PedalParameters, RealtimeTelemetry, SafetyProcessor, SerialProcessor,
+    SwapMailbox,
 };
 use crate::effects::{EffectChainProcessor, EffectsParameters};
 use std::fs::{self, File};
@@ -59,11 +61,31 @@ pub fn render_source(
         state.amp_volume_db,
     ));
     let effects_parameters = Arc::new(EffectsParameters::from_state(state));
+    let cabinet_parameters = Arc::new(CabinetParameters::new(
+        state.cabinet_enabled,
+        state.cabinet_gain_db,
+        state.cabinet_low_cut_hz,
+        state.cabinet_high_cut_hz,
+    ));
+    let cabinet = match state.cabinet_ir.as_deref() {
+        Some(path) => Some(
+            CabinetImpulse::load(Path::new(path), SAMPLE_RATE)
+                .map_err(|error| format!("could not prepare preview cabinet {path}: {error}"))?,
+        ),
+        None => None,
+    };
     let pre = PedalControlProcessor::new(pre, pedal_parameters, BLOCK_FRAMES);
     let pre = BypassProcessor::new(pre, Arc::new(AtomicBool::new(state.pre_bypassed)));
     let amp = AmpControlProcessor::new(amp, amp_parameters, SAMPLE_RATE);
     let amp = BypassProcessor::new(amp, Arc::new(AtomicBool::new(state.amp_bypassed)));
     let chain = SerialProcessor::new(pre, amp);
+    let chain = CabinetProcessor::new(
+        chain,
+        cabinet,
+        cabinet_parameters,
+        Arc::new(SwapMailbox::default()),
+        SAMPLE_RATE,
+    );
     // A preview starts with an empty in-memory loop; it still renders the
     // rest of the board exactly as the live engine does.
     let chain = EffectChainProcessor::new(chain, effects_parameters, SAMPLE_RATE, 30);

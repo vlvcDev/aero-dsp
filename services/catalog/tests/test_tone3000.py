@@ -106,6 +106,29 @@ class Tone3000Tests(unittest.TestCase):
         self.assertEqual(params["architecture"], ["2"])
         self.assertEqual(params["page_size"], ["5"])
 
+    def test_ir_search_does_not_apply_the_nam_architecture_filter(self) -> None:
+        transport = FakeTransport([json_response({"data": []})])
+        client = Tone3000Client(
+            "t3k_pub_test",
+            tokens=Tokens("access", "refresh", 10_000),
+            transport=transport,
+            clock=lambda: 1_000,
+        )
+
+        client.search_tones(
+            "Marshall 4x12",
+            gears=("cab",),
+            format="ir",
+            architecture=None,
+        )
+
+        params = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(transport.requests[0].full_url).query
+        )
+        self.assertEqual(params["gears"], ["cab"])
+        self.assertEqual(params["format"], ["ir"])
+        self.assertNotIn("architecture", params)
+
     def test_exchange_code_uses_official_form_fields(self) -> None:
         transport = FakeTransport(
             [json_response({"access_token": "a", "refresh_token": "r", "expires_in": 3600})]

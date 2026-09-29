@@ -15,9 +15,10 @@ void main() {
     expect(find.text('Waiting for engine'), findsOneWidget);
     expect(find.byTooltip('Test audio'), findsOneWidget);
     expect(find.byTooltip('AI Tone Maker'), findsOneWidget);
+    expect(find.byTooltip('Riff Vault'), findsOneWidget);
     expect(find.byTooltip('Reconnect engine'), findsOneWidget);
-    expect(find.text('INPUT SCOPE'), findsOneWidget);
-    expect(find.text('AERO LAGOON'), findsOneWidget);
+    expect(find.text('INPUT SCOPE'), findsNothing);
+    expect(find.text('AERO LAGOON'), findsNothing);
     expect(find.text('T3K'), findsOneWidget);
     expect(find.text('SND'), findsOneWidget);
     expect(find.text('IN'), findsOneWidget);
