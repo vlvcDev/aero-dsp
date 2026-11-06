@@ -1,4 +1,5 @@
 /target/
+/.transcription-venv/
 /.dart_tool/
 /.flutter-plugins*
 /build/
@@ -12,5 +13,6 @@ __pycache__/
 .pytest_cache/
 data/catalog.db*
 data/models/*.nam
+data/models/*.nam.json
 data/irs/*.wav
 !.gitkeep

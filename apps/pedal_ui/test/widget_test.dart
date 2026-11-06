@@ -5,6 +5,331 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pedal_ui/main.dart';
 
 void main() {
+  testWidgets(
+      'capture carousel switches offline and retains selection on failure',
+      (tester) async {
+    tester.view.physicalSize = const Size(480, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final catalog = CaptureTestCatalog();
+    String? selected;
+    bool fail = false;
+    await tester.pumpWidget(PedalAppTestShell(
+        child: SlotControlsSheet(
+      slot: ModelSlot.amp,
+      snapshot: EngineSnapshot.fromJson(
+          {'bypassed': false, 'preset': 'Test', 'model': '/a.nam'}),
+      onChanged: (_, __) async {},
+      onChangeTone: () {},
+      catalog: catalog,
+      onCaptureSelected: (m) async {
+        if (fail) throw Exception('load failed');
+        selected = m.path;
+      },
+    )));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Next capture'));
+    await tester.pumpAndSettle();
+    expect(selected, '/b.nam');
+    expect(find.textContaining('2 / 2 cached captures'), findsOneWidget);
+    fail = true;
+    await tester.tap(find.byTooltip('Previous capture'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('2 / 2 cached captures'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'capture download permits a subset and skips already cached captures',
+      (tester) async {
+    final catalog = CaptureTestCatalog();
+    await tester.pumpWidget(PedalAppTestShell(
+        child: Tone3000BrowserSheet(
+      catalog: catalog,
+      engineConnected: false,
+      onSelected: (_, __) async {},
+    )));
+    await tester.pumpAndSettle();
+    expect(find.text('Download 3 captures'), findsOneWidget);
+    await tester.tap(find.text('Skip me'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Download 2 captures'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Download'));
+    await tester.pumpAndSettle();
+    expect(catalog.downloads, ['2']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tab edits are protected when closing the control bay',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final catalog = TabEditTestCatalog();
+    await tester.pumpWidget(PedalAppTestShell(
+        child: Builder(
+            builder: (context) => TextButton(
+                onPressed: () => showAeroControlBay<void>(context,
+                    title: 'Tabs',
+                    icon: Icons.music_note,
+                    child: GuitarTabEditor(
+                        initialJob: catalog.job,
+                        catalog: catalog,
+                        clip: const TimelineClip(
+                            id: 'c',
+                            takePath: '/wet.wav',
+                            sourceDurationMilliseconds: 2000))),
+                child: const Text('Open tabs')))));
+    await tester.tap(find.text('Open tabs'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Restore original'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pumpAndSettle();
+    expect(find.text('Discard unsaved tab edits?'), findsOneWidget);
+    await tester.tap(find.text('Keep editing'));
+    await tester.pumpAndSettle();
+    expect(find.text('TAB WORKBENCH · 120 BPM'), findsOneWidget);
+    await tester.tap(find.byTooltip('Close'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Discard'));
+    await tester.pumpAndSettle();
+    expect(find.text('TAB WORKBENCH · 120 BPM'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'tab editor adds fret corrections, saves, undoes and plays clean offsets',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final catalog = TabEditTestCatalog();
+    final audio = TabPlaybackTestClient();
+    await tester.pumpWidget(PedalAppTestShell(
+        child: GuitarTabEditor(
+      initialJob: catalog.job,
+      catalog: catalog,
+      client: audio,
+      clip: const TimelineClip(
+          id: 'c',
+          takePath: '/wet.wav',
+          cleanTakePath: '/di.wav',
+          sourceDurationMilliseconds: 5000,
+          sourceStartMilliseconds: 1250,
+          sourceEndMilliseconds: 3250),
+    )));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add note'));
+    await tester.pumpAndSettle();
+    final fret = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.labelText == 'Fret (0–24)');
+    await tester.enterText(fret, '3');
+    await tester.pumpAndSettle();
+    final start = find.byWidgetPredicate((w) =>
+        w is TextField && w.decoration?.labelText == 'Start (milliseconds)');
+    await tester.enterText(start, '127');
+    await tester.tap(find.text('Apply note'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save edits'));
+    await tester.pumpAndSettle();
+    final saved = catalog.job['notes'] as List;
+    expect(saved.length, 2);
+    expect(saved.last['midi'], 67);
+    expect(saved.last['fret'], 3);
+    expect(saved.last['start_seconds'], .127);
+    await tester.tap(find.byTooltip('Undo'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save edits'));
+    await tester.pumpAndSettle();
+    expect((catalog.job['notes'] as List).length, 1);
+    await tester.tap(find.text('Play'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    final tracks = audio.start!['tracks'] as List;
+    expect(tracks.first['clips'].first['path'], '/di.wav');
+    expect(tracks.first['clips'].first['source_in_ms'], 1250);
+    expect(tracks.first['clips'].first['length_ms'], 2000);
+    expect(audio.start!['record'], false);
+    await tester.tap(find.text('Stop'));
+    await tester.pumpAndSettle();
+    expect(audio.stops, greaterThan(0));
+    await tester.tap(find.text('0.000–2.000 s'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.byWidgetPredicate(
+            (w) => w is TextField && w.decoration?.labelText == 'Start (ms)'),
+        '500');
+    await tester.enterText(
+        find.byWidgetPredicate(
+            (w) => w is TextField && w.decoration?.labelText == 'End (ms)'),
+        '1500');
+    await tester.tap(find.text('Apply'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Loop section'));
+    await tester.tap(find.text('Play'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    final loopTracks = audio.start!['tracks'] as List;
+    expect(loopTracks.first['clips'].first['source_in_ms'], 1750);
+    expect(loopTracks.first['clips'].first['length_ms'], 1000);
+    expect(audio.start!['loop'], true);
+    await tester.tap(find.text('Stop'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tab editor scrolls at 480x320', (tester) async {
+    tester.view.physicalSize = const Size(480, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final catalog = TabEditTestCatalog();
+    await tester.pumpWidget(PedalAppTestShell(
+        child: GuitarTabEditor(
+      initialJob: catalog.job,
+      catalog: catalog,
+      clip: const TimelineClip(
+          id: 'c',
+          takePath: '/wet.wav',
+          cleanTakePath: '/di.wav',
+          sourceDurationMilliseconds: 2000),
+    )));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Add note'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Basic Pitch tabs fit a touchscreen and preserve source offsets',
+      (tester) async {
+    tester.view.physicalSize = const Size(480, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final catalog = TranscriptionTestCatalog();
+    await tester.pumpWidget(PedalAppTestShell(
+        child:
+            GuitarTranscriptionSheet(catalog: catalog, bpm: 90, clips: const [
+      TimelineClip(
+          id: 'clip',
+          takePath: '/wet.wav',
+          cleanTakePath: '/clean.wav',
+          riffId: 'riff-test',
+          sourceDurationMilliseconds: 10000,
+          sourceStartMilliseconds: 1250,
+          sourceEndMilliseconds: 8750),
+    ])));
+    await tester.pumpAndSettle();
+    final generate = find.text('Generate / open saved tabs');
+    await tester.scrollUntilVisible(generate, 160,
+        scrollable: find.byType(Scrollable).first);
+    await tester.tap(generate);
+    await tester.pumpAndSettle();
+    expect(catalog.request?['start_ms'], 1250);
+    expect(catalog.request?['end_ms'], 8750);
+    expect(catalog.request?['clean_path'], '/clean.wav');
+    expect(catalog.request?['bpm'], 90);
+    await tester.scrollUntilVisible(find.text('e|---0---|'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('e|---0---|'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'native studio transport records to a track and persists placement',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final store = MemoryTrackStore();
+    final client = TimelineTestClient();
+    await tester.pumpWidget(PedalAppTestShell(
+        child: TrackManagerSheet(
+            client: client,
+            catalog: FakeCatalogClient(),
+            toneSnapshot: 'Test rig',
+            store: store)));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byTooltip(
+        'Timeline Record/Stop — hold for recording alignment (3 minute max)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(client.started?['record'], true);
+    expect(client.started?['recording_delay_ms'], 12);
+    await tester.tap(find.byTooltip(
+        'Timeline Record/Stop — hold for recording alignment (3 minute max)'));
+    await tester.pumpAndSettle();
+    final clip = store.projects.single.tracks.single.timelineClips.single;
+    expect(clip.timelineStartMilliseconds, 1000);
+    expect(clip.sourceStartMilliseconds, 12);
+    expect(clip.durationMilliseconds, 988);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+  });
+  testWidgets('audio quality controls scroll on a small touchscreen',
+      (tester) async {
+    tester.view.physicalSize = const Size(480, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final changes = <String, double>{};
+    await tester.pumpWidget(PedalAppTestShell(
+        child: AudioQualitySheet(
+      snapshot: EngineSnapshot.fromJson({}),
+      onChanged: (key, value) async {
+        changes[key] = value;
+      },
+      onMatch: () async => -3.5,
+    )));
+    await tester.tap(find.text('PORTABLE'));
+    await tester.pumpAndSettle();
+    expect(changes['quality_profile'], 0);
+    await tester.scrollUntilVisible(find.text('MATCH AUDITION LEVEL'), 150,
+        scrollable: find.byType(Scrollable).first, continuous: true);
+    await tester.tap(find.text('MATCH AUDITION LEVEL'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Rig level set to -3.5 dB'), 100,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Rig level set to -3.5 dB'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('octaver modes fit a small touchscreen and persist the selection',
+      (tester) async {
+    tester.view.physicalSize = const Size(480, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final changes = <String, double>{};
+    await tester.pumpWidget(PedalAppTestShell(
+        child: EffectControlsSheet(
+      effect: EffectKind.octaver,
+      snapshot: EngineSnapshot.fromJson(
+          {'octaver_clean': false, 'octaver_clean_latency_ms': 85.333}),
+      onChanged: (key, value) async {
+        changes[key] = value;
+      },
+    )));
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('CLEAN'));
+    await tester.pumpAndSettle();
+    expect(changes['octaver_clean'], 1);
+    expect(find.textContaining('+85.3 ms'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.text('ANALOG'));
+    await tester.pumpAndSettle();
+    expect(changes['octaver_clean'], 0);
+    expect(find.textContaining('no added buffering'), findsOneWidget);
+  });
+
   testWidgets('shows the disconnected rig shell', (tester) async {
     await tester.pumpWidget(const PedalApp());
 
@@ -12,18 +337,17 @@ void main() {
     expect(find.text('SIGNAL PATH'), findsOneWidget);
     expect(find.text('NAM'), findsNWidgets(2));
     expect(find.text('GATE'), findsOneWidget);
-    expect(find.text('Waiting for engine'), findsOneWidget);
+    expect(find.byTooltip('Presets: Waiting for engine'), findsOneWidget);
     expect(find.byTooltip('Test audio'), findsOneWidget);
     expect(find.byTooltip('AI Tone Maker'), findsOneWidget);
     expect(find.byTooltip('Riff Vault'), findsOneWidget);
-    expect(find.byTooltip('Reconnect engine'), findsOneWidget);
+    expect(find.byTooltip('Connecting'), findsOneWidget);
     expect(find.text('INPUT SCOPE'), findsNothing);
     expect(find.text('AERO LAGOON'), findsNothing);
-    expect(find.text('T3K'), findsOneWidget);
-    expect(find.text('SND'), findsOneWidget);
+    expect(find.byTooltip('TONE3000'), findsOneWidget);
+    expect(find.byTooltip('Output'), findsOneWidget);
     expect(find.text('IN'), findsOneWidget);
-    expect(find.text('SND'), findsOneWidget);
-    expect(find.textContaining('XRUN 0'), findsOneWidget);
+    expect(find.text('AUDIO DISABLED'), findsOneWidget);
   });
 
   testWidgets('rig shell fits the target 480x320 touchscreen', (tester) async {
@@ -248,7 +572,7 @@ Audio
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('TONE MAKER'), findsOneWidget);
+    expect(find.text('AQUA SIGNAL CONSOLE'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -271,7 +595,7 @@ Audio
     );
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'tight metal rhythm');
-    await tester.tap(find.text('PLAN MY TONE'));
+    await tester.tap(find.text('SCAN FOR RIGS'));
     await tester.pumpAndSettle();
 
     expect(find.text('JEV RANKING • CATALOG METADATA, NOT AUDIO ANALYSIS'),
@@ -422,6 +746,10 @@ Audio
       'output_db': -3.0,
       'clipped': true,
       'cpu_percent': 8.25,
+      'worst_cpu_percent': 125.0,
+      'deadline_misses': 1,
+      'audio_status': 'recovering',
+      'audio_error': 'Device disconnected',
       'xruns': 2,
       'tuner_hz': 82.41,
       'tuner_confidence': .91,
@@ -431,6 +759,10 @@ Audio
     expect(meters.outputDb, -3.0);
     expect(meters.clipped, isTrue);
     expect(meters.cpuPercent, 8.25);
+    expect(meters.worstCpuPercent, 125.0);
+    expect(meters.deadlineMisses, 1);
+    expect(meters.audioStatus, 'recovering');
+    expect(meters.audioError, 'Device disconnected');
     expect(meters.xruns, 2);
     expect(meters.tunerHz, 82.41);
     expect(meters.tunerConfidence, .91);
@@ -564,6 +896,171 @@ class FakeControlClient extends ControlClient {
           model: '/models/amp.nam',
         ),
       ];
+}
+
+class MemoryTrackStore extends TrackProjectStore {
+  List<TrackProject> projects = [
+    TrackProject(
+        id: 'p',
+        name: 'Session',
+        createdAt: DateTime(2026),
+        recordingDelayMilliseconds: 12,
+        tracks: [TrackLane(id: 'g', name: 'Guitar', input: TrackInput.guitar)])
+  ];
+  @override
+  Future<List<TrackProject>> load() async => projects;
+  @override
+  Future<void> save(List<TrackProject> value) async {
+    projects = value;
+  }
+}
+
+class TimelineTestClient extends FakeControlClient {
+  Map<String, Object?>? started;
+  bool recording = false;
+  @override
+  Future<void> setMetronome(bool enabled, int bpm) async {}
+  @override
+  Future<List<double>> riffWaveform(String path, {int points = 128}) async =>
+      [0.1, 0.2];
+  @override
+  Future<Map<String, dynamic>> timelineCommand(
+      String command, Map<String, Object?> payload) async {
+    if (command == 'timeline_start') {
+      started = payload;
+      recording = payload['record'] == true;
+    }
+    final take = command == 'timeline_stop' && recording;
+    if (command == 'timeline_stop') recording = false;
+    return {
+      'playing': recording,
+      'position_frames': 48000,
+      'sample_rate': 48000,
+      'count_in_frames': 0,
+      if (take)
+        'take': {
+          'processed_path': '/tmp/test-wet.wav',
+          'clean_path': '/tmp/test-di.wav',
+          'duration_seconds': 1,
+          'timeline_start_ms': 1000,
+          'source_in_ms': 12,
+          'length_ms': 988
+        }
+    };
+  }
+}
+
+class TabEditTestCatalog extends CatalogClient {
+  Map<String, dynamic> job = {
+    'id': 'test-tab',
+    'status': 'complete',
+    'revision': 0,
+    'bpm': 120,
+    'duration_seconds': 2.0,
+    'tuning': 'standard',
+    'tab': 'test tab',
+    'tab_path': '/tab.txt',
+    'midi_path': '/tab.mid',
+    'notes': [
+      <String, dynamic>{
+        'start_seconds': 0.0,
+        'end_seconds': .1,
+        'midi': 64,
+        'string': 1,
+        'fret': 0,
+        'strength': .8,
+        'bends': <int>[]
+      }
+    ],
+  };
+  @override
+  Future<Map<String, dynamic>> transcriptionCommand(
+      String command, Map<String, dynamic> payload) async {
+    job = {
+      ...job,
+      'revision': (job['revision'] as int) + 1,
+      'notes': payload['notes']
+    };
+    return job;
+  }
+}
+
+class TabPlaybackTestClient extends ControlClient {
+  Map<String, dynamic>? start;
+  int stops = 0;
+  @override
+  Future<Map<String, dynamic>> timelineCommand(
+      String command, Map<String, dynamic> payload) async {
+    if (command == 'timeline_start') start = payload;
+    if (command == 'timeline_stop') stops++;
+    return {
+      'playing': command != 'timeline_stop',
+      'recording': false,
+      'position_frames': 4800,
+      'sample_rate': 48000
+    };
+  }
+}
+
+class CaptureTestCatalog extends FakeCatalogClient {
+  final downloads = <String>[];
+  @override
+  Future<List<CatalogModel>> listModels() async => const [
+        CatalogModel(
+            name: 'A',
+            path: '/a.nam',
+            sizeBytes: 1,
+            source: 'tone3000:model:1',
+            favorite: false,
+            captureGroup: 'tone3000:7',
+            captureId: '1'),
+        CatalogModel(
+            name: 'B',
+            path: '/b.nam',
+            sizeBytes: 1,
+            source: 'tone3000:model:8',
+            favorite: false,
+            captureGroup: 'tone3000:7',
+            captureId: '8'),
+      ];
+  @override
+  Future<SelectedTone> selectedTone3000() async => const SelectedTone(
+        tone: RemoteTone(id: '7', name: 'Head', author: 'Tester', gear: 'amp'),
+        models: [
+          RemoteModel(id: '1', toneId: '7', name: 'Cached'),
+          RemoteModel(id: '2', toneId: '7', name: 'New capture'),
+          RemoteModel(id: '3', toneId: '7', name: 'Skip me')
+        ],
+      );
+  @override
+  Future<CatalogModel> downloadTone3000Model(
+      String toneId, String modelId) async {
+    downloads.add(modelId);
+    return CatalogModel(
+        name: 'New capture',
+        path: '/new.nam',
+        sizeBytes: 1,
+        source: 'tone3000:model:$modelId',
+        favorite: false,
+        captureGroup: 'tone3000:$toneId',
+        captureId: modelId);
+  }
+}
+
+class TranscriptionTestCatalog extends CatalogClient {
+  Map<String, dynamic>? request;
+  @override
+  Future<Map<String, dynamic>> transcriptionCommand(
+      String command, Map<String, dynamic> payload) async {
+    if (command == 'status') return {'available': true};
+    request = payload;
+    return {
+      'status': 'complete',
+      'tab': 'e|---0---|',
+      'tab_path': '/tabs.txt',
+      'midi_path': '/notes.mid'
+    };
+  }
 }
 
 class FakeCatalogClient extends CatalogClient {

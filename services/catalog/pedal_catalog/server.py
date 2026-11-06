@@ -15,6 +15,7 @@ from .tone3000 import Tone3000Error
 from .tone3000_service import Tone3000Service
 from .tone_maker import ToneMakerError, ToneMakerService
 from .tone_memory import ToneMemoryError, ToneMemoryService
+from .transcription import TranscriptionError, TranscriptionService
 
 
 API_VERSION = 1
@@ -28,6 +29,7 @@ def handle_request(
     tone_maker: ToneMakerService | None = None,
     backing_tracks: BackingTrackService | None = None,
     tone_memory: ToneMemoryService | None = None,
+    transcription: TranscriptionService | None = None,
 ) -> dict:
     request_id = str(message.get("id", "unknown"))
     if message.get("api") != API_VERSION:
@@ -84,15 +86,59 @@ def handle_request(
             "TONE3000 is not configured on this device",
         )
     try:
+        if isinstance(message_type, str) and message_type.startswith('chords_'):
+            from .chords import LIBRARY, ChordError, ai_suggestion, render_preview, suggestions, vary_progression
+            try:
+                if message_type == 'chords_library':
+                    result = {'chords': LIBRARY, 'ai_available': bool(tone_maker and tone_maker.available)}
+                elif message_type == 'chords_suggest':
+                    key, prompt = payload.get('key', 'C'), payload.get('prompt', '')
+                    voicing = payload.get('voicing', 'comfortable')
+                    result = {'progressions': [ai_suggestion(tone_maker, key, prompt, voicing)] if payload.get('ai') is True
+                              else suggestions(key, prompt, voicing)}
+                elif message_type == 'chords_vary':
+                    result = vary_progression(payload.get('steps'), payload.get('selected'),
+                        payload.get('action'), payload.get('key'), payload.get('attempt', 0),
+                        payload.get('voicing', 'comfortable'))
+                elif message_type == 'chords_preview':
+                    result = render_preview(database.parent / 'chord-preview', payload.get('steps'), payload.get('bpm'))
+                elif message_type in ('chords_phrase', 'chords_phrase_preview'):
+                    from .phrases import build_phrase, render_phrase
+                    if message_type == 'chords_phrase':
+                        result = build_phrase(payload.get('steps'), payload.get('key', 'C'), payload.get('mode', 'unspecified'))
+                    else:
+                        result = render_phrase(database.parent / 'chord-preview', payload.get('steps'),
+                            payload.get('bpm'), payload.get('key', 'C'), payload.get('mode', 'unspecified'))
+                else:
+                    raise ChordError('Unknown chord command')
+                return _response(request_id, 'chords', result)
+            except (ChordError, OSError) as error:
+                return _error(request_id, 'chords_error', str(error))
+        if message_type in ("transcription_status", "transcription_create", "transcription_job", "transcription_save"):
+            if transcription is None:
+                return _error(request_id, "transcription_unavailable", "Restart the catalog to enable transcription")
+            if message_type == "transcription_status":
+                result = transcription.status()
+            elif message_type == "transcription_create":
+                result = transcription.queue(payload)
+            elif message_type == "transcription_save":
+                result = transcription.save(payload)
+            else:
+                result = transcription.job(payload.get("id"))
+            return _response(request_id, "transcription", result)
         if message_type == "backing_track_create":
             riff_id = payload.get("riff_id")
             style = payload.get("style")
             duration_seconds = payload.get("duration_seconds", 20)
             strength = payload.get("strength", 0.65)
+            genre = payload.get("genre", "Unsorted")
+            bpm = payload.get("bpm", 120)
             if not isinstance(riff_id, str) or not isinstance(style, str):
                 return _error(request_id, "invalid_payload", "riff_id and style are required")
             if not isinstance(duration_seconds, int) or not isinstance(strength, (int, float)):
                 return _error(request_id, "invalid_payload", "duration and strength are invalid")
+            if not isinstance(genre, str) or not isinstance(bpm, int):
+                return _error(request_id, "invalid_payload", "genre and BPM are invalid")
             if backing_tracks is None:
                 return _error(
                     request_id,
@@ -107,6 +153,8 @@ def handle_request(
                     style,
                     duration_seconds=duration_seconds,
                     strength=float(strength),
+                    genre=genre,
+                    bpm=bpm,
                 ).as_payload(),
             )
         if message_type == "backing_track_job":
@@ -189,6 +237,20 @@ def handle_request(
         if message_type == "tone3000_disconnect":
             tone3000.disconnect()  # type: ignore[union-attr]
             return _response(request_id, "tone3000_status", tone3000.status())  # type: ignore[union-attr]
+        if message_type == "tone3000_sync_tags":
+            from .index import write_capture_metadata
+            tone_id = str(payload.get('tone_id', ''))
+            records = [m for m in list_models(database)
+                       if m.capture_group == f'tone3000:{tone_id}']
+            if not records:
+                raise Tone3000Error('No local captures for this tone')
+            response = tone3000.client.get_tone(tone_id)
+            tone3000._sync_tokens()
+            summary = tone3000._tone_summary(response.get('data', response))
+            for record in records:
+                write_capture_metadata(Path(record.path), tone_id, record.capture_id,
+                                       record.name, summary['name'], summary['gear'], summary['tags'])
+            return _response(request_id, 'tone3000_tags_synced', {'count': len(records)})
         if message_type == "tone3000_selected":
             return _response(
                 request_id,
@@ -213,6 +275,8 @@ def handle_request(
         return _error(request_id, "backing_track_error", str(error))
     except ToneMemoryError as error:
         return _error(request_id, "tone_memory_error", str(error))
+    except TranscriptionError as error:
+        return _error(request_id, "transcription_error", str(error))
     return _error(request_id, "unknown_message", "Unknown catalog message type")
 
 
@@ -238,6 +302,7 @@ class _CatalogServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
         backing_tracks: BackingTrackService | None,
         tone_memory: ToneMemoryService | None,
         tone3000_lock: threading.Lock,
+        transcription: TranscriptionService | None = None,
     ) -> None:
         self.models_dir = models_dir
         self.database = database
@@ -245,6 +310,7 @@ class _CatalogServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
         self.tone_maker = tone_maker
         self.backing_tracks = backing_tracks
         self.tone_memory = tone_memory
+        self.transcription = transcription
         self.tone3000_lock = tone3000_lock
         super().__init__(str(socket_path), _CatalogHandler)
 
@@ -266,6 +332,7 @@ class _CatalogHandler(socketserver.StreamRequestHandler):
                         server.tone_maker,
                         server.backing_tracks,
                         server.tone_memory,
+                        server.transcription,
                     )
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
                 response = _error("unknown", "invalid_json", str(error))
@@ -281,6 +348,7 @@ def serve(
     tone_maker: ToneMakerService | None = None,
     backing_tracks: BackingTrackService | None = None,
     tone_memory: ToneMemoryService | None = None,
+    transcription: TranscriptionService | None = None,
 ) -> None:
     models_dir.mkdir(parents=True, exist_ok=True)
     database.parent.mkdir(parents=True, exist_ok=True)
@@ -309,6 +377,7 @@ def serve(
             backing_tracks,
             tone_memory,
             tone3000_lock,
+            transcription,
         ) as server:
             os.chmod(socket_path, 0o660)
             print(f"pedal-catalog listening on {socket_path}", flush=True)

@@ -6,3 +6,7 @@ resolver = "2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 version = "0.1.0"
+
+# The spectral octaver must remain usable in development audio sessions too.
+[profile.dev.package.signalsmith-stretch]
+opt-level = 2

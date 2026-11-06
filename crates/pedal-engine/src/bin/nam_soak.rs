@@ -1,4 +1,4 @@
-use nam_bridge::NamModel;
+use nam_bridge::{NamModel, NamQuality};
 use pedal_engine::dsp::{InterleavedLayout, process_interleaved_i32};
 use std::env;
 use std::path::PathBuf;
@@ -14,11 +14,24 @@ fn main() {
     let model_path = env::args_os()
         .nth(1)
         .map_or_else(default_model, PathBuf::from);
-    let mut model = NamModel::load(&model_path, SAMPLE_RATE as f64, FRAMES_PER_BLOCK)
-        .unwrap_or_else(|error| {
-            eprintln!("Could not load {}: {error}", model_path.display());
+    let quality = match env::args().nth(2).as_deref() {
+        None | Some("--full") => NamQuality::Full,
+        Some("--lite") => NamQuality::Lite,
+        _ => {
+            eprintln!("Usage: pedal-nam-soak [model.nam] [--lite|--full]");
             std::process::exit(1);
-        });
+        }
+    };
+    let mut model =
+        NamModel::load_with_quality(&model_path, SAMPLE_RATE as f64, FRAMES_PER_BLOCK, quality)
+            .unwrap_or_else(|error| {
+                eprintln!("Could not load {}: {error}", model_path.display());
+                std::process::exit(1);
+            });
+    println!(
+        "Requested {quality:?}; capture supports multiple sizes: {}",
+        model.supports_sizes()
+    );
     let blocks = SAMPLE_RATE * AUDIO_SECONDS / FRAMES_PER_BLOCK;
     let deadline = Duration::from_secs_f64(FRAMES_PER_BLOCK as f64 / SAMPLE_RATE as f64);
     let layout = InterleavedLayout {

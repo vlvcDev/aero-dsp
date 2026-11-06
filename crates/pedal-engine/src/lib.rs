@@ -4,14 +4,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub mod audio;
+pub mod audio_file;
 pub mod cabinet;
+pub mod calibration;
+pub mod convolution;
+mod dry_alignment;
 pub mod dsp;
 pub mod effects;
+pub mod fuzz;
+mod gate;
 pub mod metronome;
+pub mod nam_eq;
+pub mod node_rig;
+pub mod node_runtime;
+pub mod node_document;
+pub mod node_live;
+pub mod octaver;
 pub mod presets;
 pub mod preview;
+pub mod quality;
+pub mod reverb;
 pub mod riff_vault;
+pub mod rig;
 pub mod state;
+pub mod timeline;
+pub mod tone_eq;
 pub mod tuner;
 
 pub const API_VERSION: u8 = 1;
@@ -38,6 +55,22 @@ pub struct Response {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineState {
+    pub pedal_align_enabled: bool,
+    /// Recomputed from the loaded capture, never trusted from a saved file.
+    #[serde(skip)]
+    pub pedal_alignment: Option<nam_bridge::alignment::AlignmentEstimate>,
+    pub pedal_eq: nam_eq::NamEqSettings,
+    pub amp_eq: nam_eq::NamEqSettings,
+    pub calibration_enabled: bool,
+    pub input_reference_dbu: f32,
+    pub input_reference_set: bool,
+    pub input_trim_db: f32,
+    pub rig_level_db: f32,
+    pub quality_profile: u8,
+    pub render_quality_profile: u8,
+    /// Device preferences: 0 Lite, 1 Full; render additionally accepts 2 Same as live.
+    pub nam_quality: u8,
+    pub render_nam_quality: u8,
     pub bypassed: bool,
     pub preset: String,
     pub preset_id: Option<String>,
@@ -60,6 +93,9 @@ pub struct EngineState {
     pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
     pub gate_threshold_db: f32,
+    pub gate_hold_ms: f32,
+    pub gate_release_ms: f32,
+    pub gate_range_db: f32,
     pub compressor_enabled: bool,
     pub compressor_threshold_db: f32,
     pub compressor_ratio: f32,
@@ -86,6 +122,7 @@ pub struct EngineState {
     pub octaver_enabled: bool,
     pub octaver_visible: bool,
     pub octaver_mix: f32,
+    pub octaver_clean: bool,
     pub delay_enabled: bool,
     pub delay_visible: bool,
     pub delay_time_ms: f32,
@@ -109,6 +146,19 @@ pub struct EngineState {
 impl Default for EngineState {
     fn default() -> Self {
         Self {
+            pedal_align_enabled: true,
+            pedal_alignment: None,
+            pedal_eq: nam_eq::NamEqSettings::default(),
+            amp_eq: nam_eq::NamEqSettings::default(),
+            calibration_enabled: false,
+            input_reference_dbu: 0.0,
+            input_reference_set: false,
+            input_trim_db: 0.0,
+            rig_level_db: 0.0,
+            quality_profile: 1,
+            render_quality_profile: 3,
+            nam_quality: 1,
+            render_nam_quality: 2,
             bypassed: false,
             preset: "Default".to_owned(),
             preset_id: None,
@@ -130,7 +180,10 @@ impl Default for EngineState {
             cabinet_low_cut_hz: 80.0,
             cabinet_high_cut_hz: 8_000.0,
             gate_enabled: false,
-            gate_threshold_db: -55.0,
+            gate_threshold_db: -80.0,
+            gate_hold_ms: 20.0,
+            gate_release_ms: 50.0,
+            gate_range_db: 80.0,
             compressor_enabled: false,
             compressor_threshold_db: -18.0,
             compressor_ratio: 3.0,
@@ -157,6 +210,7 @@ impl Default for EngineState {
             octaver_enabled: false,
             octaver_visible: false,
             octaver_mix: 0.45,
+            octaver_clean: false,
             delay_enabled: false,
             delay_visible: false,
             delay_time_ms: 360.0,
@@ -181,7 +235,18 @@ impl Default for EngineState {
 
 impl EngineState {
     pub fn snapshot(&self) -> Value {
-        json!({
+        let mut snapshot = json!({
+            "pedal_eq": self.pedal_eq,
+            "amp_eq": self.amp_eq,
+            "calibration_enabled": self.calibration_enabled,
+            "input_reference_dbu": self.input_reference_dbu,
+            "input_reference_set": self.input_reference_set,
+            "input_trim_db": self.input_trim_db,
+            "rig_level_db": self.rig_level_db,
+            "quality_profile": self.quality_profile,
+            "render_quality_profile": self.render_quality_profile,
+            "nam_quality": self.nam_quality,
+            "render_nam_quality": self.render_nam_quality,
             "engine": "ready",
             "bypassed": self.bypassed,
             "preset": self.preset,
@@ -205,6 +270,9 @@ impl EngineState {
             "cabinet_high_cut_hz": self.cabinet_high_cut_hz,
             "gate_enabled": self.gate_enabled,
             "gate_threshold_db": self.gate_threshold_db,
+            "gate_hold_ms": self.gate_hold_ms,
+            "gate_release_ms": self.gate_release_ms,
+            "gate_range_db": self.gate_range_db,
             "compressor_enabled": self.compressor_enabled,
             "compressor_threshold_db": self.compressor_threshold_db,
             "compressor_ratio": self.compressor_ratio,
@@ -231,6 +299,8 @@ impl EngineState {
             "octaver_enabled": self.octaver_enabled,
             "octaver_visible": self.octaver_visible,
             "octaver_mix": self.octaver_mix,
+            "octaver_clean": self.octaver_clean,
+            "octaver_clean_latency_ms": crate::octaver::clean_latency_frames(self.sample_rate) as f64 * 1000.0 / self.sample_rate.max(1) as f64,
             "delay_enabled": self.delay_enabled,
             "delay_visible": self.delay_visible,
             "delay_time_ms": self.delay_time_ms,
@@ -249,7 +319,10 @@ impl EngineState {
             "metronome_bpm": self.metronome_bpm,
             "sample_rate": self.sample_rate,
             "buffer_frames": self.buffer_frames,
-        })
+        });
+        snapshot["pedal_align_enabled"] = json!(self.pedal_align_enabled);
+        snapshot["pedal_alignment"] = json!(self.pedal_alignment);
+        snapshot
     }
 }
 

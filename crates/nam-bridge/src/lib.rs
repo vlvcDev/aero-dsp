@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr::NonNull;
 
+pub mod alignment;
+
 const STATUS_OK: c_int = 0;
 const ERROR_CAPACITY: usize = 512;
 
@@ -19,6 +21,7 @@ unsafe extern "C" {
         path: *const c_char,
         sample_rate: c_double,
         max_buffer_frames: c_int,
+        full_size: c_int,
         output: *mut *mut PedalNamModel,
         error_message: *mut c_char,
         error_message_capacity: usize,
@@ -31,6 +34,26 @@ unsafe extern "C" {
         frames: c_int,
     ) -> c_int;
     fn pedal_nam_expected_sample_rate(model: *const PedalNamModel) -> c_double;
+    fn pedal_nam_input_level(model: *const PedalNamModel) -> c_double;
+    fn pedal_nam_output_level(model: *const PedalNamModel) -> c_double;
+    fn pedal_nam_loudness(model: *const PedalNamModel) -> c_double;
+    fn pedal_nam_supports_sizes(model: *const PedalNamModel) -> c_int;
+}
+
+/// Endpoint selections for compatible slimmable NAMs. Never changes sample rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NamQuality {
+    Lite,
+    #[default]
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelMetadata {
+    pub input_level_dbu: Option<f64>,
+    pub output_level_dbu: Option<f64>,
+    pub loudness_db: Option<f64>,
+    pub expected_sample_rate: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +71,7 @@ impl fmt::Display for NamError {
 impl Error for NamError {}
 
 pub struct NamModel {
+    alignment: Option<alignment::AlignmentEstimate>,
     raw: NonNull<PedalNamModel>,
     max_buffer_frames: usize,
     input_workspace: Vec<f32>,
@@ -59,10 +83,57 @@ pub struct NamModel {
 unsafe impl Send for NamModel {}
 
 impl NamModel {
+    /// Prepare an analysis instance and discard it, then load a pristine model.
+    /// Extra load/probe work is never performed on the audio callback.
+    pub fn load_with_alignment(
+        path: impl AsRef<Path>,
+        sample_rate: f64,
+        max_buffer_frames: usize,
+        quality: NamQuality,
+    ) -> Result<Self, NamError> {
+        let path = path.as_ref();
+        let estimate = {
+            let mut probe = Self::load_with_quality(path, sample_rate, max_buffer_frames, quality)?;
+            alignment::measure(sample_rate, max_buffer_frames, |samples| {
+                probe.process(samples)
+            })
+        };
+        let mut model = Self::load_with_quality(path, sample_rate, max_buffer_frames, quality)?;
+        model.alignment = Some(estimate);
+        Ok(model)
+    }
+
+    pub fn alignment(&self) -> Option<alignment::AlignmentEstimate> {
+        self.alignment
+    }
+    /// Read on the control/loading thread. Missing metadata is never guessed.
+    pub fn metadata(&self) -> ModelMetadata {
+        let optional = |v: f64| v.is_finite().then_some(v);
+        // SAFETY: the model is exclusively owned and alive throughout these calls.
+        unsafe {
+            ModelMetadata {
+                input_level_dbu: optional(pedal_nam_input_level(self.raw.as_ptr())),
+                output_level_dbu: optional(pedal_nam_output_level(self.raw.as_ptr())),
+                loudness_db: optional(pedal_nam_loudness(self.raw.as_ptr())),
+                expected_sample_rate: pedal_nam_expected_sample_rate(self.raw.as_ptr()),
+            }
+        }
+    }
     pub fn load(
         path: impl AsRef<Path>,
         sample_rate: f64,
         max_buffer_frames: usize,
+    ) -> Result<Self, NamError> {
+        Self::load_with_quality(path, sample_rate, max_buffer_frames, NamQuality::Full)
+    }
+
+    /// Loading, tier selection and prewarming are NOT real-time safe. Prepare a
+    /// replacement model off-thread, then use the engine's faded model swap.
+    pub fn load_with_quality(
+        path: impl AsRef<Path>,
+        sample_rate: f64,
+        max_buffer_frames: usize,
+        quality: NamQuality,
     ) -> Result<Self, NamError> {
         let path = path.as_ref();
         let path_string = path.to_str().ok_or_else(|| NamError {
@@ -85,6 +156,7 @@ impl NamModel {
                 path.as_ptr(),
                 sample_rate,
                 max_buffer_frames,
+                i32::from(quality == NamQuality::Full),
                 &mut raw,
                 error.as_mut_ptr(),
                 error.len(),
@@ -103,12 +175,34 @@ impl NamModel {
         })?;
 
         Ok(Self {
+            alignment: None,
             raw,
             max_buffer_frames: max_buffer_frames as usize,
             input_workspace: vec![0.0; max_buffer_frames as usize],
             faulted: false,
             _not_sync: PhantomData,
         })
+    }
+
+    /// Allocation-free failure path for realtime graph adapters. Caller handles
+    /// error reporting on the control thread and must silence failed output.
+    pub fn process_realtime(&mut self, samples: &mut [f32]) -> bool {
+        if self.faulted || samples.len() > self.max_buffer_frames {
+            self.faulted = true;
+            return false;
+        }
+        self.input_workspace[..samples.len()].copy_from_slice(samples);
+        // SAFETY: prepared buffers and exclusive model ownership match the ABI.
+        let status = unsafe {
+            pedal_nam_process(
+                self.raw.as_ptr(),
+                self.input_workspace.as_ptr(),
+                samples.as_mut_ptr(),
+                samples.len() as c_int,
+            )
+        };
+        self.faulted = status != STATUS_OK;
+        !self.faulted
     }
 
     pub fn process(&mut self, samples: &mut [f32]) -> Result<(), NamError> {
@@ -147,6 +241,11 @@ impl NamModel {
 
     pub fn is_faulted(&self) -> bool {
         self.faulted
+    }
+
+    pub fn supports_sizes(&self) -> bool {
+        // SAFETY: immutable flag on this exclusively owned, live model.
+        unsafe { pedal_nam_supports_sizes(self.raw.as_ptr()) != 0 }
     }
 }
 

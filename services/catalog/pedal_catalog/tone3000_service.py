@@ -106,7 +106,14 @@ class Tone3000Service:
         tone = payload.get("data", payload)
         if not isinstance(tone, dict):
             raise Tone3000Error("TONE3000 returned invalid tone details")
-        return {"tone": self._tone_summary(tone), "models": self.models(tone_id)}
+        summary = self._tone_summary(tone)
+        self._capture_group_names = getattr(self, '_capture_group_names', {})
+        self._capture_group_names[str(tone_id)] = summary['name']
+        self._capture_gears = getattr(self, '_capture_gears', {})
+        self._capture_gears[str(tone_id)] = summary['gear']
+        self._capture_tags = getattr(self, '_capture_tags', {})
+        self._capture_tags[str(tone_id)] = summary['tags']
+        return {"tone": summary, "models": self.models(tone_id)}
 
     def models(self, tone_id: str, *, format: str = "nam") -> list[dict[str, Any]]:
         # Keep the established A2 filter for NAMs. IRs are WAV captures rather
@@ -117,8 +124,25 @@ class Tone3000Service:
             payload = self.client.list_models(tone_id, architecture=None)
         else:
             raise Tone3000Error("Unsupported TONE3000 model format")
+        items = self._items(payload)
+        page_items = items
+        page = 1
+        seen = {str(item.get('id')) for item in items}
+        while len(page_items) >= 20:
+            page += 1
+            if page > 100:
+                raise Tone3000Error('Capture collection is too large to list safely')
+            options = {'page': page}
+            if format == IR_FORMAT:
+                options['architecture'] = None
+            page_items = self._items(self.client.list_models(tone_id, **options))
+            fresh = [item for item in page_items if str(item.get('id')) not in seen]
+            if page_items and not fresh:
+                raise Tone3000Error('TONE3000 repeated a capture page; please retry')
+            items.extend(fresh)
+            seen.update(str(item.get('id')) for item in fresh)
         self._sync_tokens()
-        return [self._model_summary(item, tone_id) for item in self._items(payload)]
+        return [self._model_summary(item, tone_id) for item in items]
 
     def search(self, query: str, *, role: str) -> list[dict[str, Any]]:
         """Return a deliberately small, compatible candidate list for AI tone making."""
@@ -146,7 +170,15 @@ class Tone3000Service:
             architecture=architecture,
         )
         self._sync_tokens()
-        return [self._tone_summary(item) for item in self._items(payload)]
+        summaries = [self._tone_summary(item) for item in self._items(payload)]
+        self._capture_group_names = getattr(self, '_capture_group_names', {})
+        self._capture_gears = getattr(self, '_capture_gears', {})
+        for summary in summaries:
+            self._capture_group_names[summary['id']] = summary['name']
+            self._capture_gears[summary['id']] = summary['gear']
+            self._capture_tags = getattr(self, '_capture_tags', {})
+            self._capture_tags[summary['id']] = summary['tags']
+        return summaries
 
     def download_best_model(
         self,
@@ -174,10 +206,26 @@ class Tone3000Service:
         *,
         format: str = "nam",
     ) -> tuple[Path, str]:
+        available = self.models(tone_id, format=format)
+        if format == 'nam':
+            # Adopt earlier downloads made with the same deterministic filename.
+            # Never move files: existing pedalboard presets reference their paths.
+            from .index import write_capture_metadata
+            for capture in available:
+                name = re.sub(r"[^A-Za-z0-9._-]+", "-", capture['name']).strip('-.')
+                name = (name or f"tone3000-{capture['id']}")[:80]
+                identifier = re.sub(r"[^A-Za-z0-9_-]+", "-", str(capture['id'])).strip('-')
+                identifier = (identifier or 'model')[:40]
+                existing = models_dir / f'{name}-{identifier}.nam'
+                if existing.is_file():
+                    write_capture_metadata(existing, str(tone_id), str(capture['id']), capture['name'],
+                                           getattr(self, '_capture_group_names', {}).get(str(tone_id)),
+                                           getattr(self, '_capture_gears', {}).get(str(tone_id)),
+                                           getattr(self, '_capture_tags', {}).get(str(tone_id)))
         model = next(
             (
                 item
-                for item in self.models(tone_id, format=format)
+                for item in available
                 if item["id"] == str(model_id)
             ),
             None,
@@ -195,6 +243,12 @@ class Tone3000Service:
             destination,
             expected_sha256=model.get("sha256"),
         )
+        if format == 'nam':
+            from .index import write_capture_metadata
+            write_capture_metadata(destination, str(tone_id), str(model_id), model['name'],
+                                   getattr(self, '_capture_group_names', {}).get(str(tone_id)),
+                                   getattr(self, '_capture_gears', {}).get(str(tone_id)),
+                                   getattr(self, '_capture_tags', {}).get(str(tone_id)))
         self._sync_tokens()
         self._selected_tone_id = None
         return destination, sha256
@@ -243,6 +297,7 @@ class Tone3000Service:
 
     @staticmethod
     def _tone_summary(item: dict[str, Any]) -> dict[str, Any]:
+        from .index import normalize_tags
         tone_id = item.get("id")
         if tone_id is None:
             raise Tone3000Error("TONE3000 tone result is missing an id")
@@ -257,6 +312,7 @@ class Tone3000Service:
             "name": str(item.get("name") or item.get("title") or f"Tone {tone_id}"),
             "author": str(author or "TONE3000"),
             "gear": str(item.get("gear") or item.get("type") or "NAM"),
+            "tags": list(normalize_tags(item.get("tags"))),
         }
 
     def _model_summary(self, item: dict[str, Any], tone_id: str) -> dict[str, Any]:

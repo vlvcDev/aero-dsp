@@ -13,6 +13,15 @@ fn gain_from_db(db: f32) -> f32 {
     10.0_f32.powf(db / 20.0)
 }
 
+/// Increasing fractional delay moves toward the OLDER sample, including at
+/// ring wrap and whole-sample boundaries. Shared by chorus and flanger.
+fn delayed_sample(buffer: &[f32], write: usize, delay: f32) -> f32 {
+    let whole = delay as usize;
+    let read = (write + buffer.len() - whole % buffer.len()) % buffer.len();
+    let older = (read + buffer.len() - 1) % buffer.len();
+    buffer[read] + (buffer[older] - buffer[read]) * delay.fract()
+}
+
 struct AtomicFloat(AtomicU32);
 
 impl AtomicFloat {
@@ -74,6 +83,9 @@ impl LooperMode {
 pub struct EffectsParameters {
     gate_enabled: AtomicBool,
     gate_threshold_db: AtomicFloat,
+    gate_hold_ms: AtomicFloat,
+    gate_release_ms: AtomicFloat,
+    gate_range_db: AtomicFloat,
     compressor_enabled: AtomicBool,
     compressor_threshold_db: AtomicFloat,
     compressor_ratio: AtomicFloat,
@@ -95,6 +107,7 @@ pub struct EffectsParameters {
     tremolo_depth: AtomicFloat,
     octaver_enabled: AtomicBool,
     octaver_mix: AtomicFloat,
+    octaver_clean: AtomicBool,
     delay_enabled: AtomicBool,
     delay_time_ms: AtomicFloat,
     delay_feedback: AtomicFloat,
@@ -113,6 +126,9 @@ impl EffectsParameters {
         Self {
             gate_enabled: AtomicBool::new(state.gate_enabled),
             gate_threshold_db: AtomicFloat::new(state.gate_threshold_db),
+            gate_hold_ms: AtomicFloat::new(state.gate_hold_ms),
+            gate_release_ms: AtomicFloat::new(state.gate_release_ms),
+            gate_range_db: AtomicFloat::new(state.gate_range_db),
             compressor_enabled: AtomicBool::new(state.compressor_enabled),
             compressor_threshold_db: AtomicFloat::new(state.compressor_threshold_db),
             compressor_ratio: AtomicFloat::new(state.compressor_ratio),
@@ -134,6 +150,7 @@ impl EffectsParameters {
             tremolo_depth: AtomicFloat::new(state.tremolo_depth),
             octaver_enabled: AtomicBool::new(state.octaver_enabled),
             octaver_mix: AtomicFloat::new(state.octaver_mix),
+            octaver_clean: AtomicBool::new(state.octaver_clean),
             delay_enabled: AtomicBool::new(state.delay_enabled),
             delay_time_ms: AtomicFloat::new(state.delay_time_ms),
             delay_feedback: AtomicFloat::new(state.delay_feedback),
@@ -152,6 +169,9 @@ impl EffectsParameters {
         self.gate_enabled
             .store(state.gate_enabled, Ordering::Relaxed);
         self.gate_threshold_db.store(state.gate_threshold_db);
+        self.gate_hold_ms.store(state.gate_hold_ms);
+        self.gate_release_ms.store(state.gate_release_ms);
+        self.gate_range_db.store(state.gate_range_db);
         self.compressor_enabled
             .store(state.compressor_enabled, Ordering::Relaxed);
         self.compressor_threshold_db
@@ -179,6 +199,8 @@ impl EffectsParameters {
         self.octaver_enabled
             .store(state.octaver_enabled, Ordering::Relaxed);
         self.octaver_mix.store(state.octaver_mix);
+        self.octaver_clean
+            .store(state.octaver_clean, Ordering::Relaxed);
         self.delay_enabled
             .store(state.delay_enabled, Ordering::Relaxed);
         self.delay_time_ms.store(state.delay_time_ms);
@@ -218,14 +240,16 @@ impl EffectsParameters {
 }
 
 pub struct EffectChainProcessor<P> {
+    right: Option<Box<EffectChainProcessor<crate::dsp::Passthrough>>>,
+    looper_right: Vec<f32>,
     source: P,
     parameters: Arc<EffectsParameters>,
     sample_rate: f32,
-    gate_gain: f32,
+    gate: crate::gate::Gate,
+    gate_gains: Vec<f32>,
     compressor_envelope: f32,
     compressor_gain: f32,
-    eq_low_state: f32,
-    eq_high_state: f32,
+    eq: crate::tone_eq::ToneEq,
     chorus_buffer: Vec<f32>,
     chorus_write: usize,
     chorus_phase: f32,
@@ -233,12 +257,12 @@ pub struct EffectChainProcessor<P> {
     flanger_write: usize,
     flanger_phase: f32,
     tremolo_phase: f32,
-    octaver_last_input: f32,
-    octaver_polarity: f32,
+    octaver: crate::octaver::Octaver,
     delay_buffer: Vec<f32>,
     delay_write: usize,
-    reverb_buffers: [Vec<f32>; 4],
-    reverb_indices: [usize; 4],
+    reverb: crate::reverb::Reverb,
+    reverb_mix: f32,
+    reverb_remaining: usize,
     looper_buffer: Vec<f32>,
     looper_position: usize,
     looper_length: usize,
@@ -256,17 +280,43 @@ impl<P> EffectChainProcessor<P> {
         sample_rate: u32,
         max_loop_seconds: usize,
     ) -> Self {
+        Self::new_channel(source, parameters, sample_rate, max_loop_seconds, true)
+    }
+    fn new_channel(
+        source: P,
+        parameters: Arc<EffectsParameters>,
+        sample_rate: u32,
+        max_loop_seconds: usize,
+        stereo: bool,
+    ) -> Self {
         let sample_rate_f32 = sample_rate as f32;
-        let make_reverb_line = |seconds: f32| vec![0.0; (seconds * sample_rate_f32) as usize];
+        let gate =
+            crate::gate::Gate::new(sample_rate, parameters.gate_enabled.load(Ordering::Relaxed));
         Self {
+            right: if stereo {
+                let mut right = EffectChainProcessor::new_channel(
+                    crate::dsp::Passthrough,
+                    Arc::clone(&parameters),
+                    sample_rate,
+                    0,
+                    false,
+                );
+                right.chorus_phase = std::f32::consts::FRAC_PI_2;
+                right.flanger_phase = std::f32::consts::FRAC_PI_2;
+                right.reverb = crate::reverb::Reverb::with_spread(sample_rate, 1.071);
+                Some(Box::new(right))
+            } else {
+                None
+            },
+            looper_right: vec![0.0; sample_rate as usize * max_loop_seconds],
             source,
             parameters,
             sample_rate: sample_rate_f32,
-            gate_gain: 1.0,
+            gate,
+            gate_gains: vec![1.0; 1024],
             compressor_envelope: 0.0,
             compressor_gain: 1.0,
-            eq_low_state: 0.0,
-            eq_high_state: 0.0,
+            eq: crate::tone_eq::ToneEq::new(sample_rate, [0.0; 3]),
             chorus_buffer: vec![0.0; (sample_rate_f32 * 0.04) as usize],
             chorus_write: 0,
             chorus_phase: 0.0,
@@ -274,17 +324,12 @@ impl<P> EffectChainProcessor<P> {
             flanger_write: 0,
             flanger_phase: 0.0,
             tremolo_phase: 0.0,
-            octaver_last_input: 0.0,
-            octaver_polarity: 1.0,
+            octaver: crate::octaver::Octaver::new(sample_rate),
             delay_buffer: vec![0.0; (sample_rate_f32 * 2.0) as usize],
             delay_write: 0,
-            reverb_buffers: [
-                make_reverb_line(0.0297),
-                make_reverb_line(0.0371),
-                make_reverb_line(0.0411),
-                make_reverb_line(0.0437),
-            ],
-            reverb_indices: [0; 4],
+            reverb: crate::reverb::Reverb::new(sample_rate),
+            reverb_mix: 0.0,
+            reverb_remaining: 0,
             looper_buffer: vec![0.0; sample_rate as usize * max_loop_seconds],
             looper_position: 0,
             looper_length: 0,
@@ -300,78 +345,91 @@ impl<P> EffectChainProcessor<P> {
         self.parameters.looper_mode()
     }
 
-    fn process_gate(&mut self, samples: &mut [f32]) {
-        if !self.parameters.gate_enabled.load(Ordering::Relaxed) {
-            self.gate_gain = 1.0;
-            return;
+    fn process_gate(&mut self, samples: &[f32]) {
+        let mut extra_hold = 0;
+        if self.parameters.octaver_enabled.load(Ordering::Relaxed)
+            && self.parameters.octaver_clean.load(Ordering::Relaxed)
+        {
+            extra_hold = crate::octaver::clean_latency_frames(self.sample_rate as u32);
         }
-        let threshold = gain_from_db(self.parameters.gate_threshold_db.load());
-        for sample in samples {
-            let target = if sample.abs() >= threshold { 1.0 } else { 0.0 };
-            let smoothing = if target > self.gate_gain {
-                0.08
-            } else {
-                0.0025
-            };
-            self.gate_gain += (target - self.gate_gain) * smoothing;
-            *sample *= self.gate_gain;
+        self.gate.configure(
+            self.parameters.gate_enabled.load(Ordering::Relaxed),
+            self.parameters.gate_threshold_db.load(),
+            self.parameters.gate_hold_ms.load(),
+            self.parameters.gate_release_ms.load(),
+            self.parameters.gate_range_db.load(),
+            extra_hold,
+        );
+        for (index, sample) in samples.iter().enumerate() {
+            self.gate_gains[index] = self.gate.tick(*sample);
         }
     }
 
-    /// The gate listens to the clean guitar input, then applies the same gain
-    /// after the NAM chain. That means an amp capture's idle hiss is silenced
+    /// The gate listens to clean input and applies its time-aligned envelope
+    /// once, after the NAM chain. That means an amp capture's idle hiss is silenced
     /// when the player is not touching the strings, instead of being allowed
     /// through merely because it was generated by the model.
     fn apply_gate_to_model_output(&self, samples: &mut [f32]) {
-        if self.parameters.gate_enabled.load(Ordering::Relaxed) {
-            for sample in samples {
-                *sample *= self.gate_gain;
-            }
+        for (sample, gain) in samples.iter_mut().zip(&self.gate_gains) {
+            *sample *= gain;
         }
     }
 
     fn process_compressor(&mut self, samples: &mut [f32]) {
-        if !self.parameters.compressor_enabled.load(Ordering::Relaxed) {
+        let enabled = self.parameters.compressor_enabled.load(Ordering::Relaxed);
+        if !enabled && self.compressor_gain > 0.99999 {
             self.compressor_gain = 1.0;
             return;
         }
-        let threshold = gain_from_db(self.parameters.compressor_threshold_db.load());
+        let threshold = self.parameters.compressor_threshold_db.load();
         let ratio = self.parameters.compressor_ratio.load().max(1.0);
+        let attack = 1.0 - (-1.0 / (0.005 * self.sample_rate)).exp();
+        let release = 1.0 - (-1.0 / (0.080 * self.sample_rate)).exp();
         for sample in samples {
-            let level = sample.abs();
-            let envelope_rate = if level > self.compressor_envelope {
-                0.05
+            let power = *sample * *sample;
+            let coefficient = if power > self.compressor_envelope {
+                attack
             } else {
-                0.0015
+                release
             };
-            self.compressor_envelope += (level - self.compressor_envelope) * envelope_rate;
-            let target = if self.compressor_envelope > threshold {
-                (threshold / self.compressor_envelope).powf(1.0 - 1.0 / ratio)
+            self.compressor_envelope += (power - self.compressor_envelope) * coefficient;
+            let over = 10.0 * self.compressor_envelope.max(1e-12).log10() - threshold;
+            // Six-decibel soft knee in the log domain.
+            let reduction = if over < -3.0 {
+                0.0
+            } else if over > 3.0 {
+                over * (1.0 - 1.0 / ratio)
+            } else {
+                (over + 3.0).powi(2) / 12.0 * (1.0 - 1.0 / ratio)
+            };
+            let target = if enabled {
+                gain_from_db(-reduction)
             } else {
                 1.0
             };
-            self.compressor_gain += (target - self.compressor_gain) * 0.025;
+            let coefficient = if target < self.compressor_gain {
+                attack
+            } else {
+                release
+            };
+            self.compressor_gain += (target - self.compressor_gain) * coefficient;
             *sample *= self.compressor_gain;
         }
     }
 
     fn process_eq(&mut self, samples: &mut [f32]) {
-        if !self.parameters.eq_enabled.load(Ordering::Relaxed) {
-            return;
-        }
-        let low_gain = gain_from_db(self.parameters.eq_low_db.load());
-        let mid_gain = gain_from_db(self.parameters.eq_mid_db.load());
-        let high_gain = gain_from_db(self.parameters.eq_high_db.load());
-        let low_alpha = 1.0 - (-TAU * 250.0 / self.sample_rate).exp();
-        let high_alpha = 1.0 - (-TAU * 2_500.0 / self.sample_rate).exp();
+        let gains = if self.parameters.eq_enabled.load(Ordering::Relaxed) {
+            [
+                self.parameters.eq_low_db.load(),
+                self.parameters.eq_mid_db.load(),
+                self.parameters.eq_high_db.load(),
+            ]
+        } else {
+            [0.0; 3]
+        };
+        self.eq.set_gains(gains);
         for sample in samples {
-            let input = *sample;
-            self.eq_low_state += low_alpha * (input - self.eq_low_state);
-            self.eq_high_state += high_alpha * (input - self.eq_high_state);
-            let low = self.eq_low_state;
-            let high = input - self.eq_high_state;
-            let mid = input - low - high;
-            *sample = low * low_gain + mid * mid_gain + high * high_gain;
+            *sample = self.eq.tick(*sample);
         }
     }
 
@@ -386,12 +444,7 @@ impl<P> EffectChainProcessor<P> {
         let depth_samples = self.sample_rate * 0.009 * depth;
         for sample in samples {
             let delay = base_delay + depth_samples * (self.chorus_phase.sin() + 1.0) * 0.5;
-            let read = (self.chorus_write + self.chorus_buffer.len() - delay as usize)
-                % self.chorus_buffer.len();
-            let next = (read + 1) % self.chorus_buffer.len();
-            let fraction = delay.fract();
-            let delayed =
-                self.chorus_buffer[read] * (1.0 - fraction) + self.chorus_buffer[next] * fraction;
+            let delayed = delayed_sample(&self.chorus_buffer, self.chorus_write, delay);
             self.chorus_buffer[self.chorus_write] = *sample;
             self.chorus_write = (self.chorus_write + 1) % self.chorus_buffer.len();
             self.chorus_phase = (self.chorus_phase + TAU * rate / self.sample_rate) % TAU;
@@ -414,12 +467,7 @@ impl<P> EffectChainProcessor<P> {
         let depth_samples = self.sample_rate * 0.0045 * depth;
         for sample in samples {
             let delay = base_delay + depth_samples * (self.flanger_phase.sin() + 1.0) * 0.5;
-            let whole = delay as usize;
-            let read = (self.flanger_write + self.flanger_buffer.len() - whole)
-                % self.flanger_buffer.len();
-            let next = (read + 1) % self.flanger_buffer.len();
-            let delayed = self.flanger_buffer[read] * (1.0 - delay.fract())
-                + self.flanger_buffer[next] * delay.fract();
+            let delayed = delayed_sample(&self.flanger_buffer, self.flanger_write, delay);
             self.flanger_buffer[self.flanger_write] = *sample + delayed * feedback;
             self.flanger_write = (self.flanger_write + 1) % self.flanger_buffer.len();
             self.flanger_phase = (self.flanger_phase + TAU * rate / self.sample_rate) % TAU;
@@ -441,23 +489,14 @@ impl<P> EffectChainProcessor<P> {
         }
     }
 
-    /// Lightweight analog-style octave-down. It derives a sub-octave square
-    /// wave by flipping polarity on each rising zero crossing, then blends it
-    /// with the dry guitar before the NAM chain.
+    /// Selectable analog/polyphonic octave voice before the NAM chain.
     fn process_octaver(&mut self, samples: &mut [f32]) {
-        if !self.parameters.octaver_enabled.load(Ordering::Relaxed) {
-            return;
-        }
-        let mix = self.parameters.octaver_mix.load().clamp(0.0, 1.0);
-        for sample in samples {
-            let dry = *sample;
-            if self.octaver_last_input <= 0.0 && dry > 0.0 {
-                self.octaver_polarity = -self.octaver_polarity;
-            }
-            self.octaver_last_input = dry;
-            let octave_down = dry.abs() * self.octaver_polarity;
-            *sample = dry * (1.0 - mix) + octave_down * mix;
-        }
+        self.octaver.process(
+            samples,
+            self.parameters.octaver_enabled.load(Ordering::Relaxed),
+            self.parameters.octaver_clean.load(Ordering::Relaxed),
+            self.parameters.octaver_mix.load().clamp(0.0, 1.0),
+        );
     }
 
     fn process_delay(&mut self, samples: &mut [f32]) {
@@ -480,34 +519,41 @@ impl<P> EffectChainProcessor<P> {
     }
 
     fn process_reverb(&mut self, samples: &mut [f32]) {
-        if !self.parameters.reverb_enabled.load(Ordering::Relaxed) {
+        let enabled = self.parameters.reverb_enabled.load(Ordering::Relaxed);
+        if enabled {
+            self.reverb_remaining = (self.sample_rate
+                * (self.parameters.reverb_decay_seconds.load().clamp(0.3, 12.0) * 2.0 + 0.2))
+                as usize;
+        } else if self.reverb_remaining == 0 {
             return;
         }
-        let decay = self.parameters.reverb_decay_seconds.load().clamp(0.3, 12.0);
-        let mix = self.parameters.reverb_mix.load().clamp(0.0, 1.0);
-        let feedbacks = self
-            .reverb_buffers
-            .each_ref()
-            .map(|line| 10.0_f32.powf(-3.0 * line.len() as f32 / self.sample_rate / decay));
-        for sample in samples {
+        self.reverb
+            .set_decay(self.parameters.reverb_decay_seconds.load());
+        let target = if enabled {
+            self.parameters.reverb_mix.load().clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let smoothing = 1.0 - (-1.0 / (0.010 * self.sample_rate)).exp();
+        for sample in samples.iter_mut() {
             let dry = *sample;
-            let mut wet = 0.0;
-            for ((line, index), feedback) in self
-                .reverb_buffers
-                .iter_mut()
-                .zip(self.reverb_indices.iter_mut())
-                .zip(feedbacks)
-            {
-                let delayed = line[*index];
-                line[*index] = dry + delayed * feedback;
-                *index = (*index + 1) % line.len();
-                wet += delayed;
+            let wet = self.reverb.tick(if enabled { dry } else { 0.0 });
+            self.reverb_mix += (target - self.reverb_mix) * smoothing;
+            *sample = dry * (1.0 - self.reverb_mix) + wet * self.reverb_mix;
+        }
+        if !enabled {
+            self.reverb_remaining = self.reverb_remaining.saturating_sub(samples.len());
+            if self.reverb_remaining == 0 {
+                self.reverb.clear();
+                self.reverb_mix = 0.0;
             }
-            *sample = dry * (1.0 - mix) + wet * 0.25 * mix;
         }
     }
 
     fn process_looper(&mut self, samples: &mut [f32]) {
+        self.process_looper_channels(samples, None);
+    }
+    fn process_looper_channels(&mut self, samples: &mut [f32], mut right: Option<&mut [f32]>) {
         let (_, bpm, bars, generation) = self.parameters.looper_schedule();
         if generation != self.looper_generation {
             self.looper_generation = generation;
@@ -520,7 +566,7 @@ impl<P> EffectChainProcessor<P> {
         let frames_per_beat = (self.sample_rate * 60.0 / bpm.max(30) as f32).round() as usize;
         let click_frames = (self.sample_rate * 0.030) as usize;
         let mut previous = self.previous_looper_mode;
-        for sample in samples {
+        for (i, sample) in samples.iter_mut().enumerate() {
             let mode = self.looper_mode();
             if mode == LooperMode::CountIn {
                 let beat_frame = self.count_in_elapsed % frames_per_beat.max(1);
@@ -528,9 +574,13 @@ impl<P> EffectChainProcessor<P> {
                     let beat = self.count_in_elapsed / frames_per_beat.max(1);
                     let frequency = if beat == 0 { 1_760.0 } else { 1_180.0 };
                     let envelope = 1.0 - beat_frame as f32 / click_frames as f32;
-                    *sample += (TAU * frequency * beat_frame as f32 / self.sample_rate).sin()
+                    let click = (TAU * frequency * beat_frame as f32 / self.sample_rate).sin()
                         * envelope
                         * 0.18;
+                    *sample += click;
+                    if let Some(r) = right.as_deref_mut() {
+                        r[i] += click;
+                    }
                 }
                 self.count_in_elapsed += 1;
                 self.count_in_remaining = self.count_in_remaining.saturating_sub(1);
@@ -554,6 +604,8 @@ impl<P> EffectChainProcessor<P> {
             match mode {
                 LooperMode::Recording => {
                     self.looper_buffer[self.looper_position] = *sample;
+                    self.looper_right[self.looper_position] =
+                        right.as_deref().map_or(*sample, |r| r[i]);
                     self.looper_position += 1;
                     self.looper_length = self.looper_length.max(self.looper_position);
                     if self.looper_position == self.looper_buffer.len() {
@@ -569,12 +621,20 @@ impl<P> EffectChainProcessor<P> {
                 }
                 LooperMode::Playing if self.looper_length > 0 => {
                     *sample += self.looper_buffer[self.looper_position];
+                    if let Some(r) = right.as_deref_mut() {
+                        r[i] += self.looper_right[self.looper_position];
+                    }
                     self.looper_position = (self.looper_position + 1) % self.looper_length;
                 }
                 LooperMode::Overdubbing if self.looper_length > 0 => {
                     let loop_sample = self.looper_buffer[self.looper_position];
                     self.looper_buffer[self.looper_position] = loop_sample + *sample * 0.5;
                     *sample += loop_sample;
+                    if let Some(r) = right.as_deref_mut() {
+                        let previous = self.looper_right[self.looper_position];
+                        self.looper_right[self.looper_position] += r[i] * 0.5;
+                        r[i] += previous;
+                    }
                     self.looper_position = (self.looper_position + 1) % self.looper_length;
                 }
                 _ => {}
@@ -586,19 +646,59 @@ impl<P> EffectChainProcessor<P> {
 }
 
 impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
+    fn process_stereo(&mut self, samples: &mut [f32], output: &mut [[f32; 2]]) {
+        let mut left = [0.0; 1024];
+        let mut right = [0.0; 1024];
+        for (input, out) in samples.chunks_mut(1024).zip(output.chunks_mut(1024)) {
+            self.process_gate(input);
+            self.process_compressor(input);
+            self.process_octaver(input);
+            self.source.process_stereo(input, out);
+            for (i, f) in out.iter().enumerate() {
+                left[i] = f[0];
+                right[i] = f[1];
+            }
+            let left = &mut left[..input.len()];
+            let right = &mut right[..input.len()];
+            self.apply_gate_to_model_output(left);
+            self.apply_gate_to_model_output(right);
+            self.process_eq(left);
+            self.process_chorus(left);
+            self.process_flanger(left);
+            self.process_tremolo(left);
+            self.process_delay(left);
+            self.process_reverb(left);
+            if let Some(r) = &mut self.right {
+                r.process_eq(right);
+                r.process_chorus(right);
+                r.process_flanger(right);
+                r.process_tremolo(right);
+                r.process_delay(right);
+                r.process_reverb(right);
+            }
+            self.process_looper_channels(left, Some(right));
+            for (i, f) in out.iter_mut().enumerate() {
+                *f = [left[i], right[i]];
+            }
+        }
+    }
     fn process(&mut self, samples: &mut [f32]) {
-        self.process_gate(samples);
-        self.process_compressor(samples);
-        self.process_octaver(samples);
-        self.source.process(samples);
-        self.apply_gate_to_model_output(samples);
-        self.process_eq(samples);
-        self.process_chorus(samples);
-        self.process_flanger(samples);
-        self.process_tremolo(samples);
-        self.process_delay(samples);
-        self.process_reverb(samples);
-        self.process_looper(samples);
+        // Bounded scratch space even for offline callers passing whole files.
+        // No allocation occurs in process().
+        for samples in samples.chunks_mut(self.gate_gains.len()) {
+            self.process_gate(samples);
+            self.process_compressor(samples);
+            self.process_octaver(samples);
+            self.source.process(samples);
+            self.apply_gate_to_model_output(samples);
+            self.process_eq(samples);
+            self.process_chorus(samples);
+            self.process_flanger(samples);
+            self.process_tremolo(samples);
+            self.process_delay(samples);
+            self.process_reverb(samples);
+            self.process_looper(samples);
+        }
     }
 }
 
@@ -623,6 +723,64 @@ mod tests {
         let mut samples = [0.25, -0.5, 0.75];
         chain.process(&mut samples);
         assert_eq!(samples, [0.25, -0.5, 0.75]);
+    }
+
+    #[test]
+    fn fractional_delay_is_continuous_at_integer_and_ring_boundaries() {
+        let buffer = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        assert_eq!(delayed_sample(&buffer, 6, 2.25), 3.75);
+        assert_eq!(delayed_sample(&buffer, 1, 1.5), 3.5);
+        for write in 0..buffer.len() {
+            for whole in 1..buffer.len() - 1 {
+                let below = delayed_sample(&buffer, write, whole as f32 - 0.00001);
+                let above = delayed_sample(&buffer, write, whole as f32 + 0.00001);
+                assert!((below - above).abs() < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn gate_is_block_size_independent_and_does_not_pre_distort_model_input() {
+        let state = EngineState {
+            gate_enabled: true,
+            gate_threshold_db: -40.0,
+            ..Default::default()
+        };
+        let source: Vec<_> = (0..48_000)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                0.04 * (-2.0 * t).exp() * (TAU * 82.41 * t).sin()
+            })
+            .collect();
+        let render = |size| {
+            let mut p = EffectChainProcessor::new(
+                Passthrough,
+                Arc::new(EffectsParameters::from_state(&state)),
+                48_000,
+                1,
+            );
+            let mut out = source.clone();
+            for block in out.chunks_mut(size) {
+                p.process(block);
+            }
+            out
+        };
+        assert_eq!(render(64), render(128));
+        assert_eq!(render(64), render(517));
+
+        struct InspectInput;
+        impl MonoProcessor for InspectInput {
+            fn process(&mut self, samples: &mut [f32]) {
+                assert!(samples.iter().all(|s| *s == 0.001));
+            }
+        }
+        let mut p = EffectChainProcessor::new(
+            InspectInput,
+            Arc::new(EffectsParameters::from_state(&state)),
+            48_000,
+            1,
+        );
+        p.process(&mut [0.001; 128]);
     }
 
     #[test]
@@ -685,6 +843,36 @@ mod tests {
         chain.process(&mut silent_guitar_input);
 
         assert!(silent_guitar_input.last().expect("sample").abs() < 0.001);
+    }
+
+    #[test]
+    fn gate_live_updates_preserve_stereo_ratio() {
+        struct StereoNoise;
+        impl MonoProcessor for StereoNoise {
+            fn process(&mut self, samples: &mut [f32]) {
+                samples.fill(0.2);
+            }
+            fn process_stereo(&mut self, _: &mut [f32], output: &mut [[f32; 2]]) {
+                output.fill([0.2, -0.1]);
+            }
+        }
+        let mut state = EngineState {
+            gate_enabled: true,
+            ..Default::default()
+        };
+        let parameters = Arc::new(EffectsParameters::from_state(&state));
+        let mut chain = EffectChainProcessor::new(StereoNoise, parameters.clone(), 48_000, 0);
+        let mut input = vec![0.0; 48_000];
+        let mut output = vec![[0.0; 2]; input.len()];
+        chain.process_stereo(&mut input, &mut output);
+        assert!(output.last().unwrap()[0].abs() < 0.001);
+        state.gate_range_db = 20.0;
+        parameters.update(&state);
+        chain.process_stereo(&mut input, &mut output);
+        for frame in &output {
+            assert!((frame[0] * 0.5 + frame[1]).abs() < 1e-7);
+        }
+        assert!((output.last().unwrap()[0] - 0.02).abs() < 1e-5);
     }
 
     #[test]

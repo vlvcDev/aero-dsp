@@ -7,6 +7,17 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+part 'transcription.dart';
+part 'tab_editor.dart';
+part 'capture_carousel.dart';
+part 'practice_tabs.dart';
+part 'chords.dart';
+part 'phrase_tab.dart';
+part 'node_editor.dart';
+part 'node_canvas.dart';
+part 'node_audio.dart';
+part 'node_library.dart';
+
 const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');
 
 void main() => runApp(const PedalApp());
@@ -151,7 +162,7 @@ class _AeroControlBay extends StatelessWidget {
                       color: Colors.transparent,
                       child: InkWell(
                         borderRadius: BorderRadius.circular(11),
-                        onTap: () => Navigator.of(context).pop(),
+                        onTap: () => Navigator.of(context).maybePop(),
                         child: Container(
                           width: 36,
                           height: 36,
@@ -325,10 +336,20 @@ class _WorkspaceTabs extends StatelessWidget {
     required this.tracksSelected,
     required this.onPedalboard,
     required this.onTracks,
+    required this.chordsSelected,
+    required this.onChords,
+    required this.patchSelected,
+    required this.patchActive,
+    required this.onPatch,
   });
 
   final bool compact;
   final bool tracksSelected;
+  final bool chordsSelected;
+  final bool patchSelected;
+  final bool patchActive;
+  final VoidCallback onPatch;
+  final VoidCallback onChords;
   final VoidCallback onPedalboard;
   final VoidCallback onTracks;
 
@@ -344,11 +365,18 @@ class _WorkspaceTabs extends StatelessWidget {
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           _WorkspaceTabButton(
-            selected: !tracksSelected,
+            selected: !tracksSelected && !chordsSelected && !patchSelected,
             compact: compact,
             icon: Icons.electric_bolt_rounded,
             label: 'PEDALS',
             onTap: onPedalboard,
+          ),
+          _WorkspaceTabButton(
+            selected: patchSelected,
+            compact: compact,
+            icon: Icons.account_tree_outlined,
+            label: patchActive ? 'PATCH • LIVE' : 'PATCH',
+            onTap: onPatch,
           ),
           _WorkspaceTabButton(
             selected: tracksSelected,
@@ -357,6 +385,12 @@ class _WorkspaceTabs extends StatelessWidget {
             label: 'STUDIO',
             onTap: onTracks,
           ),
+          _WorkspaceTabButton(
+              selected: chordsSelected,
+              compact: compact,
+              icon: Icons.grid_on,
+              label: 'CHORDS',
+              onTap: onChords),
         ]),
       );
 }
@@ -649,6 +683,9 @@ class _RigScreenState extends State<RigScreen> {
   bool _previewBusy = false;
   bool _previewPlaying = false;
   bool _tracksWorkspace = false;
+  bool _chordsWorkspace = false;
+  bool _patchWorkspace = false;
+  final _patchDocument = PatchDocument();
   String? _importedPreviewPath;
 
   void _beginWindowResize(PointerDownEvent event) {
@@ -742,166 +779,209 @@ class _RigScreenState extends State<RigScreen> {
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              _WindowDragRegion(
-                                child: _AeroDspBrand(compact: compactHeader),
-                              ),
-                              SizedBox(width: compactHeader ? 4 : 12),
-                              _WorkspaceTabs(
-                                compact: compactHeader,
-                                tracksSelected: _tracksWorkspace,
-                                onPedalboard: () =>
-                                    setState(() => _tracksWorkspace = false),
-                                onTracks: () =>
-                                    setState(() => _tracksWorkspace = true),
-                              ),
-                              SizedBox(width: compactHeader ? 4 : 10),
-                              if (compactHeader)
-                                SizedBox(
-                                  width: 34,
-                                  child: _PresetHeaderButton(
-                                    title: _engine.presetTitle,
-                                    onTap:
-                                        _engine.connected ? _showPresets : null,
-                                    compact: true,
+                          child: Builder(builder: (context) {
+                            final header = Row(
+                              children: [
+                                _WindowDragRegion(
+                                  child: _AeroDspBrand(compact: compactHeader),
+                                ),
+                                SizedBox(width: compactHeader ? 4 : 12),
+                                _WorkspaceTabs(
+                                  compact: compactHeader,
+                                  tracksSelected: _tracksWorkspace,
+                                  chordsSelected: _chordsWorkspace,
+                                  patchSelected: _patchWorkspace,
+                                  patchActive: _meters.patchActive,
+                                  onPatch: () => setState(() {
+                                    _patchWorkspace = true;
+                                    _tracksWorkspace = false;
+                                    _chordsWorkspace = false;
+                                  }),
+                                  onPedalboard: () => setState(() {
+                                    _patchWorkspace = false;
+                                    _tracksWorkspace = false;
+                                    _chordsWorkspace = false;
+                                  }),
+                                  onTracks: () => setState(() {
+                                    _patchWorkspace = false;
+                                    _tracksWorkspace = true;
+                                    _chordsWorkspace = false;
+                                  }),
+                                  onChords: () => setState(() {
+                                    _patchWorkspace = false;
+                                    _tracksWorkspace = false;
+                                    _chordsWorkspace = true;
+                                  }),
+                                ),
+                                SizedBox(width: compactHeader ? 4 : 10),
+                                if (compactHeader)
+                                  SizedBox(
+                                    width: 34,
+                                    child: _PresetHeaderButton(
+                                      title: _engine.presetTitle,
+                                      onTap: _engine.connected
+                                          ? _showPresets
+                                          : null,
+                                      compact: true,
+                                    ),
+                                  )
+                                else
+                                  Expanded(
+                                    child: _PresetHeaderButton(
+                                      title: _engine.presetTitle,
+                                      onTap: _engine.connected
+                                          ? _showPresets
+                                          : null,
+                                      compact: false,
+                                    ),
                                   ),
-                                )
-                              else
-                                Expanded(
-                                  child: _PresetHeaderButton(
-                                    title: _engine.presetTitle,
-                                    onTap:
-                                        _engine.connected ? _showPresets : null,
-                                    compact: false,
-                                  ),
-                                ),
-                              const SizedBox(width: 8),
-                              IconButton(
-                                tooltip: 'Tuner',
-                                onPressed:
-                                    _engine.connected ? _showTuner : null,
-                                icon: Icon(
-                                  Icons.tune,
-                                  color: _engine.tunerEnabled
-                                      ? LostChrome.lime
-                                      : null,
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: 'Daily Drill',
-                                onPressed:
-                                    _engine.connected ? _showDailyLesson : null,
-                                icon: const Icon(Icons.school_outlined),
-                              ),
-                              IconButton(
-                                tooltip: 'AI Tone Maker',
-                                onPressed: _showToneMaker,
-                                icon: const Icon(Icons.auto_awesome),
-                              ),
-                              IconButton(
-                                tooltip: 'Riff Vault',
-                                onPressed: _showRiffVault,
-                                icon: const Icon(Icons.bookmark_added_outlined),
-                              ),
-                              IconButton(
-                                tooltip: 'Open Tracks workspace',
-                                onPressed: () =>
-                                    setState(() => _tracksWorkspace = true),
-                                icon: const Icon(Icons.view_timeline_outlined),
-                              ),
-                              IconButton(
-                                tooltip: _previewPlaying
-                                    ? 'Stop test audio'
-                                    : 'Test audio',
-                                onPressed: _engine.connected && !_previewBusy
-                                    ? _previewPlaying
-                                        ? _stopPreview
-                                        : _choosePreview
-                                    : null,
-                                icon: _previewBusy
-                                    ? const SizedBox.square(
-                                        dimension: 17,
-                                        child: CircularProgressIndicator(
-                                            strokeWidth: 2),
-                                      )
-                                    : Icon(_previewPlaying
-                                        ? Icons.stop_circle_outlined
-                                        : Icons.music_note),
-                              ),
-                              IconButton(
-                                tooltip: _engine.connected
-                                    ? (_engine.bypassed
-                                        ? 'Engage rig'
-                                        : 'Bypass rig')
-                                    : 'Reconnect engine',
-                                onPressed: _engine.connected
-                                    ? () => _client.setBypass(!_engine.bypassed)
-                                    : _client.connect,
-                                icon: Icon(
-                                  Icons.power_settings_new,
-                                  color: !_engine.connected
-                                      ? LostChrome.ice
-                                      : _engine.bypassed
-                                          ? Theme.of(context).colorScheme.error
-                                          : LostChrome.lime,
-                                ),
-                              ),
-                              if (!compactHeader) ...[
-                                TextButton.icon(
-                                  onPressed: _showTone3000,
-                                  style: TextButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 4),
-                                  ),
-                                  icon: const Icon(
-                                      Icons.cloud_download_outlined,
-                                      size: 18),
-                                  label: const Text('T3K'),
-                                ),
-                                TextButton.icon(
-                                  onPressed: _showAudioOutputs,
-                                  style: TextButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 4),
-                                  ),
-                                  icon: const Icon(Icons.volume_up_outlined,
-                                      size: 18),
-                                  label: const Text('SND'),
-                                ),
-                              ] else ...[
-                                IconButton(
-                                  tooltip: 'TONE3000',
-                                  onPressed: _showTone3000,
-                                  icon:
-                                      const Icon(Icons.cloud_download_outlined),
-                                ),
-                                IconButton(
-                                  tooltip: 'Output',
-                                  onPressed: _showAudioOutputs,
-                                  icon: const Icon(Icons.volume_up_outlined),
-                                ),
-                              ],
-                              const SizedBox(width: 6),
-                              Tooltip(
-                                message: _engine.connected
-                                    ? 'Engine online'
-                                    : 'Connecting',
-                                child: _StatusDot(connected: _engine.connected),
-                              ),
-                              if (!compactHeader) ...[
                                 const SizedBox(width: 8),
-                                const _WindowCloseButton(),
+                                IconButton(
+                                  tooltip: 'Tuner',
+                                  onPressed:
+                                      _engine.connected ? _showTuner : null,
+                                  icon: Icon(
+                                    Icons.tune,
+                                    color: _engine.tunerEnabled
+                                        ? LostChrome.lime
+                                        : null,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Daily Drill',
+                                  onPressed: _engine.connected
+                                      ? _showDailyLesson
+                                      : null,
+                                  icon: const Icon(Icons.school_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: 'AI Tone Maker',
+                                  onPressed: _showToneMaker,
+                                  icon: const Icon(Icons.auto_awesome),
+                                ),
+                                IconButton(
+                                  tooltip: 'Riff Vault',
+                                  onPressed: _showRiffVault,
+                                  icon:
+                                      const Icon(Icons.bookmark_added_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: 'Open Tracks workspace',
+                                  onPressed: () => setState(() {
+                                    _patchWorkspace = false;
+                                    _tracksWorkspace = true;
+                                    _chordsWorkspace = false;
+                                  }),
+                                  icon:
+                                      const Icon(Icons.view_timeline_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: _previewPlaying
+                                      ? 'Stop test audio'
+                                      : 'Test audio',
+                                  onPressed: _engine.connected && !_previewBusy
+                                      ? _previewPlaying
+                                          ? _stopPreview
+                                          : _choosePreview
+                                      : null,
+                                  icon: _previewBusy
+                                      ? const SizedBox.square(
+                                          dimension: 17,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      : Icon(_previewPlaying
+                                          ? Icons.stop_circle_outlined
+                                          : Icons.music_note),
+                                ),
+                                IconButton(
+                                  tooltip: _engine.connected
+                                      ? (_engine.bypassed
+                                          ? 'Engage rig'
+                                          : 'Bypass rig')
+                                      : 'Reconnect engine',
+                                  onPressed: _engine.connected
+                                      ? () =>
+                                          _client.setBypass(!_engine.bypassed)
+                                      : _client.connect,
+                                  icon: Icon(
+                                    Icons.power_settings_new,
+                                    color: !_engine.connected
+                                        ? LostChrome.ice
+                                        : _engine.bypassed
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .error
+                                            : LostChrome.lime,
+                                  ),
+                                ),
+                                if (!compactHeader) ...[
+                                  TextButton.icon(
+                                    onPressed: _showTone3000,
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4),
+                                    ),
+                                    icon: const Icon(
+                                        Icons.cloud_download_outlined,
+                                        size: 18),
+                                    label: const Text('T3K'),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: _showAudioOutputs,
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 4),
+                                    ),
+                                    icon: const Icon(Icons.volume_up_outlined,
+                                        size: 18),
+                                    label: const Text('SND'),
+                                  ),
+                                ] else ...[
+                                  IconButton(
+                                    tooltip: 'TONE3000',
+                                    onPressed: _showTone3000,
+                                    icon: const Icon(
+                                        Icons.cloud_download_outlined),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Output',
+                                    onPressed: _showAudioOutputs,
+                                    icon: const Icon(Icons.volume_up_outlined),
+                                  ),
+                                ],
+                                const SizedBox(width: 6),
+                                Tooltip(
+                                  message: _engine.connected
+                                      ? 'Engine online'
+                                      : 'Connecting',
+                                  child:
+                                      _StatusDot(connected: _engine.connected),
+                                ),
+                                if (!compactHeader) ...[
+                                  const SizedBox(width: 8),
+                                  const _WindowCloseButton(),
+                                ],
                               ],
-                            ],
-                          ),
+                            );
+                            return compactHeader
+                                ? SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: header,
+                                  )
+                                : header;
+                          }),
                         ),
                         const SizedBox(height: 6),
                         _MeterStrip(snapshot: _meters),
                         const SizedBox(height: 8),
                         Expanded(
                           child: IndexedStack(
-                            index: _tracksWorkspace ? 1 : 0,
+                            index: _patchWorkspace ? 3 : _chordsWorkspace
+                                ? 2
+                                : _tracksWorkspace
+                                    ? 1
+                                    : 0,
                             children: [
                               _buildPedalboardWorkspace(),
                               TrackManagerSheet(
@@ -909,6 +989,11 @@ class _RigScreenState extends State<RigScreen> {
                                 catalog: _catalog,
                                 toneSnapshot: _engine.presetTitle,
                               ),
+                              ChordWorkspace(
+                                  catalog: _catalog,
+                                  client: _client,
+                                  active: _chordsWorkspace),
+                              PatchEditor(document: _patchDocument, client: _client),
                             ],
                           ),
                         ),
@@ -1172,18 +1257,8 @@ class _RigScreenState extends State<RigScreen> {
     }
   }
 
-  Future<Process> _startPreviewPlayer(String path) async {
-    try {
-      return await Process.start('pw-play', [path]);
-    } on ProcessException {
-      try {
-        return await Process.start('aplay', [path]);
-      } on ProcessException {
-        throw const EngineException(
-            'Install PipeWire tools (pw-play) or ALSA utilities (aplay)');
-      }
-    }
-  }
+  Future<Process> _startPreviewPlayer(String path) =>
+      _startLocalAudioPlayback(path);
 
   void _showTone3000() {
     showAeroControlBay<void>(
@@ -1320,6 +1395,20 @@ class _RigScreenState extends State<RigScreen> {
                           TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 4),
                   const Text('Choose where live audio and previews are heard.'),
+                  TextButton.icon(
+                    icon: const Icon(Icons.tune),
+                    label: const Text('QUALITY & CALIBRATION'),
+                    onPressed: _engine.connected
+                        ? () => showAeroControlBay<void>(context,
+                            title: 'Audio Quality',
+                            icon: Icons.tune,
+                            heightFactor: .9,
+                            child: AudioQualitySheet(
+                                snapshot: _engine,
+                                onChanged: _client.setControl,
+                                onMatch: _client.matchRigLevel))
+                        : null,
+                  ),
                   const SizedBox(height: 10),
                   if (snapshot.connectionState == ConnectionState.waiting)
                     const Center(child: CircularProgressIndicator())
@@ -1410,6 +1499,8 @@ class _RigScreenState extends State<RigScreen> {
         slot: slot,
         snapshot: _engine,
         onChanged: _client.setControl,
+        catalog: _catalog,
+        onCaptureSelected: (model) => _client.selectModel(model, slot),
         onChangeTone: () {
           Navigator.pop(context);
           _showModelLibrary(initialSlot: slot);
@@ -1700,7 +1791,8 @@ extension OptionalPedalDetails on OptionalPedal {
         OptionalPedal.chorus => 'Add width and movement',
         OptionalPedal.flanger => 'Sweep a metallic moving comb filter',
         OptionalPedal.tremolo => 'Pulse your volume with an LFO',
-        OptionalPedal.octaver => 'Blend in a gritty octave-down voice',
+        OptionalPedal.octaver =>
+          'Analog grit or clean, chord-capable octave down',
         OptionalPedal.delay => 'Repeat your signal over time',
         OptionalPedal.reverb => 'Add space and decay',
         OptionalPedal.looper => 'Capture and layer a performance',
@@ -4163,6 +4255,8 @@ class SlotControlsSheet extends StatefulWidget {
     required this.snapshot,
     required this.onChanged,
     required this.onChangeTone,
+    this.catalog,
+    this.onCaptureSelected,
     super.key,
   });
 
@@ -4170,6 +4264,8 @@ class SlotControlsSheet extends StatefulWidget {
   final EngineSnapshot snapshot;
   final Future<void> Function(String, double) onChanged;
   final VoidCallback onChangeTone;
+  final CatalogClient? catalog;
+  final Future<void> Function(CatalogModel)? onCaptureSelected;
 
   @override
   State<SlotControlsSheet> createState() => _SlotControlsSheetState();
@@ -4177,6 +4273,7 @@ class SlotControlsSheet extends StatefulWidget {
 
 class _SlotControlsSheetState extends State<SlotControlsSheet> {
   late final Map<String, double> _values;
+  bool _advanced = false;
 
   @override
   void initState() {
@@ -4232,17 +4329,53 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
                     fontWeight: FontWeight.w800,
                     letterSpacing: .8)),
             const SizedBox(height: 3),
-            const Text(
-                'MODEL TRIM  •  Slide vertically for precise adjustment.',
-                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
+            if (widget.catalog != null && widget.onCaptureSelected != null)
+              CaptureCarousel(
+                  catalog: widget.catalog!,
+                  path: widget.slot == ModelSlot.pre
+                      ? widget.snapshot.preModel
+                      : widget.snapshot.model,
+                  onSelected: widget.onCaptureSelected!),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('TONE')),
+                ButtonSegment(value: true, label: Text('6-BAND EQ')),
+              ],
+              selected: {_advanced},
+              onSelectionChanged: (v) => setState(() => _advanced = v.single),
+            ),
             Expanded(
-              child: _VerticalControlBank(
-                controls: _controls,
-                values: _values,
-                onChanged: (control, value) =>
-                    setState(() => _values[control.keyName] = value),
-                onChangeEnd: _commit,
-              ),
+              child: IndexedStack(index: _advanced ? 1 : 0, children: [
+                LayoutBuilder(
+                    builder: (context, constraints) => SingleChildScrollView(
+                            child: Column(children: [
+                          if (widget.slot == ModelSlot.pre)
+                            DryWetAlignmentControl(
+                                snapshot: widget.snapshot,
+                                onChanged: widget.onChanged),
+                          SizedBox(
+                              height: math.max(
+                                  220,
+                                  constraints.maxHeight -
+                                      (widget.slot == ModelSlot.pre ? 130 : 0)),
+                              child: _VerticalControlBank(
+                                controls: _controls,
+                                values: _values,
+                                onChanged: (control, value) => setState(
+                                    () => _values[control.keyName] = value),
+                                onChangeEnd: _commit,
+                              )),
+                        ]))),
+                NamEqSheet(
+                  prefix: widget.slot == ModelSlot.pre ? 'pedal_eq' : 'amp_eq',
+                  settings: widget.snapshot.audioSettings[
+                          widget.slot == ModelSlot.pre
+                              ? 'pedal_eq'
+                              : 'amp_eq'] as Map<String, dynamic>? ??
+                      const {},
+                  onChanged: widget.onChanged,
+                ),
+              ]),
             ),
             OutlinedButton.icon(
               onPressed: widget.onChangeTone,
@@ -4254,6 +4387,251 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
       ),
     );
   }
+}
+
+class DryWetAlignmentControl extends StatefulWidget {
+  const DryWetAlignmentControl(
+      {required this.snapshot, required this.onChanged, super.key});
+  final EngineSnapshot snapshot;
+  final Future<void> Function(String, double) onChanged;
+  @override
+  State<DryWetAlignmentControl> createState() => _DryWetAlignmentControlState();
+}
+
+class _DryWetAlignmentControlState extends State<DryWetAlignmentControl> {
+  late bool _enabled =
+      widget.snapshot.audioSettings['pedal_align_enabled'] != false;
+  bool _busy = false;
+  String? _error;
+  Future<void> _toggle(bool value) async {
+    setState(() => _busy = true);
+    try {
+      await widget.onChanged('pedal_align_enabled', value ? 1 : 0);
+      if (mounted) {
+        setState(() {
+          _enabled = value;
+          _error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final estimate = widget.snapshot.audioSettings['pedal_alignment'] as Map?;
+    final samples = (estimate?['delay_samples'] as num?)?.toInt() ?? 0;
+    final rate =
+        (widget.snapshot.audioSettings['sample_rate'] as num?)?.toDouble() ??
+            48000;
+    final status = estimate?['status'];
+    final detail = !_enabled
+        ? 'Off — original dry blend.'
+        : estimate == null
+            ? 'No measured capture loaded.'
+            : status == 'accepted'
+                ? (samples == 0
+                    ? 'Capture is already aligned.'
+                    : 'Dry blend: +$samples samples (${(samples * 1000 / math.max(1, rate)).toStringAsFixed(2)} ms).')
+                : status == 'inverted'
+                    ? 'Inverted polarity detected — left unchanged.'
+                    : 'Delay uncertain — left unchanged.';
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('AUTO DRY/WET ALIGN',
+              style: TextStyle(fontWeight: FontWeight.w800)),
+          subtitle: Text(detail, style: const TextStyle(color: LostChrome.ice)),
+          value: _enabled,
+          onChanged: _busy ? null : _toggle),
+      const Text(
+          'For Drive MIX blends only. Fully dry/wet and bypass stay unchanged. Rechecked when a capture loads.',
+          style: TextStyle(color: LostChrome.ice, fontSize: 12)),
+      if (_error != null)
+        Text(_error!, style: const TextStyle(color: LostChrome.ice)),
+    ]);
+  }
+}
+
+/// Shared editor for both NAM slots; the existing cartridge supplies the chrome.
+class NamEqSheet extends StatefulWidget {
+  const NamEqSheet(
+      {required this.prefix,
+      required this.settings,
+      required this.onChanged,
+      super.key});
+  final String prefix;
+  final Map<String, dynamic> settings;
+  final Future<void> Function(String, double) onChanged;
+  @override
+  State<NamEqSheet> createState() => _NamEqSheetState();
+}
+
+class _NamEqSheetState extends State<NamEqSheet> {
+  int _band = 0;
+  bool _busy = false;
+  String? _error;
+  late Map<String, double> _values;
+  Map<String, double> _defaults() => {
+        'enabled': 1,
+        'pre': 0,
+        for (var i = 0; i < 6; i++) ...{
+          'band_${i}_freq_hz': [100.0, 250.0, 650.0, 1600.0, 3500.0, 8000.0][i],
+          'band_${i}_gain_db': 0,
+          'band_${i}_q': [.71, 1.0, 1.0, 1.0, 1.4, .71][i],
+          'band_${i}_cut': 0,
+        },
+      };
+  @override
+  void initState() {
+    super.initState();
+    _values = _defaults();
+    for (final key in ['enabled', 'pre']) {
+      if (widget.settings[key] is bool) {
+        _values[key] = widget.settings[key] == true ? 1 : 0;
+      }
+    }
+    final bands = widget.settings['bands'] as List? ?? [];
+    for (var i = 0; i < math.min(6, bands.length); i++) {
+      final b = bands[i] as Map;
+      for (final key in ['freq_hz', 'gain_db', 'q']) {
+        if (b[key] is num) {
+          _values['band_${i}_$key'] = (b[key] as num).toDouble();
+        }
+      }
+      _values['band_${i}_cut'] = b['cut'] == true ? 1 : 0;
+    }
+  }
+
+  Future<void> _commit(String key, double value) async {
+    setState(() => _busy = true);
+    try {
+      await widget.onChanged('${widget.prefix}_$key', value);
+      if (mounted) {
+        setState(() {
+          if (key == 'reset') {
+            _values = _defaults();
+          } else {
+            _values[key] = value;
+          }
+          _error = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cut = (_band == 0 || _band == 5) && _values['band_${_band}_cut'] == 1;
+    final definitions = [
+      _ControlDefinition(
+          'band_${_band}_freq_hz', 'FREQUENCY', 20, 20000, 600, 'Hz',
+          logarithmic: true),
+      if (!cut)
+        _ControlDefinition('band_${_band}_gain_db', 'GAIN', -15, 15, 120, 'dB'),
+      _ControlDefinition('band_${_band}_q', 'WIDTH / Q', .1, 10, 198, '',
+          logarithmic: true),
+    ];
+    return ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          Row(children: [
+            Expanded(
+                child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('EQ ACTIVE'),
+                    value: _values['enabled'] == 1,
+                    onChanged:
+                        _busy ? null : (v) => _commit('enabled', v ? 1 : 0))),
+            TextButton(
+                onPressed: _busy ? null : () => _commit('reset', 1),
+                child: const Text('RESET EQ')),
+          ]),
+          SegmentedButton<int>(
+              segments: const [
+                ButtonSegment(value: 1, label: Text('PRE NAM')),
+                ButtonSegment(value: 0, label: Text('POST NAM')),
+              ],
+              selected: {
+                _values['pre']!.toInt()
+              },
+              onSelectionChanged:
+                  _busy ? null : (v) => _commit('pre', v.single.toDouble())),
+          const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                  'PRE shapes the distortion input. POST shapes the wet output. Dry mix stays untouched. Higher Q = narrower / more resonant. Boosts can raise volume.',
+                  style: TextStyle(color: LostChrome.ice, fontSize: 12))),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            for (var i = 0; i < 6; i++)
+              ChoiceChip(
+                  label: Text(
+                      ['LOW', 'LOW MID', 'MID', 'HIGH MID', 'BITE', 'HIGH'][i]),
+                  selected: i == _band,
+                  onSelected: _busy ? null : (_) => setState(() => _band = i)),
+          ]),
+          if (_band == 0 || _band == 5)
+            Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: SegmentedButton<int>(
+                    segments: [
+                      const ButtonSegment(value: 0, label: Text('SHELF')),
+                      ButtonSegment(
+                          value: 1,
+                          label: Text(_band == 0 ? 'LOW CUT' : 'HIGH CUT')),
+                    ],
+                    selected: {
+                      _values['band_${_band}_cut']!.toInt()
+                    },
+                    onSelectionChanged: _busy
+                        ? null
+                        : (v) =>
+                            _commit('band_${_band}_cut', v.single.toDouble()))),
+          if (_error != null)
+            Text(_error!, style: const TextStyle(color: LostChrome.ice)),
+          // Remount after a confirmed edit/failure so a failed drag restores the
+          // previous engine value. Local slider feedback remains immediate.
+          SizedBox(
+              height: 240,
+              child: IgnorePointer(
+                  ignoring: _busy,
+                  child: _NamEqSliders(
+                      key: ValueKey('$_band-$_busy-${_values.toString()}'),
+                      definitions: definitions,
+                      values: _values,
+                      onCommit: (c, v) => _commit(c.keyName, v)))),
+        ]);
+  }
+}
+
+class _NamEqSliders extends StatefulWidget {
+  const _NamEqSliders(
+      {required this.definitions,
+      required this.values,
+      required this.onCommit,
+      super.key});
+  final List<_ControlDefinition> definitions;
+  final Map<String, double> values;
+  final Future<void> Function(_ControlDefinition, double) onCommit;
+  @override
+  State<_NamEqSliders> createState() => _NamEqSlidersState();
+}
+
+class _NamEqSlidersState extends State<_NamEqSliders> {
+  late final _local = Map<String, double>.from(widget.values);
+  @override
+  Widget build(BuildContext context) => _VerticalControlBank(
+      controls: widget.definitions,
+      values: _local,
+      onChanged: (c, v) => setState(() => _local[c.keyName] = v),
+      onChangeEnd: widget.onCommit);
 }
 
 class CabinetControlsSheet extends StatefulWidget {
@@ -4363,6 +4741,199 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
   }
 }
 
+class AudioQualitySheet extends StatefulWidget {
+  const AudioQualitySheet(
+      {required this.snapshot,
+      required this.onChanged,
+      required this.onMatch,
+      super.key});
+  final EngineSnapshot snapshot;
+  final Future<void> Function(String, double) onChanged;
+  final Future<double> Function() onMatch;
+  @override
+  State<AudioQualitySheet> createState() => _AudioQualitySheetState();
+}
+
+class _AudioQualitySheetState extends State<AudioQualitySheet> {
+  int _renderNamRevision = 0;
+  late Map<String, double> _values;
+  late bool _calibrated;
+  bool _busy = false;
+  String? _message;
+  @override
+  void initState() {
+    super.initState();
+    final s = widget.snapshot.audioSettings;
+    _values = {
+      'quality_profile': (s['quality_profile'] as num?)?.toDouble() ?? 1,
+      'render_quality_profile':
+          (s['render_quality_profile'] as num?)?.toDouble() ?? 3,
+      'nam_quality': (s['nam_quality'] as num?)?.toDouble() ?? 1,
+      'render_nam_quality': (s['render_nam_quality'] as num?)?.toDouble() ?? 2,
+      'input_reference_dbu':
+          (s['input_reference_dbu'] as num?)?.toDouble() ?? 0,
+      'input_trim_db': (s['input_trim_db'] as num?)?.toDouble() ?? 0,
+      'rig_level_db': (s['rig_level_db'] as num?)?.toDouble() ?? 0,
+    };
+    _calibrated = s['calibration_enabled'] as bool? ?? false;
+  }
+
+  Future<void> _commit(String key, double value) async {
+    setState(() => _busy = true);
+    try {
+      await widget.onChanged(key, value);
+      if (mounted) {
+        setState(() {
+          _values[key] = value;
+          if (key == 'calibration_enabled') _calibrated = value == 1;
+          _message = null;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _message = '$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('LIVE CABINET QUALITY',
+            style: TextStyle(fontWeight: FontWeight.w900)),
+        SegmentedButton<int>(
+            segments: const [
+              ButtonSegment(value: 0, label: Text('PORTABLE')),
+              ButtonSegment(value: 1, label: Text('HIGH')),
+            ],
+            selected: {
+              _values['quality_profile']!.toInt()
+            },
+            onSelectionChanged: _busy
+                ? null
+                : (v) => _commit('quality_profile', v.single.toDouble())),
+        const Text(
+            'Cabinet response: Portable 64 ms • High 200 ms. Device buffer and NAM sample rate stay unchanged.'),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<int>(
+            isExpanded: true,
+            initialValue: _values['render_quality_profile']!.toInt(),
+            decoration:
+                const InputDecoration(labelText: 'RENDER CABINET QUALITY'),
+            items: const [
+              DropdownMenuItem(value: 3, child: Text('Same as live')),
+              DropdownMenuItem(value: 0, child: Text('Portable — 64 ms IR')),
+              DropdownMenuItem(value: 1, child: Text('High — 200 ms IR')),
+              DropdownMenuItem(
+                  value: 2, child: Text('Offline — up to 1 second IR'))
+            ],
+            onChanged: _busy
+                ? null
+                : (v) {
+                    if (v != null) {
+                      _commit('render_quality_profile', v.toDouble());
+                    }
+                  }),
+        const SizedBox(height: 12),
+        const Text('LIVE NAM SIZE',
+            style: TextStyle(fontWeight: FontWeight.w900)),
+        SegmentedButton<int>(
+          key: const Key('live-nam-size'),
+          segments: const [
+            ButtonSegment(value: 0, label: Text('LITE')),
+            ButtonSegment(value: 1, label: Text('FULL')),
+          ],
+          selected: {_values['nam_quality']!.toInt()},
+          onSelectionChanged:
+              _busy ? null : (v) => _commit('nam_quality', v.single.toDouble()),
+        ),
+        const Text(
+            'Applies to both NAM slots when the capture contains size tiers. Lite uses less processing; Full uses the largest available tier. Single-size files stay unchanged.'),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<int>(
+          key: ValueKey('render-nam-$_renderNamRevision'),
+          isExpanded: true,
+          initialValue: _values['render_nam_quality']!.toInt(),
+          decoration: const InputDecoration(labelText: 'RENDER NAM SIZE'),
+          items: const [
+            DropdownMenuItem(value: 2, child: Text('Same as live NAM')),
+            DropdownMenuItem(value: 0, child: Text('Lite NAM')),
+            DropdownMenuItem(value: 1, child: Text('Full NAM')),
+          ],
+          onChanged: _busy
+              ? null
+              : (v) async {
+                  if (v == null) return;
+                  await _commit('render_nam_quality', v.toDouble());
+                  // Recreate the form field from the confirmed value, including on
+                  // failure. didChange would invoke onChanged again recursively.
+                  if (mounted) setState(() => _renderNamRevision++);
+                },
+        ),
+        const Text(
+            'Rendering includes reamping and processed previews. Audition level matching always uses the live size. These device preferences persist across presets.'),
+        const SizedBox(height: 12),
+        SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Use NAM calibration'),
+            subtitle: const Text(
+                'Only enable with a measured input reference at your current interface gain setting.'),
+            value: _calibrated,
+            onChanged: _busy
+                ? null
+                : (v) => _commit('calibration_enabled', v ? 1 : 0)),
+        const Text(
+            'Reference = analog dBu at digital full scale, not the knob position. Missing NAM metadata stays uncorrected. Parallel pedal mix disables automatic calibration; manual trim still works.'),
+        const SizedBox(height: 8),
+        SizedBox(
+            height: 230,
+            child: _VerticalControlBank(
+                controls: const [
+                  _ControlDefinition(
+                      'input_trim_db', 'INPUT TRIM', -24, 24, 96, 'dB'),
+                  _ControlDefinition(
+                      'input_reference_dbu', 'REFERENCE', -30, 30, 600, 'dBu'),
+                  _ControlDefinition(
+                      'rig_level_db', 'RIG LEVEL', -24, 12, 72, 'dB'),
+                ],
+                values: _values,
+                onChanged: (c, v) => setState(() => _values[c.keyName] = v),
+                onChangeEnd: (c, v) => _commit(c.keyName, v))),
+        const Text(
+            'Input reference/trim and quality are device settings. Rig level saves with the preset. Recalibrate if the hardware gain changes. Reamping uses the current reference: restore the reference used when recording older DI takes.'),
+        const SizedBox(height: 12),
+        FilledButton.icon(
+            icon: Icon(_busy ? Icons.hourglass_top : Icons.equalizer),
+            label: const Text('MATCH AUDITION LEVEL'),
+            onPressed: _busy
+                ? null
+                : () async {
+                    setState(() => _busy = true);
+                    try {
+                      final gain = await widget.onMatch();
+                      if (mounted) {
+                        setState(() {
+                          _values['rig_level_db'] = gain;
+                          _message =
+                              'Rig level set to ${gain.toStringAsFixed(1)} dB';
+                        });
+                      }
+                    } catch (error) {
+                      if (mounted) setState(() => _message = '$error');
+                    } finally {
+                      if (mounted) setState(() => _busy = false);
+                    }
+                  }),
+        const Text(
+            'Uses a fixed test performance to match RMS level, not an automatic gain rider. Only post-rig level changes; NAM drive and EQ stay untouched.'),
+        if (_message != null)
+          Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_message!,
+                  style: const TextStyle(color: LostChrome.lime))),
+      ]);
+}
+
 class EffectControlsSheet extends StatefulWidget {
   const EffectControlsSheet({
     required this.effect,
@@ -4383,17 +4954,40 @@ class EffectControlsSheet extends StatefulWidget {
 
 class _EffectControlsSheetState extends State<EffectControlsSheet> {
   late final Map<String, double> _values;
+  bool _applyingGateFeel = false;
+  late bool _cleanOctave;
+  bool _changingOctaveMode = false;
 
   @override
   void initState() {
     super.initState();
     _values = widget.snapshot.effectControls(widget.effect);
+    _cleanOctave = widget.snapshot.octaverClean;
+  }
+
+  Future<void> _setOctaveMode(bool clean) async {
+    setState(() => _changingOctaveMode = true);
+    try {
+      await widget.onChanged('octaver_clean', clean ? 1 : 0);
+      if (mounted) setState(() => _cleanOctave = clean);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _changingOctaveMode = false);
+    }
   }
 
   List<_ControlDefinition> get _controls => switch (widget.effect) {
         EffectKind.gate => const [
             _ControlDefinition(
                 'gate_threshold_db', 'THRESHOLD', -80, -10, 70, 'dB'),
+            _ControlDefinition('gate_hold_ms', 'HOLD', 0, 500, 100, 'ms'),
+            _ControlDefinition(
+                'gate_release_ms', 'RELEASE', 5, 1000, 199, 'ms'),
+            _ControlDefinition('gate_range_db', 'REDUCTION', 0, 90, 90, 'dB'),
           ],
         EffectKind.compressor => const [
             _ControlDefinition(
@@ -4446,6 +5040,28 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
           ],
       };
 
+  Future<void> _setGateFeel(double hold, double release, double range) async {
+    setState(() => _applyingGateFeel = true);
+    try {
+      for (final entry in {
+        'gate_hold_ms': hold,
+        'gate_release_ms': release,
+        'gate_range_db': range,
+      }.entries) {
+        await widget.onChanged(entry.key, entry.value);
+        if (!mounted) return;
+        setState(() => _values[entry.key] = entry.value);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _applyingGateFeel = false);
+    }
+  }
+
   Future<void> _commit(_ControlDefinition control, double value) async {
     try {
       await widget.onChanged(control.keyName, value);
@@ -4460,45 +5076,126 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
   @override
   Widget build(BuildContext context) {
     final detail = widget.effect;
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('${detail.label.toUpperCase()} PARAMETERS',
-                style: TextStyle(
-                    color: detail.color,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: .9)),
-            const Text('Settings are saved with your preset. Drag vertically.',
-                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
-            const SizedBox(height: 8),
-            Expanded(
-              child: _VerticalControlBank(
-                controls: _controls,
-                values: _values,
-                onChanged: (control, value) =>
-                    setState(() => _values[control.keyName] = value),
-                onChangeEnd: _commit,
-              ),
-            ),
-            if (widget.onRemove != null) ...[
+    return LayoutBuilder(builder: (context, constraints) {
+      final compactGate =
+          detail == EffectKind.gate && constraints.maxHeight < 440;
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('${detail.label.toUpperCase()} PARAMETERS',
+                  style: TextStyle(
+                      color: detail.color,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: .9)),
+              if (!compactGate)
+                const Text(
+                    'Settings are saved with your preset. Drag vertically.',
+                    style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
+              if (detail == EffectKind.gate) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 48,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(children: [
+                      OutlinedButton(
+                        onPressed: _applyingGateFeel
+                            ? null
+                            : () => _setGateFeel(10, 15, 80),
+                        child: const Text('TIGHT RHYTHM'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _applyingGateFeel
+                            ? null
+                            : () => _setGateFeel(60, 150, 80),
+                        child: const Text('NATURAL SUSTAIN'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _applyingGateFeel
+                            ? null
+                            : () => _setGateFeel(30, 200, 25),
+                        child: const Text('GENTLE CLEANUP'),
+                      ),
+                    ]),
+                  ),
+                ),
+                if (compactGate)
+                  const Tooltip(
+                    message:
+                        'Hold bridges gaps; release softens the close; reduction sets how much noise is removed. Settings save with your preset.',
+                    child: Text(
+                        'Swipe for more controls • Feel keeps threshold',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: LostChrome.ice, fontSize: 12)),
+                  )
+                else
+                  const Text(
+                    'Feel keeps your threshold. Hold bridges gaps; release softens the close; reduction sets how much noise is removed.',
+                    style: TextStyle(color: LostChrome.ice, fontSize: 12),
+                  ),
+              ],
+              if (detail == EffectKind.octaver) ...[
+                const SizedBox(height: 8),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(
+                        value: false,
+                        label: Text('ANALOG'),
+                        icon: Icon(Icons.bolt)),
+                    ButtonSegment(
+                        value: true,
+                        label: Text('CLEAN'),
+                        icon: Icon(Icons.graphic_eq)),
+                  ],
+                  selected: {_cleanOctave},
+                  onSelectionChanged: _changingOctaveMode
+                      ? null
+                      : (values) => _setOctaveMode(values.single),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                    _cleanOctave
+                        ? 'Chords • octave voice +${widget.snapshot.octaverCleanLatencyMs.toStringAsFixed(1)} ms • dry stays immediate'
+                        : 'Analog: single notes, no added buffering. Clean voice: +${widget.snapshot.octaverCleanLatencyMs.toStringAsFixed(1)} ms.',
+                    style:
+                        const TextStyle(color: LostChrome.ice, fontSize: 12)),
+              ],
               const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final navigator = Navigator.of(context);
-                  final removed = await widget.onRemove!();
-                  if (removed && mounted) navigator.pop();
-                },
-                icon: const Icon(Icons.remove_circle_outline),
-                label: const Text('REMOVE FROM BOARD'),
+              Expanded(
+                child: AbsorbPointer(
+                  absorbing: _applyingGateFeel,
+                  child: _VerticalControlBank(
+                    controls: _controls,
+                    values: _values,
+                    onChanged: (control, value) =>
+                        setState(() => _values[control.keyName] = value),
+                    onChangeEnd: _commit,
+                  ),
+                ),
               ),
+              if (widget.onRemove != null) ...[
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final navigator = Navigator.of(context);
+                    final removed = await widget.onRemove!();
+                    if (removed && mounted) navigator.pop();
+                  },
+                  icon: const Icon(Icons.remove_circle_outline),
+                  label: const Text('REMOVE FROM BOARD'),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
-      ),
-    );
+      );
+    });
   }
 }
 
@@ -4658,6 +5355,8 @@ class DailyLesson {
     required this.coaching,
     required this.bpm,
     required this.events,
+    this.lengthBeats,
+    this.stringLabels = const ['e', 'B', 'G', 'D', 'A', 'E'],
   });
 
   final String title;
@@ -4665,6 +5364,25 @@ class DailyLesson {
   final String coaching;
   final int bpm;
   final List<DailyLessonEvent> events;
+  final double? lengthBeats;
+  final List<String> stringLabels;
+  double beatAt(int index) => events[index].beat ?? index * .5;
+  int timeAt(int index) => (beatAt(index) * 60000 / bpm).round();
+  int indexAt(int milliseconds) {
+    var low = 0, high = events.length;
+    while (low < high) {
+      final mid = (low + high) ~/ 2;
+      if (timeAt(mid) <= milliseconds) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    return low - 1;
+  }
+
+  int get durationMilliseconds =>
+      ((lengthBeats ?? events.length * .5) * 60000 / bpm).round();
 
   int get stepMilliseconds => (60000 / bpm * .5).round();
 
@@ -4743,10 +5461,11 @@ class DailyLesson {
 }
 
 class DailyLessonEvent {
-  const DailyLessonEvent(this.note, this.position);
+  const DailyLessonEvent(this.note, this.position, {this.beat});
 
   final String note;
   final String position;
+  final double? beat;
 
   /// Positions are stored as guitar-tab `string / fret`, where 1 is the high
   /// e string and 6 is the low E string. Keeping that familiar notation in
@@ -4850,6 +5569,9 @@ class DailyLessonSheet extends StatefulWidget {
     List<DailyLesson>? lessons,
     PracticeHistoryStore? historyStore,
     this.onMetronomeChanged,
+    this.repeatCount = 2,
+    this.customPractice = false,
+    this.now = DateTime.now,
     super.key,
   })  : assert(lesson != null || lessons != null),
         lessons = lessons ?? [lesson!],
@@ -4858,6 +5580,9 @@ class DailyLessonSheet extends StatefulWidget {
   final Stream<MeterSnapshot> meters;
   final List<DailyLesson> lessons;
   final PracticeHistoryStore historyStore;
+  final int repeatCount;
+  final bool customPractice;
+  final DateTime Function() now;
   final Future<void> Function(bool enabled, int bpm)? onMetronomeChanged;
 
   @override
@@ -4903,8 +5628,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     super.dispose();
   }
 
-  int get _practiceMilliseconds =>
-      _lesson.events.length * _lesson.stepMilliseconds;
+  int get _practiceMilliseconds => _lesson.durationMilliseconds;
 
   // Four quarter-note pulses, rather than a fixed wall-clock delay, keep the
   // count-in honest as future lessons choose different tempos.
@@ -4918,16 +5642,13 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     if (!_running || _elapsedMilliseconds < _passCountInMilliseconds) {
       return -1;
     }
-    final index = _lessonElapsedMilliseconds ~/ _lesson.stepMilliseconds;
-    return index.clamp(0, _lesson.events.length - 1);
+    return _lesson.indexAt(_lessonElapsedMilliseconds);
   }
 
   double get _playheadPosition {
-    if (!_running || _elapsedMilliseconds < _passCountInMilliseconds) {
-      return -1;
-    }
-    return (_lessonElapsedMilliseconds / _lesson.stepMilliseconds)
-        .clamp(0.0, _lesson.events.length - .001);
+    return (_elapsedMilliseconds - _passCountInMilliseconds) *
+        _lesson.bpm /
+        60000;
   }
 
   int get _hitCount =>
@@ -4976,8 +5697,12 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
       _eventStates =
           List.filled(_lesson.events.length, _LessonEventState.pending);
       _timingOffsets.clear();
-      _startedAt = DateTime.now();
-      _elapsedMilliseconds = 0;
+      _startedAt = countIn
+          ? widget.now()
+          : _startedAt!.add(Duration(
+              milliseconds: _passCountInMilliseconds + _practiceMilliseconds));
+      _elapsedMilliseconds =
+          widget.now().difference(_startedAt!).inMilliseconds;
       _passCountInMilliseconds = countIn ? _countInMilliseconds : 0;
       _running = true;
       _awaitingNextLesson = false;
@@ -4989,22 +5714,20 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
   void _advance() {
     final startedAt = _startedAt;
     if (!_running || startedAt == null || !mounted) return;
-    final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
-    final rawIndex = elapsed < _passCountInMilliseconds
-        ? -1
-        : (elapsed - _passCountInMilliseconds) ~/ _lesson.stepMilliseconds;
+    final elapsed = widget.now().difference(startedAt).inMilliseconds;
+    final musicalTime = elapsed - _passCountInMilliseconds;
     var passFinished = false;
     setState(() {
       _elapsedMilliseconds = elapsed;
       // When the playhead passes a pending target, it becomes a miss. A later
       // pitch cannot be retroactively matched to an earlier note.
-      final lastExpired = rawIndex.clamp(0, _lesson.events.length);
-      for (var index = 0; index < lastExpired; index++) {
-        if (_eventStates[index] == _LessonEventState.pending) {
+      for (var index = 0; index < _lesson.events.length; index++) {
+        if (musicalTime > _lesson.timeAt(index) + _hitWindow(index) &&
+            _eventStates[index] == _LessonEventState.pending) {
           _eventStates[index] = _LessonEventState.missed;
         }
       }
-      if (rawIndex >= _lesson.events.length) {
+      if (musicalTime >= _practiceMilliseconds) {
         for (var index = 0; index < _eventStates.length; index++) {
           if (_eventStates[index] == _LessonEventState.pending) {
             _eventStates[index] = _LessonEventState.missed;
@@ -5022,7 +5745,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     _sessionHitCount += _hitCount;
     _sessionNoteCount += _lesson.events.length;
     _sessionTimingOffsets.addAll(_timingOffsets);
-    final anotherRound = _round < 2;
+    final anotherRound = _round < widget.repeatCount;
     final anotherLesson = _lessonIndex < widget.lessons.length - 1;
     if (anotherRound) {
       // The second pass is intentionally immediate: the click continues and
@@ -5061,6 +5784,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
   }
 
   Future<void> _saveSession() async {
+    if (widget.customPractice) return;
     try {
       await widget.historyStore.add(PracticeSessionRecord(
         completedAt: DateTime.now(),
@@ -5084,21 +5808,21 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     if (meter.tunerHz <= 0 || meter.tunerConfidence < _minimumConfidence) {
       return;
     }
-    final elapsed = DateTime.now().difference(startedAt).inMilliseconds;
+    final elapsed = widget.now().difference(startedAt).inMilliseconds;
     if (elapsed < _passCountInMilliseconds) return;
-    final index =
-        (elapsed - _passCountInMilliseconds) ~/ _lesson.stepMilliseconds;
+    final musicalTime = elapsed - _passCountInMilliseconds;
+    final index = _lesson.indexAt(musicalTime);
     if (index < 0 ||
         index >= _lesson.events.length ||
         _eventStates[index] != _LessonEventState.pending) {
       return;
     }
+    if (musicalTime - _lesson.timeAt(index) > _hitWindow(index)) return;
     final target = _lesson.events[index];
     final cents =
         1200 * math.log(meter.tunerHz / _noteFrequency(target.note)) / math.ln2;
     if (cents.abs() > _pitchToleranceCents) return;
-    final targetTime =
-        _passCountInMilliseconds + index * _lesson.stepMilliseconds;
+    final targetTime = _passCountInMilliseconds + _lesson.timeAt(index);
     setState(() {
       _eventStates[index] = _LessonEventState.hit;
       _timingOffsets.add(elapsed - targetTime);
@@ -5110,16 +5834,23 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     if (_awaitingNextLesson) return 'EXERCISE COMPLETE';
     if (!_running) return 'READY WHEN YOU ARE';
     final remaining = _passCountInMilliseconds - _elapsedMilliseconds;
-    if (remaining > 0) return 'COUNT IN  ${((remaining - 1) ~/ 1000) + 1}';
-    return 'PLAY ${_lesson.events[_activeIndex].note}';
+    if (remaining > 0) {
+      return 'COUNT IN  ${(remaining * _lesson.bpm / 60000).ceil()}';
+    }
+    return _activeIndex < 0
+        ? 'GET READY'
+        : 'PLAY ${_lesson.events[_activeIndex].note}';
   }
 
   String get _subheadline {
     if (_finished) {
+      if (widget.customPractice) {
+        return '$_sessionHitCount HIT • ${_sessionNoteCount - _sessionHitCount} MISSED';
+      }
       return '$_sessionHitCount / $_sessionNoteCount notes • ${_averageTiming(_sessionTimingOffsets)} ms average timing';
     }
     if (_awaitingNextLesson) {
-      return 'Two passes complete. Choose NEXT when you are ready for exercise ${_lessonIndex + 2}.';
+      return '${widget.repeatCount} passes complete. Choose NEXT when you are ready for exercise ${_lessonIndex + 2}.';
     }
     if (!_running) {
       return 'Scores clean pitch + timing. Fret position is your choice.';
@@ -5127,6 +5858,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
     if (_elapsedMilliseconds < _passCountInMilliseconds) {
       return 'Feel the pulse. First target comes after the count-in.';
     }
+    if (_activeIndex < 0) return 'Wait for the first note to reach the marker.';
     final event = _lesson.events[_activeIndex];
     return 'STRING ${event.stringNumber} • FRET ${event.fret}  •  ±${_pitchToleranceCents.round()}¢ pitch window';
   }
@@ -5140,6 +5872,22 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
         child: PracticeHistorySheet(store: widget.historyStore),
       ),
     );
+  }
+
+  int _hitWindow(int index) => math.min(
+      200,
+      index + 1 < _lesson.events.length
+          ? _lesson.timeAt(index + 1) - _lesson.timeAt(index)
+          : _practiceMilliseconds - _lesson.timeAt(index));
+
+  Future<void> _showCustomTabs() async {
+    await showAeroControlBay<void>(context,
+        title: 'Practice tabs',
+        icon: Icons.library_music,
+        heightFactor: .92,
+        child: PracticeTabLibrary(
+            meters: widget.meters,
+            onMetronomeChanged: widget.onMetronomeChanged));
   }
 
   @override
@@ -5159,15 +5907,22 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
               children: [
                 const Icon(Icons.school_outlined, color: LostChrome.lime),
                 const SizedBox(width: 8),
-                const Text('DAILY DRILL',
+                Text(widget.customPractice ? 'CUSTOM PRACTICE' : 'DAILY DRILL',
                     style:
                         TextStyle(fontSize: 20, fontWeight: FontWeight.w900)),
                 const Spacer(),
-                IconButton(
-                  tooltip: 'Practice history',
-                  onPressed: _showHistory,
-                  icon: const Icon(Icons.history),
-                ),
+                if (!widget.customPractice)
+                  IconButton(
+                    tooltip: 'My practice tabs',
+                    onPressed: _running ? null : _showCustomTabs,
+                    icon: const Icon(Icons.library_music),
+                  ),
+                if (!widget.customPractice)
+                  IconButton(
+                    tooltip: 'Practice history',
+                    onPressed: _showHistory,
+                    icon: const Icon(Icons.history),
+                  ),
               ],
             ),
             Text(_lesson.subtitle,
@@ -5218,7 +5973,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
                   ),
                   const SizedBox(height: 7),
                   Text(
-                      '${_lesson.bpm} BPM  •  EXERCISE ${_lessonIndex + 1}/${widget.lessons.length}  •  PASS $_round/2',
+                      '${_lesson.bpm} BPM  •  EXERCISE ${_lessonIndex + 1}/${widget.lessons.length}  •  PASS $_round/${widget.repeatCount}',
                       style: const TextStyle(
                           color: Color(0xffa2d5f5),
                           fontSize: 10,
@@ -5234,6 +5989,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
             const SizedBox(height: 6),
             _TablatureDisplay(
               events: _lesson.events,
+              stringLabels: _lesson.stringLabels,
               states: _eventStates,
               activeIndex: _activeIndex,
               playheadPosition: _playheadPosition,
@@ -5241,7 +5997,11 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
                   _running && _elapsedMilliseconds >= _passCountInMilliseconds,
             ),
             const SizedBox(height: 13),
-            if (_finished)
+            if (widget.customPractice && !_finished)
+              Text(
+                  '${_sessionHitCount + _hitCount} HIT • ${_sessionNoteCount - _sessionHitCount + _eventStates.where((s) => s == _LessonEventState.missed).length} MISSED',
+                  textAlign: TextAlign.center),
+            if (_finished && !widget.customPractice)
               _DailyDrillResult(
                 accuracyPercent: _sessionAccuracyPercent,
                 hitCount: _sessionHitCount,
@@ -5250,6 +6010,26 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
                     _averageTiming(_sessionTimingOffsets),
               ),
             const SizedBox(height: 10),
+            if (_running)
+              OutlinedButton.icon(
+                  onPressed: () {
+                    _clock?.cancel();
+                    setState(() {
+                      _running = false;
+                      _round = 1;
+                      _sessionHitCount = 0;
+                      _sessionNoteCount = 0;
+                      _sessionTimingOffsets.clear();
+                      _elapsedMilliseconds = 0;
+                      _passCountInMilliseconds = 0;
+                      _eventStates = List.filled(
+                          _lesson.events.length, _LessonEventState.pending);
+                    });
+                    unawaited(
+                        widget.onMetronomeChanged?.call(false, _lesson.bpm));
+                  },
+                  icon: const Icon(Icons.stop),
+                  label: const Text('STOP PRACTICE')),
             if (_awaitingNextLesson)
               FilledButton.icon(
                 onPressed: _nextLesson,
@@ -5271,7 +6051,7 @@ class _DailyLessonSheetState extends State<DailyLessonSheet> {
               ),
             const SizedBox(height: 8),
             const Text(
-              'Uses the clean guitar input before your NAMs and effects. It recognizes pitch and onset timing—not a particular string or fret.',
+              'Uses clean guitar pitch within each note’s timing window—not a particular string or fret. Repeated sustained pitches may count as hits.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Color(0xff8bc5e8), fontSize: 11),
             ),
@@ -5289,6 +6069,7 @@ class _TablatureDisplay extends StatelessWidget {
     required this.activeIndex,
     required this.playheadPosition,
     required this.active,
+    this.stringLabels = const ['e', 'B', 'G', 'D', 'A', 'E'],
   });
 
   final List<DailyLessonEvent> events;
@@ -5296,12 +6077,12 @@ class _TablatureDisplay extends StatelessWidget {
   final int activeIndex;
   final double playheadPosition;
   final bool active;
+  final List<String> stringLabels;
 
   @override
   Widget build(BuildContext context) {
     // A 42px time column keeps double-digit frets readable. The surface can
     // scroll horizontally when a later lesson is longer than the small Pi UI.
-    final naturalWidth = 52.0 + events.length * 42.0;
     return Container(
       height: 146,
       clipBehavior: Clip.antiAlias,
@@ -5312,19 +6093,17 @@ class _TablatureDisplay extends StatelessWidget {
         boxShadow: const [BoxShadow(color: Color(0x3339bfff), blurRadius: 11)],
       ),
       child: LayoutBuilder(
-        builder: (context, constraints) => SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: math.max(constraints.maxWidth, naturalWidth),
-            height: 144,
-            child: CustomPaint(
-              painter: _TablaturePainter(
-                events: events,
-                states: states,
-                activeIndex: activeIndex,
-                playheadPosition: playheadPosition,
-                active: active,
-              ),
+        builder: (context, constraints) => SizedBox(
+          width: constraints.maxWidth,
+          height: 144,
+          child: CustomPaint(
+            painter: _TablaturePainter(
+              events: events,
+              states: states,
+              activeIndex: activeIndex,
+              playheadPosition: playheadPosition,
+              active: active,
+              stringLabels: stringLabels,
             ),
           ),
         ),
@@ -5340,6 +6119,7 @@ class _TablaturePainter extends CustomPainter {
     required this.activeIndex,
     required this.playheadPosition,
     required this.active,
+    required this.stringLabels,
   });
 
   final List<DailyLessonEvent> events;
@@ -5347,6 +6127,7 @@ class _TablaturePainter extends CustomPainter {
   final int activeIndex;
   final double playheadPosition;
   final bool active;
+  final List<String> stringLabels;
 
   static const _leftGutter = 38.0;
   static const _columnWidth = 42.0;
@@ -5361,7 +6142,7 @@ class _TablaturePainter extends CustomPainter {
     final strongStringPaint = Paint()
       ..color = LostChrome.ice.withValues(alpha: .82)
       ..strokeWidth = 1.3;
-    final labels = ['e', 'B', 'G', 'D', 'A', 'E'];
+    final labels = stringLabels;
     for (var index = 0; index < 6; index++) {
       final y = _top + index * _stringGap;
       canvas.drawLine(Offset(_leftGutter, y), Offset(size.width, y),
@@ -5388,9 +6169,23 @@ class _TablaturePainter extends CustomPainter {
       const TextStyle(color: Color(0xff8bc5e8), fontSize: 8),
     );
 
+    final markerX = math.min(120.0, size.width * .28);
+    final beat = playheadPosition;
+    canvas.save();
+    canvas.clipRect(Rect.fromLTRB(_leftGutter, 0, size.width, 123));
+    for (var bar = math.max(0, (beat / 4).floor() - 1);
+        bar * 4 < beat + size.width / 84;
+        bar++) {
+      final x = markerX + (bar * 4 - beat) * 84;
+      canvas.drawLine(Offset(x, 21), Offset(x, 116), stringPaint);
+      _paintText(canvas, '${bar + 1}', Offset(x + 4, 5),
+          const TextStyle(color: LostChrome.ice, fontSize: 11));
+    }
     for (var index = 0; index < events.length; index++) {
       final event = events[index];
-      final x = _leftGutter + _columnWidth * (index + .5);
+      final x =
+          markerX + ((event.beat ?? index * .5) - beat) * _columnWidth * 2;
+      if (x < _leftGutter - 20 || x > size.width + 20) continue;
       final y = _top + (event.stringNumber - 1) * _stringGap;
       final state = states[index];
       final isCurrent = active && index == activeIndex;
@@ -5438,10 +6233,10 @@ class _TablaturePainter extends CustomPainter {
           Offset(x - textPainter.width / 2, y - textPainter.height / 2));
     }
 
-    if (active && playheadPosition >= 0) {
-      // The marker follows elapsed musical time, not discrete note indexes,
-      // so it visibly glides between tab columns instead of jumping on beats.
-      final cursorX = _leftGutter + _columnWidth * (playheadPosition + .5);
+    canvas.restore();
+    {
+      // Notes move past a fixed hit line; only visible notes are painted.
+      final cursorX = markerX;
       final cursorPaint = Paint()
         ..color = LostChrome.lime
         ..strokeWidth = 2.2;
@@ -5457,7 +6252,7 @@ class _TablaturePainter extends CustomPainter {
 
     _paintText(
       canvas,
-      'FOLLOW THE LIME CURSOR  •  GREEN = HIT  •  RED = MISS',
+      'PLAY AT THE MARKER • GREEN = HIT • RED = MISS',
       Offset(_leftGutter, 126),
       const TextStyle(
           color: Color(0xff8bc5e8), fontSize: 9, fontWeight: FontWeight.w800),
@@ -5675,6 +6470,16 @@ enum TrackRecordMode { diAndRig, diOnly }
 
 enum TrackPlaybackSource { rig, di }
 
+enum TimelineSnap { bar, beat, off }
+
+extension on TimelineSnap {
+  String get label => switch (this) {
+        TimelineSnap.bar => 'BAR',
+        TimelineSnap.beat => 'BEAT',
+        TimelineSnap.off => 'FREE',
+      };
+}
+
 extension on TrackInput {
   String get label => switch (this) {
         TrackInput.guitar => 'GUITAR IN',
@@ -5701,6 +6506,92 @@ extension on TrackInput {
       };
 }
 
+class TimelineClip {
+  const TimelineClip({
+    required this.id,
+    required this.takePath,
+    this.cleanTakePath,
+    required this.sourceDurationMilliseconds,
+    this.timelineStartMilliseconds = 0,
+    this.sourceStartMilliseconds = 0,
+    int? sourceEndMilliseconds,
+    this.toneSnapshot,
+    this.riffId,
+  }) : sourceEndMilliseconds =
+            sourceEndMilliseconds ?? sourceDurationMilliseconds;
+
+  factory TimelineClip.fromJson(Map<String, dynamic> json) => TimelineClip(
+        id: json['id'] as String,
+        takePath: json['take_path'] as String,
+        cleanTakePath: json['clean_take_path'] as String?,
+        sourceDurationMilliseconds:
+            (json['source_duration_ms'] as num?)?.round() ?? 0,
+        timelineStartMilliseconds:
+            (json['timeline_start_ms'] as num?)?.round() ?? 0,
+        sourceStartMilliseconds:
+            (json['source_start_ms'] as num?)?.round() ?? 0,
+        sourceEndMilliseconds: (json['source_end_ms'] as num?)?.round(),
+        toneSnapshot: json['tone_snapshot'] as String?,
+        riffId: json['riff_id'] as String?,
+      );
+
+  final String id;
+  final String takePath;
+  final String? cleanTakePath;
+  final int sourceDurationMilliseconds;
+  final int timelineStartMilliseconds;
+  final int sourceStartMilliseconds;
+  final int sourceEndMilliseconds;
+  final String? toneSnapshot;
+  final String? riffId;
+
+  int get durationMilliseconds =>
+      (sourceEndMilliseconds - sourceStartMilliseconds)
+          .clamp(1, 1 << 31)
+          .toInt();
+  int get timelineEndMilliseconds =>
+      timelineStartMilliseconds + durationMilliseconds;
+
+  TimelineClip copyWith({
+    String? id,
+    String? takePath,
+    String? cleanTakePath,
+    int? sourceDurationMilliseconds,
+    int? timelineStartMilliseconds,
+    int? sourceStartMilliseconds,
+    int? sourceEndMilliseconds,
+    String? toneSnapshot,
+    String? riffId,
+  }) =>
+      TimelineClip(
+        id: id ?? this.id,
+        takePath: takePath ?? this.takePath,
+        cleanTakePath: cleanTakePath ?? this.cleanTakePath,
+        sourceDurationMilliseconds:
+            sourceDurationMilliseconds ?? this.sourceDurationMilliseconds,
+        timelineStartMilliseconds:
+            timelineStartMilliseconds ?? this.timelineStartMilliseconds,
+        sourceStartMilliseconds:
+            sourceStartMilliseconds ?? this.sourceStartMilliseconds,
+        sourceEndMilliseconds:
+            sourceEndMilliseconds ?? this.sourceEndMilliseconds,
+        toneSnapshot: toneSnapshot ?? this.toneSnapshot,
+        riffId: riffId ?? this.riffId,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'take_path': takePath,
+        if (cleanTakePath != null) 'clean_take_path': cleanTakePath,
+        'source_duration_ms': sourceDurationMilliseconds,
+        'timeline_start_ms': timelineStartMilliseconds,
+        'source_start_ms': sourceStartMilliseconds,
+        'source_end_ms': sourceEndMilliseconds,
+        if (toneSnapshot != null) 'tone_snapshot': toneSnapshot,
+        if (riffId != null) 'riff_id': riffId,
+      };
+}
+
 class TrackLane {
   const TrackLane({
     required this.id,
@@ -5718,6 +6609,7 @@ class TrackLane {
     this.clipStartSeconds = 0,
     this.toneSnapshot,
     this.riffId,
+    this.clips = const [],
   });
 
   factory TrackLane.fromJson(Map<String, dynamic> json) => TrackLane(
@@ -5738,6 +6630,10 @@ class TrackLane {
         clipStartSeconds: (json['clip_start_seconds'] as num?)?.toDouble() ?? 0,
         toneSnapshot: json['tone_snapshot'] as String?,
         riffId: json['riff_id'] as String?,
+        clips: (json['clips'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TimelineClip.fromJson)
+            .toList(growable: false),
       );
 
   final String id;
@@ -5755,8 +6651,27 @@ class TrackLane {
   final double clipStartSeconds;
   final String? toneSnapshot;
   final String? riffId;
+  final List<TimelineClip> clips;
 
-  bool get hasTake => takePath != null;
+  List<TimelineClip> get timelineClips {
+    if (clips.isNotEmpty) return clips;
+    final source = takePath;
+    final duration = durationSeconds;
+    if (source == null || duration == null || duration <= 0) return const [];
+    return [
+      TimelineClip(
+        id: 'legacy-$id',
+        takePath: source,
+        cleanTakePath: cleanTakePath,
+        sourceDurationMilliseconds: (duration * 1000).round(),
+        timelineStartMilliseconds: (clipStartSeconds * 1000).round(),
+        toneSnapshot: toneSnapshot,
+        riffId: riffId,
+      ),
+    ];
+  }
+
+  bool get hasTake => timelineClips.isNotEmpty;
   String? get playbackPath => playbackSource == TrackPlaybackSource.di
       ? cleanTakePath ?? takePath
       : takePath ?? cleanTakePath;
@@ -5776,14 +6691,20 @@ class TrackLane {
     double? clipStartSeconds,
     String? toneSnapshot,
     String? riffId,
+    List<TimelineClip>? clips,
   }) =>
       TrackLane(
         id: id,
         name: name ?? this.name,
         input: input ?? this.input,
-        takePath: takePath ?? this.takePath,
-        cleanTakePath: cleanTakePath ?? this.cleanTakePath,
-        durationSeconds: durationSeconds ?? this.durationSeconds,
+        takePath:
+            clips != null && clips.isEmpty ? null : takePath ?? this.takePath,
+        cleanTakePath: clips != null && clips.isEmpty
+            ? null
+            : cleanTakePath ?? this.cleanTakePath,
+        durationSeconds: clips != null && clips.isEmpty
+            ? null
+            : durationSeconds ?? this.durationSeconds,
         recordMode: recordMode ?? this.recordMode,
         playbackSource: playbackSource ?? this.playbackSource,
         muted: muted ?? this.muted,
@@ -5793,6 +6714,7 @@ class TrackLane {
         clipStartSeconds: clipStartSeconds ?? this.clipStartSeconds,
         toneSnapshot: toneSnapshot ?? this.toneSnapshot,
         riffId: riffId ?? this.riffId,
+        clips: clips ?? this.clips,
       );
 
   Map<String, dynamic> toJson() => {
@@ -5811,6 +6733,8 @@ class TrackLane {
         'clip_start_seconds': clipStartSeconds,
         if (toneSnapshot != null) 'tone_snapshot': toneSnapshot,
         if (riffId != null) 'riff_id': riffId,
+        if (timelineClips.isNotEmpty)
+          'clips': timelineClips.map((clip) => clip.toJson()).toList(),
       };
 }
 
@@ -5823,6 +6747,11 @@ class TrackProject {
     this.bpm = 100,
     this.timeSignature = '4/4',
     this.countInBars = 1,
+    this.recordingDelayMilliseconds = 0,
+    this.detectedBpm,
+    this.tempoConfidence,
+    this.tempoCandidates = const [],
+    this.tempoConfirmed = false,
   });
 
   factory TrackProject.fromJson(Map<String, dynamic> json) => TrackProject(
@@ -5837,6 +6766,16 @@ class TrackProject {
         bpm: (json['bpm'] as num?)?.toInt() ?? 100,
         timeSignature: json['time_signature'] as String? ?? '4/4',
         countInBars: (json['count_in_bars'] as num?)?.toInt() ?? 1,
+        recordingDelayMilliseconds:
+            (json['recording_delay_ms'] as num?)?.toInt() ?? 0,
+        detectedBpm: (json['detected_bpm'] as num?)?.toInt(),
+        tempoConfidence: (json['tempo_confidence'] as num?)?.toDouble(),
+        tempoCandidates:
+            (json['tempo_candidates'] as List<dynamic>? ?? const [])
+                .whereType<Map<String, dynamic>>()
+                .map(TempoCandidate.fromJson)
+                .toList(growable: false),
+        tempoConfirmed: json['tempo_confirmed'] as bool? ?? false,
       );
 
   final String id;
@@ -5846,6 +6785,11 @@ class TrackProject {
   final int bpm;
   final String timeSignature;
   final int countInBars;
+  final int recordingDelayMilliseconds;
+  final int? detectedBpm;
+  final double? tempoConfidence;
+  final List<TempoCandidate> tempoCandidates;
+  final bool tempoConfirmed;
 
   TrackProject copyWith({
     String? name,
@@ -5853,6 +6797,11 @@ class TrackProject {
     int? bpm,
     String? timeSignature,
     int? countInBars,
+    int? recordingDelayMilliseconds,
+    int? detectedBpm,
+    double? tempoConfidence,
+    List<TempoCandidate>? tempoCandidates,
+    bool? tempoConfirmed,
   }) =>
       TrackProject(
         id: id,
@@ -5862,6 +6811,12 @@ class TrackProject {
         bpm: bpm ?? this.bpm,
         timeSignature: timeSignature ?? this.timeSignature,
         countInBars: countInBars ?? this.countInBars,
+        recordingDelayMilliseconds:
+            recordingDelayMilliseconds ?? this.recordingDelayMilliseconds,
+        detectedBpm: detectedBpm ?? this.detectedBpm,
+        tempoConfidence: tempoConfidence ?? this.tempoConfidence,
+        tempoCandidates: tempoCandidates ?? this.tempoCandidates,
+        tempoConfirmed: tempoConfirmed ?? this.tempoConfirmed,
       );
 
   Map<String, dynamic> toJson() => {
@@ -5872,6 +6827,13 @@ class TrackProject {
         'bpm': bpm,
         'time_signature': timeSignature,
         'count_in_bars': countInBars,
+        'recording_delay_ms': recordingDelayMilliseconds,
+        if (detectedBpm != null) 'detected_bpm': detectedBpm,
+        if (tempoConfidence != null) 'tempo_confidence': tempoConfidence,
+        if (tempoCandidates.isNotEmpty)
+          'tempo_candidates':
+              tempoCandidates.map((candidate) => candidate.toJson()).toList(),
+        'tempo_confirmed': tempoConfirmed,
       };
 }
 
@@ -5934,6 +6896,7 @@ class TrackManagerSheet extends StatefulWidget {
 }
 
 class _TrackManagerSheetState extends State<TrackManagerSheet> {
+  final _timelineScroll = ScrollController();
   List<TrackProject> _projects = const [];
   String? _selectedProjectId;
   bool _loading = true;
@@ -5941,8 +6904,10 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   String? _error;
   var _metronomeEnabled = false;
   var _metronomeBpm = 100;
-  final List<Process> _players = [];
-  Timer? _loopTimer;
+  String? _recordingTrackId;
+  String? _recordingProjectId;
+  var _nativeCountInSeconds = 0;
+  var _stoppingTransport = false;
   Timer? _playheadTimer;
   var _transportPlaying = false;
   var _transportLooping = false;
@@ -5952,6 +6917,11 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   String? _armedTrackId;
   String? _countingInTrackId;
   var _liveInputLevel = 0.0;
+  String? _selectedTimelineTrackId;
+  String? _selectedTimelineClipId;
+  TimelineClip? _clipClipboard;
+  var _timelineSnap = TimelineSnap.beat;
+  Timer? _timelineSaveTimer;
 
   TrackProject? get _project {
     for (final project in _projects) {
@@ -5973,100 +6943,250 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   @override
   void dispose() {
     _stopTransport(repaint: false);
+    _timelineScroll.dispose();
+    _timelineSaveTimer?.cancel();
     _meterSubscription?.cancel();
     super.dispose();
   }
 
   Future<void> _stopTransport({bool repaint = true}) async {
+    if (_stoppingTransport) return;
+    _stoppingTransport = true;
     _transportGeneration++;
-    _loopTimer?.cancel();
-    _loopTimer = null;
     _playheadTimer?.cancel();
     _playheadTimer = null;
-    for (final player in _players) {
-      player.kill(ProcessSignal.sigterm);
+    try {
+      final status = await widget.client.timelineCommand('timeline_stop', {});
+      if (status['interrupted'] == true && mounted) {
+        setState(() => _error =
+            'Audio interruption stopped the timeline. Any captured take was retained; check its ending before continuing.');
+      }
+      final take = status['take'] as Map<String, dynamic>?;
+      final project =
+          _projects.where((p) => p.id == _recordingProjectId).firstOrNull ??
+              _project;
+      final trackId = _recordingTrackId;
+      if (take != null && project != null && trackId != null) {
+        final duration = ((take['duration_seconds'] as num) * 1000).round();
+        final sourceIn = (take['source_in_ms'] as num).toInt();
+        final length = (take['length_ms'] as num).toInt();
+        if (length > 0) {
+          final clip = TimelineClip(
+            id: 'clip-${DateTime.now().microsecondsSinceEpoch}',
+            takePath: take['processed_path'] as String,
+            cleanTakePath: take['clean_path'] as String,
+            sourceDurationMilliseconds: duration,
+            timelineStartMilliseconds:
+                (take['timeline_start_ms'] as num).toInt(),
+            sourceStartMilliseconds: sourceIn,
+            sourceEndMilliseconds: sourceIn + length,
+            toneSnapshot: widget.toneSnapshot,
+            riffId: take['id'] as String?,
+          );
+          final updated = project.copyWith(
+              tracks: project.tracks
+                  .map((t) => t.id == trackId
+                      ? t.copyWith(
+                          takePath: clip.takePath,
+                          cleanTakePath: clip.cleanTakePath,
+                          durationSeconds: duration / 1000,
+                          riffId: clip.riffId,
+                          toneSnapshot: widget.toneSnapshot,
+                          playbackSource: t.recordMode == TrackRecordMode.diOnly
+                              ? TrackPlaybackSource.di
+                              : TrackPlaybackSource.rig,
+                          clips: [...t.timelineClips, clip])
+                      : t)
+                  .toList());
+          if (mounted) {
+            await _replaceProject(updated);
+            if (mounted) _selectTimelineClip(trackId, clip.id);
+          } else {
+            await widget.store.save(_projects
+                .map((p) => p.id == updated.id ? updated : p)
+                .toList());
+          }
+        }
+      }
+      _recordingTrackId = null;
+      _recordingProjectId = null;
+      await widget.client.setMetronome(_metronomeEnabled, _project?.bpm ?? 100);
+    } catch (error) {
+      if (mounted && repaint) {
+        setState(() => _error = 'Could not stop transport: $error');
+      }
     }
-    _players.clear();
+    _stoppingTransport = false;
     if (repaint && mounted) {
       setState(() {
         _transportPlaying = false;
-        _transportPositionSeconds = 0;
+        _nativeCountInSeconds = 0;
       });
     }
   }
 
   Future<void> _playTracks(Iterable<TrackLane> tracks,
-      {bool restart = true}) async {
-    final selected = tracks
-        .where((track) => track.playbackPath != null)
-        .toList(growable: false);
-    if (selected.isEmpty) {
-      setState(() => _error = 'Record or attach audio to a track first.');
+      {int? startAtMilliseconds, bool record = false}) async {
+    if (_recordingTrackId != null && !record) {
+      setState(() => _error =
+          'Stop recording before seeking or starting another playback.');
       return;
     }
-    if (restart) await _stopTransport();
+    final selected = tracks.toList();
+    final start =
+        startAtMilliseconds ?? (_transportPositionSeconds * 1000).round();
     final generation = ++_transportGeneration;
-    final startedAt = DateTime.now();
-    if (mounted) {
+    _playheadTimer?.cancel();
+    try {
+      await widget.client.setMetronome(false, _project?.bpm ?? 100);
+      await widget.client.timelineCommand('timeline_start', {
+        'name': '${_project?.name ?? 'Session'} • Timeline take',
+        'preset': widget.toneSnapshot,
+        'bpm': _project?.bpm ?? 100,
+        'beats_per_bar': _project == null ? 4 : _beatsPerBar(_project!),
+        'count_in_bars': _project?.countInBars ?? 1,
+        'click': _metronomeEnabled,
+        'start_ms': start,
+        'loop': _transportLooping,
+        'record': record,
+        'recording_delay_ms': _project?.recordingDelayMilliseconds ?? 0,
+        'tracks': selected
+            .map((track) => {
+                  'id': track.id,
+                  'volume': track.volume,
+                  'pan': track.pan,
+                  'muted': track.muted,
+                  'solo': track.solo,
+                  'clips': track.timelineClips.isEmpty &&
+                          track.playbackPath != null
+                      ? [
+                          {
+                            'path': track.playbackPath,
+                            'start_ms': 0,
+                            'source_in_ms': 0
+                          }
+                        ]
+                      : track.timelineClips
+                          .map((clip) => {
+                                'path': track.playbackSource ==
+                                        TrackPlaybackSource.di
+                                    ? clip.cleanTakePath ?? clip.takePath
+                                    : clip.takePath,
+                                'start_ms': clip.timelineStartMilliseconds,
+                                'source_in_ms': clip.sourceStartMilliseconds,
+                                'length_ms': clip.sourceDurationMilliseconds > 0
+                                    ? clip.durationMilliseconds
+                                    : null,
+                              })
+                          .toList(),
+                })
+            .toList(),
+      });
+      if (!mounted || generation != _transportGeneration) return;
       setState(() {
         _transportPlaying = true;
-        _transportPositionSeconds = 0;
+        _error = null;
       });
-    }
-    _playheadTimer?.cancel();
-    _playheadTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
-      if (!mounted || generation != _transportGeneration) return;
-      setState(() => _transportPositionSeconds =
-          DateTime.now().difference(startedAt).inMilliseconds / 1000);
-    });
-    final hasSolo = selected.any((track) => track.solo);
-    final audible =
-        selected.where((track) => !track.muted && (!hasSolo || track.solo));
-    var endSeconds = 0.0;
-    for (final track in audible) {
-      final duration = track.durationSeconds ?? 0;
-      endSeconds = math.max(endSeconds, track.clipStartSeconds + duration);
-      unawaited(_launchTrack(track, generation));
-    }
-    if (endSeconds > 0) {
-      _loopTimer?.cancel();
-      _loopTimer =
-          Timer(Duration(milliseconds: (endSeconds * 1000).ceil()), () {
-        if (!mounted || generation != _transportGeneration) return;
-        if (_transportLooping) {
-          unawaited(_playTracks(selected));
-        } else {
-          unawaited(_stopTransport());
+      var polling = false;
+      _playheadTimer =
+          Timer.periodic(const Duration(milliseconds: 50), (_) async {
+        if (polling || !mounted || generation != _transportGeneration) return;
+        polling = true;
+        try {
+          final status =
+              await widget.client.timelineCommand('timeline_status', {});
+          if (!mounted || generation != _transportGeneration) return;
+          final rate = (status['sample_rate'] as num?)?.toDouble() ?? 48000;
+          final playing = status['playing'] == true;
+          setState(() {
+            _transportPositionSeconds =
+                (status['position_frames'] as num).toDouble() / rate;
+            _transportPlaying = playing;
+            _nativeCountInSeconds =
+                ((status['count_in_frames'] as num? ?? 0).toDouble() / rate)
+                    .ceil();
+          });
+          if (!playing) {
+            _playheadTimer?.cancel();
+            await _stopTransport();
+          }
+        } catch (error) {
+          if (mounted) setState(() => _error = 'Transport status: $error');
+        } finally {
+          polling = false;
         }
       });
+    } catch (error) {
+      // A start can time out after the audio thread has accepted it. Keep the
+      // armed destination so Record/Stop can recover and attach a pending take.
+      if (mounted) {
+        setState(() {
+          _error = 'Could not start timeline: $error';
+          _transportPlaying = false;
+        });
+      }
     }
   }
 
-  Future<void> _launchTrack(TrackLane track, int generation) async {
-    final path = track.playbackPath;
-    if (path == null) return;
-    if (track.clipStartSeconds > 0) {
-      await Future<void>.delayed(
-          Duration(milliseconds: (track.clipStartSeconds * 1000).round()));
+  Future<void> _recordTimeline() async {
+    if (_recordingTrackId != null) {
+      await _stopTransport();
+      return;
     }
-    if (!mounted || generation != _transportGeneration) return;
-    try {
-      final player = await Process.start('pw-play', [
-        '--volume',
-        track.volume.clamp(0.0, 1.0).toStringAsFixed(2),
-        path,
-      ]);
-      if (generation != _transportGeneration) {
-        player.kill(ProcessSignal.sigterm);
-        return;
-      }
-      _players.add(player);
-      unawaited(player.exitCode.then((_) => _players.remove(player)));
-    } on ProcessException {
-      if (mounted) {
-        setState(() =>
-            _error = 'PipeWire playback is not available on this device.');
-      }
+    final project = _project;
+    if (project == null) return;
+    final guitars =
+        project.tracks.where((t) => t.input == TrackInput.guitar).toList();
+    if (guitars.isEmpty) {
+      setState(() => _error = 'Add a guitar track before recording.');
+      return;
+    }
+    final chosen = guitars.length == 1
+        ? guitars.first
+        : await showDialog<TrackLane>(
+            context: context,
+            builder: (context) => SimpleDialog(
+                title: const Text('RECORD TO TRACK'),
+                children: guitars
+                    .map((t) => SimpleDialogOption(
+                        onPressed: () => Navigator.pop(context, t),
+                        child: Text(t.name)))
+                    .toList()));
+    if (chosen == null || !mounted) return;
+    _recordingTrackId = chosen.id;
+    _recordingProjectId = project.id;
+    await _playTracks(project.tracks, record: true);
+  }
+
+  Future<void> _recordingSettings() async {
+    final project = _project;
+    if (project == null) return;
+    var delay = project.recordingDelayMilliseconds.toDouble();
+    final value = await showDialog<int>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+                  title: const Text('RECORDING ALIGNMENT'),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Text(
+                        'Measured round-trip delay. Moves new takes earlier without deleting source audio. Leave at 0 if unknown; recalibrate when changing devices or buffers. Maximum take: 3 minutes.'),
+                    Text('${delay.round()} ms'),
+                    Slider(
+                        value: delay,
+                        min: 0,
+                        max: 2000,
+                        divisions: 2000,
+                        onChanged: (v) => update(() => delay = v)),
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(context, delay.round()),
+                        child: const Text('SAVE'))
+                  ],
+                )));
+    if (value != null) {
+      await _replaceProject(
+          project.copyWith(recordingDelayMilliseconds: value));
     }
   }
 
@@ -6120,6 +7240,10 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   }
 
   Future<void> _newProject() async {
+    if (_transportPlaying || _recordingTrackId != null) {
+      await _stopTransport();
+      if (_recordingTrackId != null || !mounted) return;
+    }
     final name = await _askName('NEW PROJECT', 'Untitled Project');
     if (name == null) return;
     final now = DateTime.now();
@@ -6175,6 +7299,263 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
     await _persist(_projects
         .map((project) => project.id == replacement.id ? replacement : project)
         .toList(growable: false));
+    if (_transportPlaying) {
+      try {
+        await widget.client.timelineCommand('timeline_tracks', {
+          'tracks': replacement.tracks
+              .map((t) => {
+                    'id': t.id,
+                    'volume': t.volume,
+                    'pan': t.pan,
+                    'muted': t.muted,
+                    'solo': t.solo,
+                  })
+              .toList()
+        });
+      } catch (error) {
+        if (mounted) setState(() => _error = 'Mixer update: $error');
+      }
+    }
+  }
+
+  int _snapTimelineMilliseconds(int value, TrackProject project) {
+    if (_timelineSnap == TimelineSnap.off) {
+      return value.clamp(0, 1 << 31).toInt();
+    }
+    final beatMilliseconds = 60000 / project.bpm;
+    final grid = _timelineSnap == TimelineSnap.bar
+        ? beatMilliseconds * _beatsPerBar(project)
+        : beatMilliseconds;
+    return (value / grid).round() * grid.round();
+  }
+
+  int _beatsPerBar(TrackProject project) =>
+      int.tryParse(project.timeSignature.split('/').first) ?? 4;
+
+  void _replaceTimelineClip(TrackLane track, TimelineClip replacement) {
+    final project = _project;
+    if (project == null) return;
+    final updatedTrack = track.copyWith(
+      clips: track.timelineClips
+          .map((clip) => clip.id == replacement.id ? replacement : clip)
+          .toList(growable: false),
+    );
+    final replacementProject = project.copyWith(
+      tracks: project.tracks
+          .map((item) => item.id == track.id ? updatedTrack : item)
+          .toList(growable: false),
+    );
+    setState(() {
+      _projects = _projects
+          .map((item) =>
+              item.id == replacementProject.id ? replacementProject : item)
+          .toList(growable: false);
+    });
+    _timelineSaveTimer?.cancel();
+    _timelineSaveTimer = Timer(const Duration(milliseconds: 280), () async {
+      try {
+        await widget.store.save(_projects);
+      } catch (error) {
+        if (mounted) {
+          setState(() => _error = 'Could not save timeline edit: $error');
+        }
+      }
+    });
+  }
+
+  void _selectTimelineClip(String trackId, String clipId) => setState(() {
+        _selectedTimelineTrackId = trackId;
+        _selectedTimelineClipId = clipId;
+      });
+
+  (TrackLane, TimelineClip)? _selectedTimelineClip() {
+    final project = _project;
+    final trackId = _selectedTimelineTrackId;
+    final clipId = _selectedTimelineClipId;
+    if (project == null || trackId == null || clipId == null) return null;
+    for (final track in project.tracks) {
+      if (track.id != trackId) continue;
+      for (final clip in track.timelineClips) {
+        if (clip.id == clipId) return (track, clip);
+      }
+    }
+    return null;
+  }
+
+  void _copySelectedClip() {
+    final selection = _selectedTimelineClip();
+    if (selection == null) return;
+    setState(() => _clipClipboard = selection.$2);
+  }
+
+  void _cutSelectedClip() {
+    _copySelectedClip();
+    unawaited(_deleteSelectedClip());
+  }
+
+  Future<void> _deleteSelectedClip() async {
+    final selection = _selectedTimelineClip();
+    if (selection == null) return;
+    final (track, clip) = selection;
+    _replaceTimelineClipList(
+      track,
+      track.timelineClips
+          .where((item) => item.id != clip.id)
+          .toList(growable: false),
+    );
+    setState(() {
+      _selectedTimelineClipId = null;
+      _selectedTimelineTrackId = null;
+    });
+  }
+
+  void _replaceTimelineClipList(TrackLane track, List<TimelineClip> clips) {
+    final project = _project;
+    if (project == null) return;
+    final replacementProject = project.copyWith(
+      tracks: project.tracks
+          .map((item) =>
+              item.id == track.id ? item.copyWith(clips: clips) : item)
+          .toList(growable: false),
+    );
+    setState(() {
+      _projects = _projects
+          .map((item) =>
+              item.id == replacementProject.id ? replacementProject : item)
+          .toList(growable: false);
+    });
+    _timelineSaveTimer?.cancel();
+    _timelineSaveTimer = Timer(const Duration(milliseconds: 280), () async {
+      try {
+        await widget.store.save(_projects);
+      } catch (error) {
+        if (mounted) {
+          setState(() => _error = 'Could not save timeline edit: $error');
+        }
+      }
+    });
+  }
+
+  void _pasteClip() {
+    final project = _project;
+    final source = _clipClipboard;
+    if (project == null || source == null) return;
+    final track = project.tracks.firstWhere(
+      (item) => item.id == _selectedTimelineTrackId,
+      orElse: () => project.tracks.first,
+    );
+    final pasted = source.copyWith(
+      id: 'clip-${DateTime.now().microsecondsSinceEpoch}',
+      timelineStartMilliseconds: _snapTimelineMilliseconds(
+          (_transportPositionSeconds * 1000).round(), project),
+    );
+    _replaceTimelineClipList(track, [...track.timelineClips, pasted]);
+    _selectTimelineClip(track.id, pasted.id);
+  }
+
+  void _splitSelectedClip() {
+    final selection = _selectedTimelineClip();
+    final project = _project;
+    if (selection == null || project == null) return;
+    final (track, clip) = selection;
+    final splitAt = (_transportPositionSeconds * 1000).round();
+    if (splitAt <= clip.timelineStartMilliseconds ||
+        splitAt >= clip.timelineEndMilliseconds) {
+      setState(() =>
+          _error = 'Place the playhead inside the selected clip to split it.');
+      return;
+    }
+    final sourceSplit = clip.sourceStartMilliseconds +
+        (splitAt - clip.timelineStartMilliseconds);
+    final left = clip.copyWith(sourceEndMilliseconds: sourceSplit);
+    final right = clip.copyWith(
+      id: 'clip-${DateTime.now().microsecondsSinceEpoch}',
+      timelineStartMilliseconds: splitAt,
+      sourceStartMilliseconds: sourceSplit,
+    );
+    final clips = track.timelineClips
+        .expand((item) => item.id == clip.id ? [left, right] : [item])
+        .toList(growable: false);
+    _replaceTimelineClipList(track, clips);
+    _selectTimelineClip(track.id, right.id);
+  }
+
+  Future<void> _editSelectedClipTiming() async {
+    final selection = _selectedTimelineClip();
+    if (selection == null) return;
+    final (track, clip) = selection;
+    final position = TextEditingController(
+        text: (clip.timelineStartMilliseconds / 1000).toStringAsFixed(3));
+    final sourceIn = TextEditingController(
+        text: (clip.sourceStartMilliseconds / 1000).toStringAsFixed(3));
+    final sourceOut = TextEditingController(
+        text: (clip.sourceEndMilliseconds / 1000).toStringAsFixed(3));
+    final values = await showDialog<_ClipTiming>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('CLIP TIMING'),
+        content: SizedBox(
+          width: 320,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+                'Enter seconds to three decimal places for millisecond precision.',
+                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+            const SizedBox(height: 10),
+            TextField(
+                controller: position,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                    labelText: 'Timeline position (sec)')),
+            TextField(
+                controller: sourceIn,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration:
+                    const InputDecoration(labelText: 'Source in (sec)')),
+            TextField(
+                controller: sourceOut,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration:
+                    const InputDecoration(labelText: 'Source out (sec)')),
+          ]),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCEL')),
+          FilledButton(
+            onPressed: () {
+              int milliseconds(TextEditingController controller) =>
+                  ((double.tryParse(controller.text.trim()) ?? -1) * 1000)
+                      .round();
+              final timing = _ClipTiming(milliseconds(position),
+                  milliseconds(sourceIn), milliseconds(sourceOut));
+              if (timing.position < 0 ||
+                  timing.sourceIn < 0 ||
+                  timing.sourceOut <= timing.sourceIn ||
+                  timing.sourceOut > clip.sourceDurationMilliseconds) {
+                return;
+              }
+              Navigator.pop(context, timing);
+            },
+            child: const Text('APPLY'),
+          ),
+        ],
+      ),
+    );
+    position.dispose();
+    sourceIn.dispose();
+    sourceOut.dispose();
+    if (values == null) return;
+    _replaceTimelineClip(
+        track,
+        clip.copyWith(
+          timelineStartMilliseconds: values.position,
+          sourceStartMilliseconds: values.sourceIn,
+          sourceEndMilliseconds: values.sourceOut,
+        ));
   }
 
   Future<void> _changeInput(TrackLane track, TrackInput input) async {
@@ -6197,7 +7578,13 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   }
 
   Future<void> _reampTrack(TrackLane track) async {
-    final cleanPath = track.cleanTakePath;
+    final selected = track.timelineClips
+            .where((c) =>
+                track.id == _selectedTimelineTrackId &&
+                c.id == _selectedTimelineClipId)
+            .firstOrNull ??
+        track.timelineClips.lastOrNull;
+    final cleanPath = selected?.cleanTakePath;
     if (cleanPath == null) {
       setState(() => _error = 'This track has no clean DI source to reamp.');
       return;
@@ -6207,19 +7594,32 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
       _error = null;
     });
     try {
-      final preview = await widget.client.renderPreview(
-        source: PreviewSource.file,
-        path: cleanPath,
-        processed: true,
+      final reamped = await widget.client.reampRiff(
+        cleanPath: cleanPath,
+        name: '${track.name} reamp',
       );
       if (!mounted) return;
       await _updateTrack(
           track,
           track.copyWith(
-            takePath: preview.path,
-            durationSeconds: preview.durationSeconds,
+            cleanTakePath: reamped.cleanPath,
+            takePath: reamped.processedPath,
+            durationSeconds: reamped.durationSeconds,
             playbackSource: TrackPlaybackSource.rig,
             toneSnapshot: widget.toneSnapshot,
+            riffId: reamped.id,
+            clips: track.timelineClips
+                .map((clip) => clip.cleanTakePath != cleanPath
+                    ? clip
+                    : clip.copyWith(
+                        cleanTakePath: reamped.cleanPath,
+                        takePath: reamped.processedPath,
+                        sourceDurationMilliseconds:
+                            (reamped.durationSeconds * 1000).round(),
+                        toneSnapshot: widget.toneSnapshot,
+                        riffId: reamped.id,
+                      ))
+                .toList(growable: false),
           ));
     } catch (error) {
       if (mounted) setState(() => _error = 'Reamp failed: $error');
@@ -6229,84 +7629,131 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
   }
 
   Future<void> _trimExistingTrack(TrackLane track) async {
-    final cleanPath = track.cleanTakePath;
-    final processedPath = track.takePath;
-    final duration = track.durationSeconds;
-    if (cleanPath == null || processedPath == null || duration == null) {
-      setState(() => _error =
-          'This track does not have a paired DI and rig take to trim.');
+    final clips = track.timelineClips;
+    final clip = clips.isEmpty
+        ? null
+        : clips
+                .where((c) =>
+                    track.id == _selectedTimelineTrackId &&
+                    c.id == _selectedTimelineClipId)
+                .firstOrNull ??
+            clips.last;
+    if (clip == null) {
+      setState(
+          () => _error = 'Save or attach audio before trimming this track.');
       return;
     }
+    final sourcePath = track.playbackSource == TrackPlaybackSource.di
+        ? clip.cleanTakePath ?? clip.takePath
+        : clip.takePath;
     final selection = await showDialog<_TakeRange>(
       context: context,
       builder: (context) => _GuitarTakeTrimDialog(
-        availableSeconds: duration,
-        capacitySeconds: duration,
+        availableSeconds: clip.sourceDurationMilliseconds / 1000,
+        capacitySeconds: clip.sourceDurationMilliseconds / 1000,
+        initialRange: RangeValues(clip.sourceStartMilliseconds / 1000,
+            clip.sourceEndMilliseconds / 1000),
+        preserveSource: true,
+        onPreviewSelection: (startSeconds, endSeconds) =>
+            widget.client.renderPreview(
+          source: PreviewSource.file,
+          path: sourcePath,
+          processed: false,
+          startSeconds: startSeconds,
+          endSeconds: endSeconds,
+        ),
+        onLoadWaveform: () => widget.client.riffWaveform(sourcePath),
       ),
     );
     if (selection == null) return;
-    setState(() => _busyTrackId = track.id);
-    try {
-      final trimmed = await widget.client.trimRiff(
-        name: '${track.name} trim',
-        cleanPath: cleanPath,
-        processedPath: processedPath,
-        startSeconds: selection.start,
-        endSeconds: selection.end,
-      );
-      if (!mounted) return;
-      await _updateTrack(
-          track,
-          track.copyWith(
-            cleanTakePath: trimmed.cleanPath,
-            takePath: trimmed.processedPath,
-            durationSeconds: trimmed.durationSeconds,
-            riffId: trimmed.id,
-          ));
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Trim failed: $error');
-    } finally {
-      if (mounted) setState(() => _busyTrackId = null);
-    }
+    final sourceStart = (selection.start * 1000).round();
+    _replaceTimelineClip(
+      track,
+      clip.copyWith(
+        timelineStartMilliseconds: math.max(
+            0,
+            clip.timelineStartMilliseconds +
+                sourceStart -
+                clip.sourceStartMilliseconds),
+        sourceStartMilliseconds: sourceStart,
+        sourceEndMilliseconds: (selection.end * 1000).round(),
+      ),
+    );
+    _selectTimelineClip(track.id, clip.id);
   }
 
-  Future<void> _attachBackingTrack(TrackLane source) async {
-    final riffId = source.riffId;
+  Future<void> _attachBackingTrack([TrackLane? source]) async {
+    final riffId = source?.riffId;
     final project = _project;
-    if (riffId == null || project == null) {
-      setState(() =>
-          _error = 'Save a guitar take before attaching its backing tracks.');
-      return;
-    }
-    setState(() => _busyTrackId = source.id);
+    if (project == null) return;
+    setState(() => _busyTrackId = source?.id);
     try {
-      final choices = (await widget.catalog.listBackingTracks(riffId))
+      // The Studio cache is global: a backing made for an earlier project can
+      // be reused here. The riff ID is only required for making a new one.
+      final choices = (await widget.catalog.listBackingTracks())
           .where((track) => track.status == 'ready' && track.path != null)
           .toList(growable: false);
       if (!mounted) return;
-      if (choices.isEmpty) {
-        setState(() => _error =
-            'No finished backing tracks exist for this take yet. Create one from Riff Vault first.');
-        return;
-      }
+      var generateNew = false;
       final selected = await showDialog<BackingTrack>(
         context: context,
         builder: (context) => SimpleDialog(
           title: const Text('ADD BACKING TRACK'),
-          children: choices
-              .map((track) => SimpleDialogOption(
-                    onPressed: () => Navigator.pop(context, track),
-                    child: ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.auto_awesome,
-                          color: LostChrome.lime),
-                      title: Text(track.style),
-                      subtitle: Text('${track.durationSeconds} sec'),
-                    ),
-                  ))
-              .toList(growable: false),
+          children: [
+            if (riffId != null)
+              SimpleDialogOption(
+                onPressed: () {
+                  generateNew = true;
+                  Navigator.pop(context);
+                },
+                child: const Row(children: [
+                  Icon(Icons.auto_awesome, color: LostChrome.lime),
+                  SizedBox(width: 10),
+                  Expanded(child: Text('GENERATE NEW BACKING')),
+                ]),
+              )
+            else
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 6, 24, 12),
+                child: Text(
+                    'Save a guitar take first to generate a new backing.',
+                    style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+              ),
+            if (choices.isNotEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 10, 24, 4),
+                child: Text('SAVED BACKINGS',
+                    style: TextStyle(
+                        color: LostChrome.ice,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1)),
+              ),
+            ...choices.map((track) => SimpleDialogOption(
+                  onPressed: () => Navigator.pop(context, track),
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading:
+                        const Icon(Icons.auto_awesome, color: LostChrome.lime),
+                    title: Text(track.style),
+                    subtitle: Text(
+                        '${track.genre} • ${track.bpm} BPM • ${track.durationSeconds} sec'),
+                  ),
+                )),
+            if (choices.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('No saved backings yet.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Color(0xffa2d5f5))),
+              ),
+          ],
         ),
       );
+      if (generateNew && source != null && riffId != null) {
+        await _showStudioBackingGenerator(source, project);
+        return;
+      }
       if (selected == null || !mounted) return;
       final lane = TrackLane(
         id: 'track-${DateTime.now().microsecondsSinceEpoch}',
@@ -6315,7 +7762,8 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
         input: TrackInput.backing,
         takePath: selected.path,
         durationSeconds: selected.durationSeconds.toDouble(),
-        toneSnapshot: 'AI backing • ${selected.style}',
+        toneSnapshot:
+            '${selected.genre} • ${selected.bpm} BPM • ${selected.style}',
       );
       await _replaceProject(
           project.copyWith(tracks: [...project.tracks, lane]));
@@ -6328,13 +7776,46 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
     }
   }
 
+  Future<void> _showStudioBackingGenerator(
+      TrackLane source, TrackProject project) async {
+    final riffId = source.riffId;
+    final cleanPath = source.cleanTakePath;
+    if (riffId == null || cleanPath == null) return;
+    await showAeroControlBay<void>(
+      context,
+      title: 'Generate Backing',
+      icon: Icons.auto_awesome,
+      heightFactor: .86,
+      child: BackingTrackSheet(
+        catalog: widget.catalog,
+        riff: RiffCapture(
+          id: riffId,
+          name: source.name,
+          createdAt: DateTime.now(),
+          durationSeconds: source.durationSeconds ?? 0,
+          cleanPath: cleanPath,
+          processedPath: source.takePath ?? cleanPath,
+          preset: source.toneSnapshot ?? widget.toneSnapshot,
+        ),
+        initialBpm: project.bpm,
+        onPlay: (path) => _playTracks([
+          TrackLane(
+            id: 'preview-backing',
+            name: 'Preview backing',
+            input: TrackInput.backing,
+            takePath: path,
+          ),
+        ]),
+      ),
+    );
+  }
+
   Future<void> _openTrackControls(TrackLane track) async {
     var name = track.name;
     var mode = track.recordMode;
     var source = track.playbackSource;
     var volume = track.volume;
     var pan = track.pan;
-    var start = track.clipStartSeconds;
     final values = await showDialog<_TrackControlValues>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -6391,15 +7872,14 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                   max: 1,
                   activeColor: LostChrome.electric,
                   onChanged: (value) => setDialogState(() => pan = value)),
-              Text('TIMELINE OFFSET  ${start.toStringAsFixed(1)} SEC',
-                  style: const TextStyle(fontWeight: FontWeight.w900)),
-              Slider(
-                  value: start,
-                  min: 0,
-                  max: 30,
-                  divisions: 60,
-                  activeColor: LostChrome.electric,
-                  onChanged: (value) => setDialogState(() => start = value)),
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  'MOVE, TRIM, AND SPLIT CLIPS DIRECTLY ON THE TIMELINE.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xffa2d5f5), fontSize: 9),
+                ),
+              ),
               if (track.toneSnapshot != null)
                 Text('RECORDED WITH ${track.toneSnapshot}',
                     textAlign: TextAlign.center,
@@ -6412,10 +7892,8 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                 onPressed: () => Navigator.pop(context),
                 child: const Text('CANCEL')),
             FilledButton(
-                onPressed: () => Navigator.pop(
-                    context,
-                    _TrackControlValues(
-                        name, mode, source, volume, pan, start)),
+                onPressed: () => Navigator.pop(context,
+                    _TrackControlValues(name, mode, source, volume, pan)),
                 child: const Text('SAVE')),
           ],
         ),
@@ -6430,11 +7908,15 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
           playbackSource: values.playbackSource,
           volume: values.volume,
           pan: values.pan,
-          clipStartSeconds: values.clipStartSeconds,
         ));
   }
 
   Future<void> _removeTrack(TrackLane track) async {
+    if (_recordingTrackId == track.id) {
+      setState(
+          () => _error = 'Stop and save recording before removing this track.');
+      return;
+    }
     final project = _project;
     if (project == null) return;
     await _replaceProject(project.copyWith(
@@ -6544,11 +8026,44 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
       return;
     }
     if (!mounted) return;
+    if (buffer.droppedFrames > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            'Recording warning: ${buffer.droppedFrames} frames were lost during this session. Check the take for gaps.'),
+        duration: const Duration(seconds: 8),
+      ));
+    }
+    // Freeze the retrospective buffer once. The rolling buffer continues while
+    // the user edits; waveform, audition and final clip must share this file.
+    late RiffCapture snapshot;
+    try {
+      snapshot =
+          await widget.client.saveRiff('${project.name} • ${track.name}');
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _busyTrackId = null;
+          _error = 'Could not snapshot the take: $error';
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busyTrackId = null);
     final selection = await showDialog<_TakeRange>(
       context: context,
       builder: (context) => _GuitarTakeTrimDialog(
-        availableSeconds: buffer.availableSeconds,
-        capacitySeconds: buffer.capacitySeconds,
+        availableSeconds: snapshot.durationSeconds,
+        capacitySeconds: snapshot.durationSeconds,
+        preserveSource: true,
+        onLoadWaveform: () =>
+            widget.client.riffWaveform(snapshot.processedPath),
+        onPreviewSelection: (start, end) => widget.client.renderPreview(
+            source: PreviewSource.file,
+            path: snapshot.processedPath,
+            processed: false,
+            startSeconds: start,
+            endSeconds: end),
       ),
     );
     if (selection == null || !mounted) {
@@ -6560,29 +8075,59 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
       _error = null;
     });
     try {
-      final take = await widget.client.saveRiff(
-        '${project.name} • ${track.name}',
-        trimStartSeconds: selection.start,
-        trimEndSeconds: selection.end,
-      );
+      final take = snapshot;
+      final clip = TimelineClip(
+          id: 'clip-${DateTime.now().microsecondsSinceEpoch}',
+          takePath: take.processedPath,
+          cleanTakePath: take.cleanPath,
+          sourceDurationMilliseconds: (take.durationSeconds * 1000).round(),
+          timelineStartMilliseconds: (track.clipStartSeconds * 1000).round(),
+          sourceStartMilliseconds: (selection.start * 1000).round(),
+          sourceEndMilliseconds: (selection.end * 1000).round(),
+          riffId: take.id,
+          toneSnapshot: widget.toneSnapshot);
       if (!mounted) return;
+      // Tempo is proposed once, from the first saved guitar take. Overdubs
+      // intentionally cannot knock an established session off tempo.
+      final shouldEstimateTempo = !project.tracks
+          .any((item) => item.input == TrackInput.guitar && item.hasTake);
       final updated = project.tracks
           .map((item) => item.id == track.id
-              ? item
-                  .copyWith(
-                      takePath: take.processedPath,
-                      cleanTakePath: take.cleanPath,
-                      durationSeconds: take.durationSeconds)
-                  .copyWith(
-                    playbackSource: item.recordMode == TrackRecordMode.diOnly
-                        ? TrackPlaybackSource.di
-                        : TrackPlaybackSource.rig,
-                    toneSnapshot: widget.toneSnapshot,
-                    riffId: take.id,
-                  )
+              ? item.copyWith(
+                  takePath: take.processedPath,
+                  cleanTakePath: take.cleanPath,
+                  durationSeconds: take.durationSeconds,
+                  clips: [clip]).copyWith(
+                  playbackSource: item.recordMode == TrackRecordMode.diOnly
+                      ? TrackPlaybackSource.di
+                      : TrackPlaybackSource.rig,
+                  toneSnapshot: widget.toneSnapshot,
+                  riffId: take.id,
+                )
               : item)
           .toList(growable: false);
-      await _replaceProject(project.copyWith(tracks: updated));
+      final updatedProject = project.copyWith(tracks: updated);
+      await _replaceProject(updatedProject);
+      if (mounted) _selectTimelineClip(track.id, clip.id);
+      if (shouldEstimateTempo) {
+        try {
+          final estimate =
+              await widget.client.estimateRiffTempo(take.cleanPath);
+          if (!mounted) return;
+          await _replaceProject(updatedProject.copyWith(
+            detectedBpm: estimate.bpm,
+            tempoConfidence: estimate.confidence,
+            tempoCandidates: estimate.candidates,
+            tempoConfirmed: false,
+          ));
+        } catch (error) {
+          // A lead line or quiet take may not contain a reliable pulse. The
+          // take remains valid; the player can still set BPM manually.
+          if (mounted) {
+            setState(() => _error = 'Tempo estimate unavailable: $error');
+          }
+        }
+      }
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     } finally {
@@ -6590,7 +8135,190 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
     }
   }
 
+  Future<void> _showTempoVerify() async {
+    if (_transportPlaying) {
+      setState(() =>
+          _error = 'Stop playback/recording before changing project tempo.');
+      return;
+    }
+    final project = _project;
+    if (project == null) return;
+    var bpm = project.detectedBpm ?? project.bpm;
+    final taps = <DateTime>[];
+    final selected = await showDialog<int>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.speed_rounded, color: LostChrome.lime),
+            SizedBox(width: 9),
+            Text('VERIFY PROJECT TEMPO'),
+          ]),
+          content: SizedBox(
+            width: 340,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(
+                project.detectedBpm == null
+                    ? 'Set the session BPM, or tap along to the guitar.'
+                    : 'First guitar take estimated ${project.detectedBpm} BPM at ${(project.tempoConfidence! * 100).round()}% confidence. Confirm or correct it.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Color(0xffa2d5f5)),
+              ),
+              if (project.tracks.any((track) =>
+                  track.input == TrackInput.guitar &&
+                  track.cleanTakePath != null))
+                Padding(
+                  padding: const EdgeInsets.only(top: 7),
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      unawaited(_reestimateFirstGuitarTempo());
+                    },
+                    icon: const Icon(Icons.refresh_rounded, size: 17),
+                    label: const Text('ANALYZE FIRST TAKE AGAIN'),
+                  ),
+                ),
+              if (project.tempoCandidates.length > 1) ...[
+                const SizedBox(height: 9),
+                const Text('OTHER RHYTHMIC READINGS',
+                    style: TextStyle(
+                        color: LostChrome.ice,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: .8)),
+                const SizedBox(height: 5),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 6,
+                  runSpacing: 5,
+                  children: project.tempoCandidates
+                      .where(
+                          (candidate) => candidate.bpm != project.detectedBpm)
+                      .map((candidate) => ChoiceChip(
+                            selected: bpm == candidate.bpm,
+                            onSelected: (_) =>
+                                setDialogState(() => bpm = candidate.bpm),
+                            label: Text(
+                                '${candidate.bpm} BPM • ${(candidate.confidence * 100).round()}%'),
+                            labelStyle: const TextStyle(
+                                fontSize: 9, fontWeight: FontWeight.w900),
+                            selectedColor: LostChrome.lime,
+                            backgroundColor: const Color(0xff103d76),
+                          ))
+                      .toList(growable: false),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Text('$bpm BPM',
+                  style: const TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w900,
+                      color: LostChrome.pearl)),
+              Slider(
+                value: bpm.toDouble(),
+                min: 40,
+                max: 240,
+                divisions: 200,
+                label: '$bpm BPM',
+                activeColor: LostChrome.lime,
+                onChanged: (value) => setDialogState(() => bpm = value.round()),
+              ),
+              FilledButton.icon(
+                onPressed: () {
+                  final now = DateTime.now();
+                  taps.add(now);
+                  if (taps.length > 6) taps.removeAt(0);
+                  if (taps.length >= 2) {
+                    final intervals = <int>[];
+                    for (var index = 1; index < taps.length; index++) {
+                      final interval = taps[index]
+                          .difference(taps[index - 1])
+                          .inMilliseconds;
+                      if (interval >= 180 && interval <= 2000) {
+                        intervals.add(interval);
+                      }
+                    }
+                    if (intervals.isNotEmpty) {
+                      bpm = (60000 *
+                              intervals.length /
+                              intervals.reduce((a, b) => a + b))
+                          .round()
+                          .clamp(40, 240)
+                          .toInt();
+                    }
+                  }
+                  setDialogState(() {});
+                },
+                icon: const Icon(Icons.touch_app_rounded),
+                label:
+                    Text(taps.length < 2 ? 'TAP TEMPO' : 'TAP ${taps.length}'),
+              ),
+            ]),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('CANCEL')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, bpm),
+                child: const Text('USE FOR PROJECT')),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    try {
+      await widget.client.setMetronome(_metronomeEnabled, selected);
+      if (!mounted) return;
+      setState(() => _metronomeBpm = selected);
+      await _replaceProject(project.copyWith(
+        bpm: selected,
+        detectedBpm: selected,
+        tempoConfirmed: true,
+      ));
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Tempo: $error');
+    }
+  }
+
+  Future<void> _reestimateFirstGuitarTempo() async {
+    final project = _project;
+    if (project == null) return;
+    final source = project.tracks.where((track) =>
+        track.input == TrackInput.guitar && track.cleanTakePath != null);
+    if (source.isEmpty) {
+      setState(() => _error = 'Save a guitar take before analyzing tempo.');
+      return;
+    }
+    try {
+      final estimate =
+          await widget.client.estimateRiffTempo(source.first.cleanTakePath!);
+      if (!mounted) return;
+      await _replaceProject(project.copyWith(
+        detectedBpm: estimate.bpm,
+        tempoConfidence: estimate.confidence,
+        tempoCandidates: estimate.candidates,
+        tempoConfirmed: false,
+      ));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'Tempo read: ${estimate.bpm} BPM • ${(estimate.confidence * 100).round()}% confidence'),
+        ));
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = 'Tempo estimate unavailable: $error');
+      }
+    }
+  }
+
   Future<void> _showMetronome() async {
+    if (_transportPlaying) {
+      setState(() => _error =
+          'Stop playback/recording to edit tempo and count-in. Tap the metronome icon to toggle the click while playing.');
+      return;
+    }
     final project = _project;
     var enabled = _metronomeEnabled;
     var bpm = project?.bpm ?? _metronomeBpm;
@@ -6694,6 +8422,40 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
     }
   }
 
+  Future<void> _toggleMetronome() async {
+    final enabled = !_metronomeEnabled;
+    final bpm = _project?.bpm ?? _metronomeBpm;
+    try {
+      if (_transportPlaying) {
+        await widget.client
+            .timelineCommand('timeline_click', {'enabled': enabled});
+      } else {
+        await widget.client.setMetronome(enabled, bpm);
+      }
+      if (mounted) {
+        setState(() {
+          _metronomeEnabled = enabled;
+          _metronomeBpm = bpm;
+        });
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Metronome: $error');
+    }
+  }
+
+  Future<void> _openBackingFromProject() async {
+    final project = _project;
+    if (project == null) return;
+    final sources = project.tracks
+        .where((track) => track.input == TrackInput.guitar)
+        .toList(growable: false);
+    // A cached backing is useful before recording: the player can build a
+    // play-along session first. A saved guitar take merely unlocks the extra
+    // "generate from this riff" choice in the same picker.
+    final savedSource = sources.where((track) => track.riffId != null);
+    await _attachBackingTrack(savedSource.isEmpty ? null : savedSource.first);
+  }
+
   @override
   Widget build(BuildContext context) {
     final project = _project;
@@ -6726,7 +8488,11 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                       style: TextStyle(
                           fontWeight: FontWeight.w900, letterSpacing: 1.1)),
                   Text(
-                    project?.name ?? 'CREATE A PROJECT TO BEGIN',
+                    _nativeCountInSeconds > 0
+                        ? 'COUNT IN • $_nativeCountInSeconds'
+                        : _recordingTrackId != null
+                            ? 'RECORDING • ${project?.name ?? ''}'
+                            : project?.name ?? 'CREATE A PROJECT TO BEGIN',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -6736,6 +8502,51 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                   ),
                 ],
               ),
+            ),
+            Tooltip(
+              message: 'Verify or change project BPM',
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: _showTempoVerify,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xff071d45),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: project?.tempoConfirmed == true
+                            ? LostChrome.lime.withValues(alpha: .75)
+                            : LostChrome.electric.withValues(alpha: .75),
+                      ),
+                    ),
+                    child: Text(
+                      '${project?.tempoConfirmed == true ? '' : '~'}${project?.detectedBpm ?? project?.bpm ?? 100} BPM',
+                      style: TextStyle(
+                        color: project?.tempoConfirmed == true
+                            ? LostChrome.lime
+                            : LostChrome.ice,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 3),
+            IconButton(
+              tooltip:
+                  'Timeline Record/Stop — hold for recording alignment (3 minute max)',
+              onPressed: _recordTimeline,
+              onLongPress: _recordingSettings,
+              icon: Icon(
+                  _recordingTrackId == null
+                      ? Icons.fiber_manual_record
+                      : Icons.stop,
+                  color: const Color(0xffff7892)),
             ),
             IconButton(
               tooltip: _transportPlaying ? 'Stop project' : 'Play project',
@@ -6753,14 +8564,31 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
             IconButton(
               tooltip:
                   _transportLooping ? 'Turn project loop off' : 'Loop project',
-              onPressed: () =>
-                  setState(() => _transportLooping = !_transportLooping),
+              onPressed: _recordingTrackId != null
+                  ? null
+                  : () async {
+                      final looping = !_transportLooping;
+                      try {
+                        if (_transportPlaying) {
+                          await widget.client.timelineCommand(
+                              'timeline_loop', {'enabled': looping});
+                        }
+                        if (mounted) {
+                          setState(() => _transportLooping = looping);
+                        }
+                      } catch (error) {
+                        if (mounted) setState(() => _error = 'Loop: $error');
+                      }
+                    },
               icon: Icon(Icons.repeat_rounded,
                   color: _transportLooping ? LostChrome.lime : LostChrome.ice),
             ),
             IconButton(
-              tooltip: 'Metronome — $_metronomeBpm BPM',
-              onPressed: _showMetronome,
+              tooltip: _metronomeEnabled
+                  ? 'Metronome on — tap to turn off, hold for settings'
+                  : 'Metronome off — tap to turn on, hold for settings',
+              onPressed: _toggleMetronome,
+              onLongPress: _showMetronome,
               icon: Icon(Icons.timer_outlined,
                   color: _metronomeEnabled ? LostChrome.lime : LostChrome.ice),
             ),
@@ -6772,7 +8600,7 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
         ),
         const SizedBox(height: 7),
         const Text(
-            'A full session workspace — capture guitar from the rolling three-minute buffer, place clips, then build the arrangement.',
+            'Record to the timeline or recover a recent take. Stereo playback shares the guitar output. Hold Record for delay compensation; takes are limited to 3 minutes.',
             style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
         const SizedBox(height: 10),
         if (project == null)
@@ -6781,7 +8609,13 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
           _ProjectRail(
             projects: _projects,
             selectedId: project.id,
-            onSelected: (id) => setState(() => _selectedProjectId = id),
+            onSelected: (id) async {
+              if (_transportPlaying || _recordingTrackId != null) {
+                await _stopTransport();
+                if (_recordingTrackId != null) return;
+              }
+              if (mounted) setState(() => _selectedProjectId = id);
+            },
           ),
           const SizedBox(height: 8),
           if (_error != null)
@@ -6790,11 +8624,45 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                 child: Text(_error!,
                     style:
                         TextStyle(color: Theme.of(context).colorScheme.error))),
+          _ArrangementTimeline(
+            controller: _timelineScroll,
+            project: project,
+            playheadMilliseconds: (_transportPositionSeconds * 1000).round(),
+            selectedTrackId: _selectedTimelineTrackId,
+            selectedClipId: _selectedTimelineClipId,
+            snap: _timelineSnap,
+            loadWaveform: widget.client.riffWaveform,
+            onPlayheadChanged: (milliseconds) {
+              if (_transportPlaying) {
+                unawaited(_playTracks(project.tracks,
+                    startAtMilliseconds: milliseconds));
+              } else {
+                setState(() => _transportPositionSeconds = milliseconds / 1000);
+              }
+            },
+            onClipSelected: _selectTimelineClip,
+            onClipChanged: _replaceTimelineClip,
+          ),
+          const SizedBox(height: 7),
+          _TimelineEditBar(
+            hasSelection: _selectedTimelineClip() != null,
+            hasClipboard: _clipClipboard != null,
+            snap: _timelineSnap,
+            onCopy: _copySelectedClip,
+            onCut: _cutSelectedClip,
+            onPaste: _pasteClip,
+            onSplit: _splitSelectedClip,
+            onEdit: _editSelectedClipTiming,
+            onDelete: _deleteSelectedClip,
+            onSnapChanged: (snap) => setState(() => _timelineSnap = snap),
+          ),
+          const SizedBox(height: 7),
           Expanded(
             child: ListView.separated(
               itemCount: project.tracks.length,
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (_, index) => _TrackLaneCard(
+                key: ValueKey(project.tracks[index].id),
                 track: project.tracks[index],
                 busy: _busyTrackId == project.tracks[index].id,
                 armed: _armedTrackId == project.tracks[index].id,
@@ -6803,12 +8671,33 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
                     ? _liveInputLevel
                     : 0,
                 playheadSeconds: _transportPositionSeconds,
+                loadWaveform: widget.client.riffWaveform,
                 onInputChanged: (input) =>
                     _changeInput(project.tracks[index], input),
                 onRecord: () => _record(project.tracks[index]),
                 onPlay: () => _playTracks([project.tracks[index]]),
                 onSettings: () => _openTrackControls(project.tracks[index]),
                 onReamp: () => _reampTrack(project.tracks[index]),
+                onTabs: () async {
+                  if (_recordingTrackId != null) {
+                    setState(() => _error =
+                        'Stop and save the recording before opening tabs.');
+                    return;
+                  }
+                  await _stopTransport();
+                  if (!mounted || !context.mounted) return;
+                  await showAeroControlBay<void>(
+                    context,
+                    title: 'Guitar Tabs',
+                    icon: Icons.queue_music_rounded,
+                    child: GuitarTranscriptionSheet(
+                      catalog: widget.catalog,
+                      clips: project.tracks[index].timelineClips,
+                      bpm: project.bpm,
+                      client: widget.client,
+                    ),
+                  );
+                },
                 onTrim: () => _trimExistingTrack(project.tracks[index]),
                 onBacking: () => _attachBackingTrack(project.tracks[index]),
                 onDuplicate: () => _duplicateTrack(project.tracks[index]),
@@ -6825,13 +8714,28 @@ class _TrackManagerSheetState extends State<TrackManagerSheet> {
             ),
           ),
           const SizedBox(height: 9),
-          FilledButton.icon(
-            onPressed: _addTrack,
-            icon: const Icon(Icons.add),
-            label: const Text('ADD TRACK'),
-            style:
-                FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
-          ),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _addTrack,
+                icon: const Icon(Icons.add),
+                label: const Text('ADD TRACK'),
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48)),
+              ),
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _openBackingFromProject,
+                icon: const Icon(Icons.auto_awesome),
+                label: const Text('ADD BACKING'),
+                style: FilledButton.styleFrom(
+                    backgroundColor: LostChrome.lime,
+                    minimumSize: const Size.fromHeight(48)),
+              ),
+            ),
+          ]),
         ],
       ]),
     );
@@ -6842,6 +8746,13 @@ class _TakeRange {
   const _TakeRange(this.start, this.end);
   final double start;
   final double end;
+}
+
+class _ClipTiming {
+  const _ClipTiming(this.position, this.sourceIn, this.sourceOut);
+  final int position;
+  final int sourceIn;
+  final int sourceOut;
 }
 
 class _MetronomeChoice {
@@ -6860,24 +8771,44 @@ class _TrackControlValues {
     this.playbackSource,
     this.volume,
     this.pan,
-    this.clipStartSeconds,
   );
   final String name;
   final TrackRecordMode recordMode;
   final TrackPlaybackSource playbackSource;
   final double volume;
   final double pan;
-  final double clipStartSeconds;
+}
+
+Future<Process> _startLocalAudioPlayback(String path) async {
+  try {
+    return await Process.start('pw-play', [path]);
+  } on ProcessException {
+    try {
+      return await Process.start('aplay', [path]);
+    } on ProcessException {
+      throw const EngineException(
+          'Install PipeWire tools (pw-play) or ALSA utilities (aplay)');
+    }
+  }
 }
 
 class _GuitarTakeTrimDialog extends StatefulWidget {
   const _GuitarTakeTrimDialog({
     required this.availableSeconds,
     required this.capacitySeconds,
+    this.preserveSource = false,
+    this.initialRange,
+    this.onPreviewSelection,
+    this.onLoadWaveform,
   });
 
   final double availableSeconds;
   final double capacitySeconds;
+  final bool preserveSource;
+  final RangeValues? initialRange;
+  final Future<PreviewAudio> Function(double startSeconds, double endSeconds)?
+      onPreviewSelection;
+  final Future<List<double>> Function()? onLoadWaveform;
 
   @override
   State<_GuitarTakeTrimDialog> createState() => _GuitarTakeTrimDialogState();
@@ -6885,16 +8816,79 @@ class _GuitarTakeTrimDialog extends StatefulWidget {
 
 class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
   late RangeValues _range;
+  Process? _previewPlayer;
+  bool _previewBusy = false;
+  List<double>? _waveform;
+
+  bool get _previewPlaying => _previewPlayer != null;
 
   @override
   void initState() {
     super.initState();
-    _range = RangeValues(0, widget.availableSeconds);
+    _range = widget.initialRange ?? RangeValues(0, widget.availableSeconds);
+    _loadWaveform();
+  }
+
+  Future<void> _loadWaveform() async {
+    final load = widget.onLoadWaveform;
+    if (load == null) return;
+    try {
+      final waveform = await load();
+      if (mounted) setState(() => _waveform = waveform);
+    } catch (_) {
+      // A waveform is helpful context, not a reason to block trimming.
+    }
   }
 
   String _clock(double seconds) {
     final total = seconds.round();
     return '${total ~/ 60}:${(total % 60).toString().padLeft(2, '0')}';
+  }
+
+  void _stopPreview() {
+    _previewPlayer?.kill();
+    _previewPlayer = null;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _togglePreview() async {
+    if (_previewPlaying) {
+      _stopPreview();
+      return;
+    }
+    final render = widget.onPreviewSelection;
+    if (render == null) return;
+    setState(() => _previewBusy = true);
+    try {
+      final preview = await render(_range.start, _range.end);
+      final player = await _startLocalAudioPlayback(preview.path);
+      if (!mounted) {
+        player.kill();
+        return;
+      }
+      setState(() {
+        _previewBusy = false;
+        _previewPlayer = player;
+      });
+      unawaited(player.stdout.drain());
+      unawaited(player.stderr.drain());
+      await player.exitCode;
+      if (mounted && identical(_previewPlayer, player)) {
+        setState(() => _previewPlayer = null);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _previewBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not audition this take: $error')),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _previewPlayer?.kill();
+    super.dispose();
   }
 
   @override
@@ -6903,18 +8897,20 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
     final sliderMaximum = math.max(.1, available);
     final selected = _range.end - _range.start;
     return AlertDialog(
-      title: const Row(children: [
-        Icon(Icons.content_cut_rounded, color: LostChrome.lime),
-        SizedBox(width: 9),
-        Text('TRIM GUITAR TAKE'),
+      title: Row(children: [
+        const Icon(Icons.content_cut_rounded, color: LostChrome.lime),
+        const SizedBox(width: 9),
+        Text(widget.preserveSource ? 'TRIM TIMELINE CLIP' : 'TRIM GUITAR TAKE'),
       ]),
       content: SizedBox(
         width: 420,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Text(
-            available < widget.capacitySeconds
-                ? 'Only ${_clock(available)} of guitar is available so far. Play longer to fill the three-minute buffer.'
-                : 'The rolling three-minute guitar buffer is full. Choose the section to keep.',
+            widget.preserveSource
+                ? 'Editing the saved source take. Drag either edge to trim or restore audio.'
+                : available < widget.capacitySeconds
+                    ? 'Only ${_clock(available)} of guitar is available so far. Play longer to fill the three-minute buffer.'
+                    : 'The rolling three-minute guitar buffer is full. Choose the section to keep.',
             style: const TextStyle(color: Color(0xffa2d5f5)),
           ),
           const SizedBox(height: 16),
@@ -6922,17 +8918,22 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
             range: _range,
             maximum: available,
             accent: LostChrome.electric,
+            waveform: _waveform,
           ),
           RangeSlider(
             values: _range,
             min: 0,
             max: sliderMaximum,
-            divisions: available >= 2 ? available.round() : null,
+            // Continuous values preserve the exact selection. The timeline's
+            // Timing control provides typed millisecond positioning.
             labels: RangeLabels(_clock(_range.start), _clock(_range.end)),
             activeColor: LostChrome.lime,
-            onChanged: available < 1
+            onChanged: available < .1
                 ? null
-                : (range) => setState(() => _range = range),
+                : (range) {
+                    if (_previewPlaying) _stopPreview();
+                    setState(() => _range = range);
+                  },
           ),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             Text('START  ${_clock(_range.start)}',
@@ -6943,7 +8944,10 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
                     fontWeight: FontWeight.w900, color: LostChrome.ice)),
           ]),
           const SizedBox(height: 9),
-          Text('KEEPING ${_clock(selected)} • THE REST WILL BE TRIMMED',
+          Text(
+              widget.preserveSource
+                  ? 'KEEPING ${_clock(selected)} • THE SOURCE TAKE IS UNCHANGED'
+                  : 'KEEPING ${_clock(selected)} • THE REST WILL BE TRIMMED',
               style: const TextStyle(
                   fontSize: 10,
                   color: LostChrome.lime,
@@ -6952,6 +8956,20 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
         ]),
       ),
       actions: [
+        if (widget.onPreviewSelection != null)
+          OutlinedButton.icon(
+            onPressed: available < .1 || _previewBusy ? null : _togglePreview,
+            icon: _previewBusy
+                ? const SizedBox(
+                    height: 18,
+                    width: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(_previewPlaying
+                    ? Icons.stop_circle_outlined
+                    : Icons.play_circle_outline),
+            label: Text(_previewPlaying ? 'STOP' : 'AUDITION'),
+          ),
         TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('CANCEL')),
@@ -6961,7 +8979,7 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
               : () =>
                   Navigator.pop(context, _TakeRange(_range.start, _range.end)),
           icon: const Icon(Icons.save_alt_rounded),
-          label: const Text('SAVE TAKE'),
+          label: Text(widget.preserveSource ? 'APPLY CLIP EDIT' : 'SAVE TAKE'),
         ),
       ],
     );
@@ -6970,17 +8988,24 @@ class _GuitarTakeTrimDialogState extends State<_GuitarTakeTrimDialog> {
 
 class _TrimTimeline extends StatelessWidget {
   const _TrimTimeline(
-      {required this.range, required this.maximum, required this.accent});
+      {required this.range,
+      required this.maximum,
+      required this.accent,
+      this.waveform});
   final RangeValues range;
   final double maximum;
   final Color accent;
+  final List<double>? waveform;
 
   @override
   Widget build(BuildContext context) => SizedBox(
         height: 64,
         child: CustomPaint(
           painter: _TrimTimelinePainter(
-              range: range, maximum: maximum, accent: accent),
+              range: range,
+              maximum: maximum,
+              accent: accent,
+              waveform: waveform),
           child: const SizedBox.expand(),
         ),
       );
@@ -6988,10 +9013,14 @@ class _TrimTimeline extends StatelessWidget {
 
 class _TrimTimelinePainter extends CustomPainter {
   const _TrimTimelinePainter(
-      {required this.range, required this.maximum, required this.accent});
+      {required this.range,
+      required this.maximum,
+      required this.accent,
+      this.waveform});
   final RangeValues range;
   final double maximum;
   final Color accent;
+  final List<double>? waveform;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -7007,22 +9036,36 @@ class _TrimTimelinePainter extends CustomPainter {
             Rect.fromLTRB(selectedStart, 9, selectedEnd, size.height - 9),
             const Radius.circular(9)),
         Paint()..color = accent.withValues(alpha: .72));
-    final bars = math.max(18, (size.width / 8).floor());
-    for (var index = 0; index < bars; index++) {
-      final x = index * size.width / bars;
-      final height = 5 + math.sin(index * .71).abs() * (size.height - 25);
+    final peaks = waveform;
+    if (peaks != null && peaks.isNotEmpty) {
+      final peakPaint = Paint()
+        ..color = LostChrome.pearl.withValues(alpha: .72)
+        ..strokeWidth = math.max(1, size.width / peaks.length * .72)
+        ..strokeCap = StrokeCap.round;
+      for (var index = 0; index < peaks.length; index++) {
+        final x = (index + .5) * size.width / peaks.length;
+        final amplitude = peaks[index].clamp(0.0, 1.0).toDouble();
+        final height = (amplitude * (size.height - 22))
+            .clamp(1.5, size.height - 18)
+            .toDouble();
+        canvas.drawLine(Offset(x, size.height / 2 - height / 2),
+            Offset(x, size.height / 2 + height / 2), peakPaint);
+      }
+    } else {
       canvas.drawLine(
-          Offset(x, size.height / 2 - height / 2),
-          Offset(x, size.height / 2 + height / 2),
+          Offset(10, size.height / 2),
+          Offset(size.width - 10, size.height / 2),
           Paint()
-            ..color = LostChrome.pearl.withValues(alpha: .48)
-            ..strokeWidth = 2);
+            ..color = LostChrome.pearl.withValues(alpha: .25)
+            ..strokeWidth = 1);
     }
   }
 
   @override
   bool shouldRepaint(covariant _TrimTimelinePainter oldDelegate) =>
-      oldDelegate.range != range || oldDelegate.maximum != maximum;
+      oldDelegate.range != range ||
+      oldDelegate.maximum != maximum ||
+      oldDelegate.waveform != waveform;
 }
 
 class _TrackEmpty extends StatelessWidget {
@@ -7085,19 +9128,735 @@ class _ProjectRail extends StatelessWidget {
       );
 }
 
+class _TimelineEditBar extends StatelessWidget {
+  const _TimelineEditBar({
+    required this.hasSelection,
+    required this.hasClipboard,
+    required this.snap,
+    required this.onCopy,
+    required this.onCut,
+    required this.onPaste,
+    required this.onSplit,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onSnapChanged,
+  });
+
+  final bool hasSelection;
+  final bool hasClipboard;
+  final TimelineSnap snap;
+  final VoidCallback onCopy;
+  final VoidCallback onCut;
+  final VoidCallback onPaste;
+  final VoidCallback onSplit;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final ValueChanged<TimelineSnap> onSnapChanged;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 39,
+        padding: const EdgeInsets.symmetric(horizontal: 7),
+        decoration: BoxDecoration(
+          color: const Color(0xff082554),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: LostChrome.electric.withValues(alpha: .52)),
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.edit_note_rounded,
+                color: LostChrome.lime, size: 18),
+            const SizedBox(width: 5),
+            const Text('CLIP EDIT',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900)),
+            const SizedBox(width: 6),
+            _TimelineToolButton(
+                label: 'COPY',
+                icon: Icons.copy_rounded,
+                enabled: hasSelection,
+                onTap: onCopy),
+            _TimelineToolButton(
+                label: 'CUT',
+                icon: Icons.content_cut_rounded,
+                enabled: hasSelection,
+                onTap: onCut),
+            _TimelineToolButton(
+                label: 'PASTE',
+                icon: Icons.content_paste_rounded,
+                enabled: hasClipboard,
+                onTap: onPaste),
+            _TimelineToolButton(
+                label: 'SPLIT',
+                icon: Icons.call_split_rounded,
+                enabled: hasSelection,
+                onTap: onSplit),
+            _TimelineToolButton(
+                label: 'TIMING',
+                icon: Icons.tune_rounded,
+                enabled: hasSelection,
+                onTap: onEdit),
+            _TimelineToolButton(
+                label: 'DELETE',
+                icon: Icons.delete_outline_rounded,
+                enabled: hasSelection,
+                onTap: onDelete),
+            const SizedBox(width: 16),
+            const Text('SNAP',
+                style: TextStyle(
+                    color: Color(0xffa2d5f5),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w900)),
+            const SizedBox(width: 5),
+            DropdownButtonHideUnderline(
+              child: DropdownButton<TimelineSnap>(
+                value: snap,
+                isDense: true,
+                dropdownColor: const Color(0xff103d76),
+                style: const TextStyle(
+                    color: LostChrome.lime,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w900),
+                items: TimelineSnap.values
+                    .map((item) =>
+                        DropdownMenuItem(value: item, child: Text(item.label)))
+                    .toList(growable: false),
+                onChanged: (value) {
+                  if (value != null) onSnapChanged(value);
+                },
+              ),
+            ),
+          ]),
+        ),
+      );
+}
+
+class _TimelineToolButton extends StatelessWidget {
+  const _TimelineToolButton(
+      {required this.label,
+      required this.icon,
+      required this.enabled,
+      required this.onTap});
+  final String label;
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+        onPressed: enabled ? onTap : null,
+        icon: Icon(icon, size: 15),
+        label: Text(label),
+        style: TextButton.styleFrom(
+          foregroundColor:
+              enabled ? LostChrome.ice : LostChrome.ice.withValues(alpha: .3),
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          textStyle: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900),
+        ),
+      );
+}
+
+class _ArrangementTimeline extends StatelessWidget {
+  const _ArrangementTimeline({
+    required this.controller,
+    required this.project,
+    required this.playheadMilliseconds,
+    required this.selectedTrackId,
+    required this.selectedClipId,
+    required this.snap,
+    required this.loadWaveform,
+    required this.onPlayheadChanged,
+    required this.onClipSelected,
+    required this.onClipChanged,
+  });
+
+  final TrackProject project;
+  final int playheadMilliseconds;
+  final String? selectedTrackId;
+  final String? selectedClipId;
+  final TimelineSnap snap;
+  final Future<List<double>> Function(String path) loadWaveform;
+  final ValueChanged<int> onPlayheadChanged;
+  final void Function(String trackId, String clipId) onClipSelected;
+  final void Function(TrackLane track, TimelineClip clip) onClipChanged;
+
+  static const _labelWidth = 118.0;
+  final ScrollController controller;
+  static const _pixelsPerBeat = 54.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final beatMilliseconds = 60000 / project.bpm;
+    final beatsPerBar =
+        int.tryParse(project.timeSignature.split('/').first) ?? 4;
+    final pixelsPerSecond = _pixelsPerBeat * project.bpm / 60;
+    final latestClipEnd = project.tracks
+        .expand((track) => track.timelineClips)
+        .fold<int>(0,
+            (latest, clip) => math.max(latest, clip.timelineEndMilliseconds));
+    final minimumDuration = (beatMilliseconds * beatsPerBar * 8).round();
+    final durationMilliseconds = math.max(minimumDuration,
+        latestClipEnd + (beatMilliseconds * beatsPerBar * 2).round());
+    final timelineWidth =
+        math.max(680.0, durationMilliseconds / 1000 * pixelsPerSecond);
+    final rowHeight = 66.0;
+    final contentHeight = 30 + project.tracks.length * rowHeight;
+    return Container(
+      height: math.min(284, math.max(132, contentHeight + 2)),
+      decoration: BoxDecoration(
+        color: const Color(0xff061b40),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: LostChrome.electric.withValues(alpha: .65)),
+        boxShadow: const [BoxShadow(color: Color(0x3329b9ff), blurRadius: 9)],
+      ),
+      child: Scrollbar(
+        controller: controller,
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          controller: controller,
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: _labelWidth + timelineWidth,
+            child: SingleChildScrollView(
+              primary: false,
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                SizedBox(
+                  height: 30,
+                  child: Row(children: [
+                    Container(
+                      width: _labelWidth,
+                      padding: const EdgeInsets.only(left: 10),
+                      alignment: Alignment.centerLeft,
+                      decoration: const BoxDecoration(color: Color(0xff0b315f)),
+                      child: Text(
+                          '${project.bpm} BPM • ${project.timeSignature}',
+                          style: const TextStyle(
+                              color: LostChrome.lime,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900)),
+                    ),
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapDown: (details) => onPlayheadChanged(
+                            (details.localPosition.dx / pixelsPerSecond * 1000)
+                                .round()),
+                        child: CustomPaint(
+                          painter: _TimelineRulerPainter(
+                            beatMilliseconds: beatMilliseconds,
+                            beatsPerBar: beatsPerBar,
+                            pixelsPerSecond: pixelsPerSecond,
+                            playheadMilliseconds: playheadMilliseconds,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ]),
+                ),
+                ...project.tracks.map((track) => _TimelineTrackRow(
+                      key: ValueKey('timeline-${track.id}'),
+                      track: track,
+                      width: timelineWidth,
+                      height: rowHeight,
+                      pixelsPerSecond: pixelsPerSecond,
+                      beatMilliseconds: beatMilliseconds,
+                      beatsPerBar: beatsPerBar,
+                      playheadMilliseconds: playheadMilliseconds,
+                      selectedTrackId: selectedTrackId,
+                      selectedClipId: selectedClipId,
+                      loadWaveform: loadWaveform,
+                      snap: snap,
+                      onClipSelected: onClipSelected,
+                      onClipChanged: onClipChanged,
+                    )),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TimelineTrackRow extends StatelessWidget {
+  const _TimelineTrackRow({
+    super.key,
+    required this.track,
+    required this.width,
+    required this.height,
+    required this.pixelsPerSecond,
+    required this.beatMilliseconds,
+    required this.beatsPerBar,
+    required this.playheadMilliseconds,
+    required this.selectedTrackId,
+    required this.selectedClipId,
+    required this.loadWaveform,
+    required this.snap,
+    required this.onClipSelected,
+    required this.onClipChanged,
+  });
+
+  final TrackLane track;
+  final double width;
+  final double height;
+  final double pixelsPerSecond;
+  final double beatMilliseconds;
+  final int beatsPerBar;
+  final int playheadMilliseconds;
+  final String? selectedTrackId;
+  final String? selectedClipId;
+  final Future<List<double>> Function(String path) loadWaveform;
+  final TimelineSnap snap;
+  final void Function(String trackId, String clipId) onClipSelected;
+  final void Function(TrackLane track, TimelineClip clip) onClipChanged;
+
+  int _snap(int milliseconds) {
+    if (snap == TimelineSnap.off) return milliseconds.clamp(0, 1 << 31).toInt();
+    final grid = snap == TimelineSnap.bar
+        ? beatMilliseconds * beatsPerBar
+        : beatMilliseconds;
+    return (milliseconds / grid).round() * grid.round();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        child: Row(children: [
+          Container(
+            width: _ArrangementTimeline._labelWidth,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: selectedTrackId == track.id
+                  ? track.input.color.withValues(alpha: .22)
+                  : const Color(0xff0a2a57),
+              border: Border(
+                  bottom:
+                      BorderSide(color: LostChrome.ice.withValues(alpha: .14))),
+            ),
+            child: Row(children: [
+              Icon(track.input.icon, color: track.input.color, size: 16),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(track.name.toUpperCase(),
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: LostChrome.pearl,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w900)),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: Stack(children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _TimelineGridPainter(
+                      beatMilliseconds: beatMilliseconds,
+                      beatsPerBar: beatsPerBar,
+                      pixelsPerSecond: pixelsPerSecond,
+                      playheadMilliseconds: playheadMilliseconds),
+                ),
+              ),
+              ...track.timelineClips.map((clip) {
+                final left =
+                    clip.timelineStartMilliseconds / 1000 * pixelsPerSecond;
+                final width = math.max(
+                    24.0, clip.durationMilliseconds / 1000 * pixelsPerSecond);
+                return Positioned(
+                  left: left,
+                  top: 5,
+                  width: width,
+                  height: height - 10,
+                  child: _TimelineClipWidget(
+                    key: ValueKey(clip.id),
+                    track: track,
+                    clip: clip,
+                    selected: selectedClipId == clip.id &&
+                        selectedTrackId == track.id,
+                    pixelsPerSecond: pixelsPerSecond,
+                    loadWaveform: loadWaveform,
+                    snap: _snap,
+                    onSelected: () => onClipSelected(track.id, clip.id),
+                    onChanged: (replacement) =>
+                        onClipChanged(track, replacement),
+                  ),
+                );
+              }),
+            ]),
+          ),
+        ]),
+      );
+}
+
+class _TimelineClipWidget extends StatefulWidget {
+  const _TimelineClipWidget({
+    super.key,
+    required this.track,
+    required this.clip,
+    required this.selected,
+    required this.pixelsPerSecond,
+    required this.loadWaveform,
+    required this.snap,
+    required this.onSelected,
+    required this.onChanged,
+  });
+
+  final TrackLane track;
+  final TimelineClip clip;
+  final bool selected;
+  final double pixelsPerSecond;
+  final Future<List<double>> Function(String path) loadWaveform;
+  final int Function(int milliseconds) snap;
+  final VoidCallback onSelected;
+  final ValueChanged<TimelineClip> onChanged;
+
+  @override
+  State<_TimelineClipWidget> createState() => _TimelineClipWidgetState();
+}
+
+class _TimelineClipWidgetState extends State<_TimelineClipWidget> {
+  TimelineClip? _gestureOrigin;
+  double _gestureDeltaPixels = 0;
+  List<double>? _peaks;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWaveform();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelineClipWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.clip.takePath != widget.clip.takePath) _loadWaveform();
+  }
+
+  Future<void> _loadWaveform() async {
+    try {
+      final peaks = await widget.loadWaveform(widget.clip.takePath);
+      if (mounted) setState(() => _peaks = peaks);
+    } catch (_) {
+      if (mounted) setState(() => _peaks = null);
+    }
+  }
+
+  void _begin() {
+    _gestureOrigin = widget.clip;
+    _gestureDeltaPixels = 0;
+    widget.onSelected();
+  }
+
+  int get _deltaMilliseconds =>
+      (_gestureDeltaPixels / widget.pixelsPerSecond * 1000).round();
+
+  void _move(DragUpdateDetails details) {
+    final origin = _gestureOrigin;
+    if (origin == null) return;
+    _gestureDeltaPixels += details.delta.dx;
+    widget.onChanged(origin.copyWith(
+      timelineStartMilliseconds:
+          widget.snap(origin.timelineStartMilliseconds + _deltaMilliseconds),
+    ));
+  }
+
+  void _trimLeft(DragUpdateDetails details) {
+    final origin = _gestureOrigin;
+    if (origin == null) return;
+    _gestureDeltaPixels += details.delta.dx;
+    var sourceStart = origin.sourceStartMilliseconds + _deltaMilliseconds;
+    sourceStart =
+        sourceStart.clamp(0, origin.sourceEndMilliseconds - 1).toInt();
+    var timelineStart = origin.timelineStartMilliseconds +
+        (sourceStart - origin.sourceStartMilliseconds);
+    timelineStart = widget.snap(timelineStart).clamp(0, 1 << 31).toInt();
+    sourceStart = (origin.sourceStartMilliseconds +
+            (timelineStart - origin.timelineStartMilliseconds))
+        .clamp(0, origin.sourceEndMilliseconds - 1)
+        .toInt();
+    widget.onChanged(origin.copyWith(
+      timelineStartMilliseconds: timelineStart,
+      sourceStartMilliseconds: sourceStart,
+    ));
+  }
+
+  void _trimRight(DragUpdateDetails details) {
+    final origin = _gestureOrigin;
+    if (origin == null) return;
+    _gestureDeltaPixels += details.delta.dx;
+    final endAt =
+        widget.snap(origin.timelineEndMilliseconds + _deltaMilliseconds);
+    final sourceEnd = (origin.sourceStartMilliseconds +
+            (endAt - origin.timelineStartMilliseconds))
+        .clamp(origin.sourceStartMilliseconds + 1,
+            origin.sourceDurationMilliseconds)
+        .toInt();
+    widget.onChanged(origin.copyWith(sourceEndMilliseconds: sourceEnd));
+  }
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: widget.onSelected,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: widget.track.input.color.withValues(alpha: .27),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: widget.selected
+                    ? LostChrome.lime
+                    : widget.track.input.color,
+                width: widget.selected ? 2 : 1,
+              ),
+              boxShadow: widget.selected
+                  ? [
+                      BoxShadow(
+                          color: LostChrome.lime.withValues(alpha: .35),
+                          blurRadius: 8)
+                    ]
+                  : null,
+            ),
+            child: Stack(children: [
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: _ClipWaveformPainter(
+                    peaks: _peaks,
+                    clip: widget.clip,
+                    color: widget.track.input.color,
+                  ),
+                ),
+              ),
+              Positioned.fill(
+                child: Row(children: [
+                  _ClipDragHandle(
+                    alignment: Alignment.centerLeft,
+                    icon: Icons.drag_handle_rounded,
+                    onStart: _begin,
+                    onUpdate: _trimLeft,
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragStart: (_) => _begin(),
+                      onHorizontalDragUpdate: _move,
+                      child: Center(
+                        child: Text(
+                          widget.clip.toneSnapshot ??
+                              widget.track.name.toUpperCase(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: LostChrome.pearl,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                    ),
+                  ),
+                  _ClipDragHandle(
+                    alignment: Alignment.centerRight,
+                    icon: Icons.drag_handle_rounded,
+                    onStart: _begin,
+                    onUpdate: _trimRight,
+                  ),
+                ]),
+              ),
+            ]),
+          ),
+        ),
+      );
+}
+
+class _ClipDragHandle extends StatelessWidget {
+  const _ClipDragHandle(
+      {required this.alignment,
+      required this.icon,
+      required this.onStart,
+      required this.onUpdate});
+  final Alignment alignment;
+  final IconData icon;
+  final VoidCallback onStart;
+  final GestureDragUpdateCallback onUpdate;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) => onStart(),
+        onHorizontalDragUpdate: onUpdate,
+        child: Container(
+          width: 18,
+          alignment: alignment,
+          color: Colors.transparent,
+          child: Icon(icon,
+              size: 12, color: LostChrome.pearl.withValues(alpha: .9)),
+        ),
+      );
+}
+
+class _ClipWaveformPainter extends CustomPainter {
+  const _ClipWaveformPainter(
+      {required this.peaks, required this.clip, required this.color});
+  final List<double>? peaks;
+  final TimelineClip clip;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final waveform = peaks;
+    if (waveform == null ||
+        waveform.isEmpty ||
+        clip.sourceDurationMilliseconds <= 0) {
+      return;
+    }
+    final start = (clip.sourceStartMilliseconds /
+            clip.sourceDurationMilliseconds *
+            waveform.length)
+        .floor()
+        .clamp(0, waveform.length - 1)
+        .toInt();
+    final end = (clip.sourceEndMilliseconds /
+            clip.sourceDurationMilliseconds *
+            waveform.length)
+        .ceil()
+        .clamp(start + 1, waveform.length)
+        .toInt();
+    final visible = waveform.sublist(start, end);
+    final paint = Paint()
+      ..color = color.withValues(alpha: .75)
+      ..strokeWidth = math.max(1, size.width / visible.length * .78)
+      ..strokeCap = StrokeCap.round;
+    for (var index = 0; index < visible.length; index++) {
+      final x = (index + .5) * size.width / visible.length;
+      final height = (visible[index].clamp(0.0, 1.0) * (size.height - 10))
+          .clamp(1.5, size.height - 4)
+          .toDouble();
+      canvas.drawLine(Offset(x, size.height / 2 - height / 2),
+          Offset(x, size.height / 2 + height / 2), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ClipWaveformPainter oldDelegate) =>
+      oldDelegate.peaks != peaks ||
+      oldDelegate.clip != clip ||
+      oldDelegate.color != color;
+}
+
+class _TimelineRulerPainter extends CustomPainter {
+  const _TimelineRulerPainter({
+    required this.beatMilliseconds,
+    required this.beatsPerBar,
+    required this.pixelsPerSecond,
+    required this.playheadMilliseconds,
+  });
+  final double beatMilliseconds;
+  final int beatsPerBar;
+  final double pixelsPerSecond;
+  final int playheadMilliseconds;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(
+        Offset.zero & size, Paint()..color = const Color(0xff0b315f));
+    final beatWidth = beatMilliseconds / 1000 * pixelsPerSecond;
+    for (var beat = 0; beat * beatWidth <= size.width; beat++) {
+      final x = beat * beatWidth;
+      final bar = beat % beatsPerBar == 0;
+      canvas.drawLine(
+          Offset(x, bar ? 0 : 14),
+          Offset(x, size.height),
+          Paint()
+            ..color = (bar ? LostChrome.electric : LostChrome.ice)
+                .withValues(alpha: bar ? .75 : .22)
+            ..strokeWidth = bar ? 1.2 : .7);
+      if (bar) {
+        final label = TextPainter(
+          text: TextSpan(
+              text:
+                  '${beat ~/ beatsPerBar + 1}  ${(beat * beatMilliseconds / 1000).toStringAsFixed(1)}s',
+              style: const TextStyle(
+                  color: LostChrome.pearl,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w900)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        label.paint(canvas, Offset(x + 4, 2));
+      }
+    }
+    final playheadX = playheadMilliseconds / 1000 * pixelsPerSecond;
+    canvas.drawLine(
+        Offset(playheadX, 0),
+        Offset(playheadX, size.height),
+        Paint()
+          ..color = LostChrome.lime
+          ..strokeWidth = 1.5);
+  }
+
+  @override
+  bool shouldRepaint(covariant _TimelineRulerPainter oldDelegate) =>
+      oldDelegate.playheadMilliseconds != playheadMilliseconds ||
+      oldDelegate.beatMilliseconds != beatMilliseconds;
+}
+
+class _TimelineGridPainter extends CustomPainter {
+  const _TimelineGridPainter(
+      {required this.beatMilliseconds,
+      required this.beatsPerBar,
+      required this.pixelsPerSecond,
+      required this.playheadMilliseconds});
+  final double beatMilliseconds;
+  final int beatsPerBar;
+  final double pixelsPerSecond;
+  final int playheadMilliseconds;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(
+        Offset.zero & size, Paint()..color = const Color(0xff061a3b));
+    final beatWidth = beatMilliseconds / 1000 * pixelsPerSecond;
+    for (var beat = 0; beat * beatWidth <= size.width; beat++) {
+      final x = beat * beatWidth;
+      canvas.drawLine(
+          Offset(x, 0),
+          Offset(x, size.height),
+          Paint()
+            ..color = LostChrome.ice
+                .withValues(alpha: beat % beatsPerBar == 0 ? .19 : .08));
+    }
+    final playheadX = playheadMilliseconds / 1000 * pixelsPerSecond;
+    canvas.drawLine(
+        Offset(playheadX, 0),
+        Offset(playheadX, size.height),
+        Paint()
+          ..color = LostChrome.lime.withValues(alpha: .8)
+          ..strokeWidth = 1.2);
+  }
+
+  @override
+  bool shouldRepaint(covariant _TimelineGridPainter oldDelegate) =>
+      oldDelegate.playheadMilliseconds != playheadMilliseconds ||
+      oldDelegate.beatMilliseconds != beatMilliseconds ||
+      oldDelegate.beatsPerBar != beatsPerBar;
+}
+
 class _TrackLaneCard extends StatelessWidget {
   const _TrackLaneCard({
+    super.key,
     required this.track,
     required this.busy,
     required this.armed,
     required this.countingIn,
     required this.liveLevel,
     required this.playheadSeconds,
+    required this.loadWaveform,
     required this.onInputChanged,
     required this.onRecord,
     required this.onPlay,
     required this.onSettings,
     required this.onReamp,
+    required this.onTabs,
     required this.onTrim,
     required this.onBacking,
     required this.onDuplicate,
@@ -7111,11 +9870,13 @@ class _TrackLaneCard extends StatelessWidget {
   final bool countingIn;
   final double liveLevel;
   final double playheadSeconds;
+  final Future<List<double>> Function(String path) loadWaveform;
   final ValueChanged<TrackInput> onInputChanged;
   final VoidCallback onRecord;
   final VoidCallback onPlay;
   final VoidCallback onSettings;
   final VoidCallback onReamp;
+  final VoidCallback onTabs;
   final VoidCallback onTrim;
   final VoidCallback onBacking;
   final VoidCallback onDuplicate;
@@ -7169,6 +9930,7 @@ class _TrackLaneCard extends StatelessWidget {
                       child: DropdownButton<TrackInput>(
                         value: track.input,
                         isDense: true,
+                        isExpanded: true,
                         dropdownColor: const Color(0xff103d76),
                         style: TextStyle(
                             color: track.input.color,
@@ -7191,9 +9953,10 @@ class _TrackLaneCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 10),
               child: Stack(children: [
                 Positioned.fill(
-                    child: CustomPaint(
-                        painter: _TrackWaveformPainter(
-                            track: track, playheadSeconds: playheadSeconds))),
+                    child: _TrackWaveform(
+                        track: track,
+                        playheadSeconds: playheadSeconds,
+                        loadWaveform: loadWaveform)),
                 Positioned(
                   left: 8,
                   top: 5,
@@ -7223,7 +9986,7 @@ class _TrackLaneCard extends StatelessWidget {
             ),
           ),
           SizedBox(
-            width: 76,
+            width: 104,
             child: Wrap(
               alignment: WrapAlignment.center,
               spacing: 1,
@@ -7269,7 +10032,16 @@ class _TrackLaneCard extends StatelessWidget {
                     icon: const Icon(Icons.bolt_rounded,
                         size: 18, color: LostChrome.lime),
                   ),
-                if (track.cleanTakePath != null && track.takePath != null)
+                if (track.input == TrackInput.guitar &&
+                    track.timelineClips.any((clip) =>
+                        clip.cleanTakePath != null && clip.riffId != null))
+                  IconButton(
+                    tooltip: 'Generate guitar tabs',
+                    onPressed: busy ? null : onTabs,
+                    icon: const Icon(Icons.queue_music_rounded,
+                        size: 20, color: LostChrome.ice),
+                  ),
+                if (track.hasTake)
                   IconButton(
                     tooltip: 'Trim this take again',
                     onPressed: busy ? null : onTrim,
@@ -7373,11 +10145,72 @@ class _TrackLevelMeter extends StatelessWidget {
       );
 }
 
-class _TrackWaveformPainter extends CustomPainter {
-  const _TrackWaveformPainter(
-      {required this.track, required this.playheadSeconds});
+class _TrackWaveform extends StatefulWidget {
+  const _TrackWaveform({
+    required this.track,
+    required this.playheadSeconds,
+    required this.loadWaveform,
+  });
+
   final TrackLane track;
   final double playheadSeconds;
+  final Future<List<double>> Function(String path) loadWaveform;
+
+  @override
+  State<_TrackWaveform> createState() => _TrackWaveformState();
+}
+
+class _TrackWaveformState extends State<_TrackWaveform> {
+  List<double>? _peaks;
+  String? _loadedPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TrackWaveform oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.track.takePath != widget.track.takePath) {
+      _peaks = null;
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final path = widget.track.takePath;
+    _loadedPath = path;
+    if (path == null) {
+      if (mounted) setState(() => _peaks = null);
+      return;
+    }
+    try {
+      final peaks = await widget.loadWaveform(path);
+      if (mounted && _loadedPath == path) setState(() => _peaks = peaks);
+    } catch (_) {
+      // A waveform must never prevent a track from remaining editable/playable.
+      if (mounted && _loadedPath == path) setState(() => _peaks = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        painter: _TrackWaveformPainter(
+          track: widget.track,
+          playheadSeconds: widget.playheadSeconds,
+          peaks: _peaks,
+        ),
+      );
+}
+
+class _TrackWaveformPainter extends CustomPainter {
+  const _TrackWaveformPainter(
+      {required this.track, required this.playheadSeconds, this.peaks});
+  final TrackLane track;
+  final double playheadSeconds;
+  final List<double>? peaks;
   @override
   void paint(Canvas canvas, Size size) {
     final mid = size.height / 2;
@@ -7385,23 +10218,21 @@ class _TrackWaveformPainter extends CustomPainter {
         Paint()..color = LostChrome.ice.withValues(alpha: .18));
     final startX = (track.clipStartSeconds.clamp(0, 30) / 30) * size.width;
     final visibleWidth = math.max(20.0, size.width - startX);
-    final bars = math.max(12, (visibleWidth / 7).floor());
-    final seed = track.id.hashCode.abs();
-    final paint = Paint()
-      ..color = track.input.color.withValues(alpha: track.hasTake ? .78 : .16);
-    for (var index = 0; index < bars; index++) {
-      final phase = (seed % 29) * .12 + index * .62;
-      final shaped = .2 + .8 * math.pow(math.sin(phase).abs(), 1.8);
-      final envelope =
-          track.hasTake ? .45 + .55 * math.sin(index / bars * math.pi) : .22;
-      final height = math.max(3.0, mid * shaped * envelope);
-      final x = startX + index * visibleWidth / bars;
-      canvas.drawRRect(
-          RRect.fromRectAndRadius(
-              Rect.fromCenter(
-                  center: Offset(x, mid), width: 3, height: height * 2),
-              const Radius.circular(2)),
-          paint);
+    final waveform = peaks;
+    if (waveform != null && waveform.isNotEmpty) {
+      final paint = Paint()
+        ..color = track.input.color.withValues(alpha: .84)
+        ..strokeWidth = math.max(1, visibleWidth / waveform.length * .72)
+        ..strokeCap = StrokeCap.round;
+      for (var index = 0; index < waveform.length; index++) {
+        final x = startX + (index + .5) * visibleWidth / waveform.length;
+        final amplitude = waveform[index].clamp(0.0, 1.0).toDouble();
+        final height = (amplitude * (size.height - 12))
+            .clamp(1.5, size.height - 4)
+            .toDouble();
+        canvas.drawLine(
+            Offset(x, mid - height / 2), Offset(x, mid + height / 2), paint);
+      }
     }
     if (track.hasTake) {
       final cursorX = (playheadSeconds.clamp(0, 30) / 30) * size.width;
@@ -7417,7 +10248,8 @@ class _TrackWaveformPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _TrackWaveformPainter oldDelegate) =>
       oldDelegate.track != track ||
-      oldDelegate.playheadSeconds != playheadSeconds;
+      oldDelegate.playheadSeconds != playheadSeconds ||
+      oldDelegate.peaks != peaks;
 }
 
 class RiffVaultSheet extends StatefulWidget {
@@ -7841,12 +10673,14 @@ class BackingTrackSheet extends StatefulWidget {
     required this.catalog,
     required this.riff,
     required this.onPlay,
+    this.initialBpm,
     super.key,
   });
 
   final CatalogClient catalog;
   final RiffCapture riff;
   final Future<void> Function(String path) onPlay;
+  final int? initialBpm;
 
   @override
   State<BackingTrackSheet> createState() => _BackingTrackSheetState();
@@ -7855,24 +10689,28 @@ class BackingTrackSheet extends StatefulWidget {
 class _BackingTrackSheetState extends State<BackingTrackSheet> {
   final _style = TextEditingController(
       text: 'Tight drums and bass, energetic alternative rock, no lead guitar');
+  final _genre = TextEditingController(text: 'Alternative Rock');
   late Future<BackingTrackStatus> _status;
   late Future<List<BackingTrack>> _tracks;
   Timer? _poller;
   bool _submitting = false;
   String? _error;
   int _duration = 20;
+  late int _bpm;
 
   @override
   void initState() {
     super.initState();
     _status = widget.catalog.backingTrackStatus();
     _tracks = widget.catalog.listBackingTracks(widget.riff.id);
+    _bpm = widget.initialBpm ?? 120;
     _poller = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
   }
 
   @override
   void dispose() {
     _style.dispose();
+    _genre.dispose();
     _poller?.cancel();
     super.dispose();
   }
@@ -7892,6 +10730,8 @@ class _BackingTrackSheetState extends State<BackingTrackSheet> {
         riffId: widget.riff.id,
         style: _style.text,
         durationSeconds: _duration,
+        genre: _genre.text,
+        bpm: _bpm,
       );
       if (mounted) {
         setState(() {
@@ -7959,6 +10799,33 @@ class _BackingTrackSheetState extends State<BackingTrackSheet> {
                         ),
                       ),
                       Row(children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _genre,
+                            maxLength: 48,
+                            decoration: const InputDecoration(
+                                labelText: 'Genre / folder'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        SizedBox(
+                          width: 96,
+                          child: Column(children: [
+                            Text('$_bpm BPM',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w900)),
+                            Slider(
+                              value: _bpm.toDouble(),
+                              min: 40,
+                              max: 240,
+                              divisions: 200,
+                              onChanged: (value) =>
+                                  setState(() => _bpm = value.round()),
+                            ),
+                          ]),
+                        ),
+                      ]),
+                      Row(children: [
                         const Text('LENGTH',
                             style: TextStyle(fontWeight: FontWeight.w800)),
                         const SizedBox(width: 10),
@@ -8018,7 +10885,7 @@ class _BackingTrackSheetState extends State<BackingTrackSheet> {
                         'queued' => 'WAITING TO START',
                         'rendering' => 'MAKING YOUR TRACK…',
                         'ready' =>
-                          '${track.durationSeconds} SEC • OFFLINE READY',
+                          '${track.genre} • ${track.bpm} BPM • ${track.durationSeconds} SEC • OFFLINE READY',
                         _ => track.error ?? 'FAILED',
                       };
                       return ListTile(
@@ -8196,6 +11063,7 @@ class _ControlDefinition {
     this.divisions,
     this.unit, {
     this.percent = false,
+    this.logarithmic = false,
   });
 
   final String keyName;
@@ -8205,6 +11073,13 @@ class _ControlDefinition {
   final int divisions;
   final String unit;
   final bool percent;
+  final bool logarithmic;
+
+  double sliderValue(double v) => logarithmic
+      ? math.log(v.clamp(minimum, maximum))
+      : v.clamp(minimum, maximum);
+  double actualValue(double v) =>
+      logarithmic ? math.exp(v).clamp(minimum, maximum) : v;
 
   String format(double value) => percent
       ? '${(value * 100).round()}$unit'
@@ -8289,13 +11164,13 @@ class _ControlSlider extends StatelessWidget {
             child: RotatedBox(
               quarterTurns: 3,
               child: Slider(
-                value: value.clamp(definition.minimum, definition.maximum),
-                min: definition.minimum,
-                max: definition.maximum,
+                value: definition.sliderValue(value),
+                min: definition.sliderValue(definition.minimum),
+                max: definition.sliderValue(definition.maximum),
                 divisions: definition.divisions,
                 label: definition.format(value),
-                onChanged: onChanged,
-                onChangeEnd: onChangeEnd,
+                onChanged: (v) => onChanged(definition.actualValue(v)),
+                onChangeEnd: (v) => onChangeEnd(definition.actualValue(v)),
               ),
             ),
           ),
@@ -9415,181 +12290,333 @@ class ModelLibrarySheet extends StatefulWidget {
 
 class _ModelLibrarySheetState extends State<ModelLibrarySheet> {
   late Future<List<CatalogModel>> _models;
+  late String _category;
+  String _query = '';
+  String? _tag;
+  bool _syncingTags = false;
+
+  Future<void> _syncTags() async {
+    setState(() {
+      _syncingTags = true;
+      _selectionError = null;
+    });
+    var failures = 0;
+    try {
+      final models = await widget.catalog.listModels();
+      final groups = models
+          .map((m) => m.captureGroup)
+          .whereType<String>()
+          .where((g) => g.startsWith('tone3000:'))
+          .toSet();
+      for (final group in groups) {
+        if (!mounted) return;
+        try {
+          await widget.catalog
+              .syncToneTags(group.substring('tone3000:'.length));
+        } catch (_) {
+          failures++;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _models = widget.catalog.listModels();
+          _tag = null;
+          _selectionError = failures > 0
+              ? 'Could not update $failures collections. Cached tags are still available; check your connection and T3K sign-in.'
+              : null;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _selectionError = 'Could not sync tags: $e');
+    } finally {
+      if (mounted) setState(() => _syncingTags = false);
+    }
+  }
+
   String? _selectingPath;
   String? _selectionError;
 
   @override
   void initState() {
     super.initState();
+    _category = widget.initialSlot == ModelSlot.pre ? 'Pedals' : 'Amps';
     _models = widget.catalog.listModels();
   }
 
   void _refresh() => setState(() => _models = widget.catalog.refreshAndList());
 
-  Future<void> _chooseSlot(CatalogModel model) async {
-    if (widget.initialSlot case final slot?) {
-      await _select(model, slot);
-      return;
-    }
-    final slot = await showDialog<ModelSlot>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(model.name),
-        content: const Text('Where should this NAM model run?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, ModelSlot.pre),
-            child: const Text('PEDAL'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, ModelSlot.amp),
-            child: const Text('AMP'),
-          ),
-        ],
-      ),
-    );
-    if (slot != null) await _select(model, slot);
-  }
-
-  Future<void> _select(CatalogModel model, ModelSlot slot) async {
+  Future<void> _choose(CatalogModel model) async {
+    ModelSlot? slot = widget.initialSlot;
+    slot ??= _category == 'Pedals'
+        ? ModelSlot.pre
+        : _category == 'Amps'
+            ? ModelSlot.amp
+            : null;
+    slot ??= await showDialog<ModelSlot>(
+        context: context,
+        builder: (c) => AlertDialog(
+                title: Text(model.displayName),
+                content: const Text('Load this unclassified capture into:'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c, ModelSlot.pre),
+                      child: const Text('PEDAL')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c, ModelSlot.amp),
+                      child: const Text('AMP')),
+                ]));
+    if (slot == null || !mounted) return;
     setState(() {
       _selectingPath = model.path;
       _selectionError = null;
     });
     try {
       await widget.onSelected(model, slot);
-      if (mounted) Navigator.of(context).pop();
-    } catch (error) {
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
       if (mounted) {
         setState(() {
           _selectingPath = null;
-          _selectionError = '$error';
+          _selectionError = '$e';
         });
       }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return SafeArea(
+  Widget build(BuildContext context) => SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Text('LOCAL TONES',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: () => showModalBottomSheet<void>(
-                    context: context,
-                    isScrollControlled: true,
-                    builder: (context) => FractionallySizedBox(
-                      heightFactor: 0.92,
-                      child: Tone3000BrowserSheet(
-                        catalog: widget.catalog,
-                        engineConnected: widget.engineConnected,
-                        onSelected: widget.onSelected,
-                        initialSlot: widget.initialSlot,
-                      ),
-                    ),
-                  ),
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  icon: const Icon(Icons.cloud_download_outlined, size: 18),
-                  label: const Text('TONE3000'),
-                ),
-                IconButton(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              const Icon(Icons.offline_pin_outlined, color: LostChrome.ice),
+              const SizedBox(width: 8),
+              const Expanded(
+                  child: Text('ON THIS DEVICE',
+                      style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                          color: LostChrome.pearl))),
+              IconButton(
+                  tooltip: 'Sync tags from TONE3000',
+                  onPressed:
+                      _syncingTags || _selectingPath != null ? null : _syncTags,
+                  icon: _syncingTags
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.sync)),
+              IconButton(
                   tooltip: 'Rescan model folder',
-                  onPressed: _refresh,
-                  icon: const Icon(Icons.refresh),
-                ),
-              ],
-            ),
+                  onPressed: _selectingPath == null ? _refresh : null,
+                  icon: const Icon(Icons.refresh)),
+            ]),
+            TextField(
+                decoration: const InputDecoration(
+                    hintText: 'Find a pedal, amp or capture…',
+                    prefixIcon: Icon(Icons.search),
+                    isDense: true),
+                onChanged: (v) =>
+                    setState(() => _query = v.toLowerCase().trim())),
             if (!widget.engineConnected)
-              const Padding(
-                padding: EdgeInsets.only(bottom: 8),
-                child: Text(
-                    'Engine is offline. Browsing is available; selection is disabled.'),
-              ),
+              const Text('Engine offline — browsing only.',
+                  style: TextStyle(color: LostChrome.ice)),
             if (_selectionError != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  _selectionError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ),
+              Text(_selectionError!,
+                  style: const TextStyle(color: Color(0xffffb3bf))),
             Expanded(
-              child: FutureBuilder<List<CatalogModel>>(
-                future: _models,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError) {
-                    return _LibraryMessage(
-                      icon: Icons.cloud_off,
-                      title: 'Catalog unavailable',
-                      detail: '${snapshot.error}',
-                      action: _refresh,
-                    );
-                  }
-                  final models = snapshot.data ?? const [];
-                  if (models.isEmpty) {
-                    return _LibraryMessage(
-                      icon: Icons.queue_music,
-                      title: 'No local tones yet',
-                      detail:
-                          'Add a .nam file to the model library, then tap refresh.',
-                      action: _refresh,
-                    );
-                  }
-                  return ListView.separated(
-                    itemCount: models.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final model = models[index];
-                      final usedAsPre = model.path == widget.selectedPrePath;
-                      final usedAsAmp = model.path == widget.selectedAmpPath;
-                      final selected = usedAsPre || usedAsAmp;
-                      final selecting = model.path == _selectingPath;
-                      return ListTile(
-                        leading: Icon(
-                            selected ? Icons.check_circle : Icons.graphic_eq),
-                        title: Text(model.name),
-                        subtitle: Text([
-                          model.sourceLabel,
-                          if (usedAsPre) 'PEDAL',
-                          if (usedAsAmp) 'AMP',
-                        ].join(' • ')),
-                        trailing: selecting
-                            ? const SizedBox.square(
-                                dimension: 22,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Text(model.sizeLabel),
-                        selected: selected,
-                        enabled:
-                            widget.engineConnected && _selectingPath == null,
-                        onTap: widget.engineConnected && _selectingPath == null
-                            ? () => _chooseSlot(model)
-                            : null,
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+                child: FutureBuilder<List<CatalogModel>>(
+                    future: _models,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState != ConnectionState.done) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      if (snapshot.hasError) {
+                        return _LibraryMessage(
+                            icon: Icons.folder_off_outlined,
+                            title: 'Local library unavailable',
+                            detail: '${snapshot.error}',
+                            action: _refresh);
+                      }
+                      final all = snapshot.data ?? <CatalogModel>[];
+                      final tags = all
+                          .where((m) => m.category == _category)
+                          .expand((m) => m.tags)
+                          .toSet()
+                          .toList()
+                        ..sort();
+                      final models = all
+                          .where((m) =>
+                              m.category == _category &&
+                              (_tag == null ||
+                                  (_tag == ''
+                                      ? m.tags.isEmpty
+                                      : m.tags.contains(_tag))) &&
+                              '${m.displayName} ${m.collectionName}'
+                                  .toLowerCase()
+                                  .contains(_query))
+                          .toList()
+                        ..sort((a, b) =>
+                            a.collectionName.compareTo(b.collectionName));
+                      final groups = <String, List<CatalogModel>>{};
+                      for (final model in models) {
+                        (groups[model.captureGroup ?? model.path] ??= [])
+                            .add(model);
+                      }
+                      return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(children: [
+                                  for (final category in [
+                                    'Pedals',
+                                    'Amps',
+                                    'Unclassified'
+                                  ])
+                                    Padding(
+                                        padding: const EdgeInsets.only(
+                                            right: 6, top: 6, bottom: 6),
+                                        child: ChoiceChip(
+                                            avatar: Icon(
+                                                category == 'Pedals'
+                                                    ? Icons.bolt
+                                                    : category == 'Amps'
+                                                        ? Icons.speaker
+                                                        : Icons.help_outline,
+                                                size: 18),
+                                            label: Text(
+                                                '$category (${all.where((m) => m.category == category).length})'),
+                                            selected: _category == category,
+                                            onSelected: _selectingPath == null
+                                                ? (_) => setState(() {
+                                                      _category = category;
+                                                      _tag = null;
+                                                    })
+                                                : null)),
+                                ])),
+                            SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(children: [
+                                  for (final tag in <String?>[
+                                    null,
+                                    ...tags,
+                                    ''
+                                  ])
+                                    Padding(
+                                        padding: const EdgeInsets.only(
+                                            right: 6, bottom: 6),
+                                        child: ChoiceChip(
+                                            label: Text(tag == null
+                                                ? 'All tags'
+                                                : tag.isEmpty
+                                                    ? 'Untagged'
+                                                    : tag),
+                                            selected: _tag == tag,
+                                            selectedColor: LostChrome.ocean,
+                                            onSelected: (_) => setState(() =>
+                                                _tag =
+                                                    _tag == tag ? null : tag))),
+                                ])),
+                            if (_category == 'Unclassified')
+                              const Text(
+                                  'Type unavailable or ambiguous. These captures are still usable.',
+                                  style: TextStyle(
+                                      color: LostChrome.ice, fontSize: 12)),
+                            Expanded(
+                                child: groups.isEmpty
+                                    ? Center(
+                                        child: Text(all.isEmpty
+                                            ? 'No downloaded NAMs yet. Add tones using T3K, then refresh.'
+                                            : 'No matching ${_category.toLowerCase()} on this device.'))
+                                    : ListView.builder(
+                                        itemCount: groups.length,
+                                        itemBuilder: (context, index) {
+                                          final captures =
+                                              groups.values.elementAt(index);
+                                          final selected = captures.any((m) =>
+                                              m.path ==
+                                                  widget.selectedPrePath ||
+                                              m.path == widget.selectedAmpPath);
+                                          final icon = _category == 'Pedals'
+                                              ? Icons.bolt
+                                              : _category == 'Amps'
+                                                  ? Icons.speaker
+                                                  : Icons.graphic_eq;
+                                          Widget capture(CatalogModel model) {
+                                            final active = model.path ==
+                                                    widget.selectedPrePath ||
+                                                model.path ==
+                                                    widget.selectedAmpPath;
+                                            return ListTile(
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                        horizontal: 16,
+                                                        vertical: 6),
+                                                leading: Icon(
+                                                    active
+                                                        ? Icons.check_circle
+                                                        : icon,
+                                                    color: active
+                                                        ? LostChrome.lime
+                                                        : LostChrome.ice,
+                                                    size: 30),
+                                                title: Text(model.displayName,
+                                                    style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.w800,
+                                                        fontSize: 17)),
+                                                subtitle: Text(
+                                                    '${active ? 'LOADED • ' : ''}${model.sizeLabel} • Saved locally',
+                                                    style: const TextStyle(
+                                                        color: LostChrome.ice)),
+                                                trailing: _selectingPath == model.path
+                                                    ? const SizedBox.square(
+                                                        dimension: 24,
+                                                        child: CircularProgressIndicator(
+                                                            strokeWidth: 2))
+                                                    : const Icon(Icons.chevron_right),
+                                                enabled: widget.engineConnected && _selectingPath == null,
+                                                onTap: widget.engineConnected && _selectingPath == null ? () => _choose(model) : null);
+                                          }
+
+                                          return Container(
+                                              margin: const EdgeInsets.only(
+                                                  bottom: 10),
+                                              clipBehavior: Clip.antiAlias,
+                                              decoration: BoxDecoration(
+                                                  borderRadius:
+                                                      BorderRadius.circular(18),
+                                                  border: Border.all(
+                                                      color: selected
+                                                          ? LostChrome.lime
+                                                          : LostChrome.ice
+                                                              .withValues(
+                                                                  alpha: .6)),
+                                                  gradient: const LinearGradient(
+                                                      begin: Alignment.topLeft,
+                                                      end: Alignment.bottomRight,
+                                                      colors: [
+                                                        Color(0xff22649a),
+                                                        Color(0xff102c53),
+                                                        Color(0xff081a36)
+                                                      ])),
+                                              child: captures.length == 1
+                                                  ? capture(captures.first)
+                                                  : ExpansionTile(
+                                                      key: PageStorageKey(
+                                                          '$_category:${groups.keys.elementAt(index)}'),
+                                                      initiallyExpanded:
+                                                          selected,
+                                                      leading: Icon(icon, color: LostChrome.ice, size: 32),
+                                                      title: Text(captures.first.collectionName, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
+                                                      subtitle: Text('${captures.length} captures on this device', style: const TextStyle(color: LostChrome.ice)),
+                                                      children: captures.map(capture).toList()));
+                                        })),
+                          ]);
+                    })),
+          ])));
 }
 
 class Tone3000BrowserSheet extends StatefulWidget {
@@ -9611,6 +12638,8 @@ class Tone3000BrowserSheet extends StatefulWidget {
 }
 
 class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
+  final Set<String> _checked = {};
+  String? _downloadProgress;
   Tone3000Status? _status;
   SelectedTone? _selection;
   Timer? _loginPoll;
@@ -9683,6 +12712,9 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
       if (mounted) {
         setState(() {
           _selection = selection;
+          _checked
+            ..clear()
+            ..addAll(selection.models.map((m) => m.id));
           _authorizeUrl = null;
           _busy = false;
         });
@@ -9697,15 +12729,49 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
     _busy = false;
   }
 
-  Future<void> _download(RemoteTone tone, RemoteModel remote) async {
+  Future<void> _download(RemoteTone tone, List<RemoteModel> captures) async {
+    if (captures.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+              title: Text('Download ${captures.length} captures?'),
+              content: Text(
+                  'Save the selected captures from ${tone.name} together for offline use. '
+                  'Total download size is not supplied by this catalog. The first selected capture can be loaded after downloading.'),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancel')),
+                FilledButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Download'))
+              ],
+            ));
+    if (confirmed != true || !mounted) return;
     setState(() => _busy = true);
     try {
-      final model =
-          await widget.catalog.downloadTone3000Model(tone.id, remote.id);
+      final cached = await widget.catalog.listModels();
+      CatalogModel? first;
+      for (var i = 0; i < captures.length; i++) {
+        if (!mounted) return;
+        final remote = captures[i];
+        setState(() => _downloadProgress =
+            'Capture ${i + 1}/${captures.length}: ${remote.name}');
+        final existing = cached
+            .where((m) =>
+                m.captureGroup == 'tone3000:${tone.id}' &&
+                m.captureId == remote.id)
+            .firstOrNull;
+        final downloaded = existing ??
+            await widget.catalog.downloadTone3000Model(tone.id, remote.id);
+        first ??= downloaded;
+      }
+      final model = first!;
       if (!mounted) return;
       setState(() {
         _busy = false;
         _selection = null;
+        _downloadProgress = null;
       });
       if (!widget.engineConnected) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -9736,7 +12802,12 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
         if (mounted) Navigator.of(context).pop();
       }
     } catch (error) {
-      if (mounted) setState(() => _setError(error));
+      if (mounted) {
+        setState(() {
+          _downloadProgress = null;
+          _setError('$error. Completed captures are saved; retry to continue.');
+        });
+      }
     }
   }
 
@@ -9768,6 +12839,9 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
               Text(_error!,
                   style: TextStyle(color: Theme.of(context).colorScheme.error)),
             if (_busy) const LinearProgressIndicator(),
+            if (_downloadProgress != null)
+              Text(_downloadProgress!,
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
             const SizedBox(height: 8),
             if (status == null)
               const Expanded(child: Center(child: CircularProgressIndicator()))
@@ -9843,6 +12917,27 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
           ),
         ),
         const Divider(height: 1),
+        Wrap(spacing: 8, children: [
+          TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(
+                      () => _checked.addAll(selection.models.map((m) => m.id))),
+              child: const Text('Select all')),
+          TextButton(
+              onPressed: _busy ? null : () => setState(_checked.clear),
+              child: const Text('Clear selection')),
+          FilledButton.icon(
+              onPressed: _busy || _checked.isEmpty
+                  ? null
+                  : () => _download(
+                      selection.tone,
+                      selection.models
+                          .where((m) => _checked.contains(m.id))
+                          .toList()),
+              icon: const Icon(Icons.download),
+              label: Text('Download ${_checked.length} captures')),
+        ]),
         Expanded(
           child: selection.models.isEmpty
               ? const Center(child: Text('No compatible NAM A2 models found.'))
@@ -9851,15 +12946,20 @@ class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final model = selection.models[index];
-                    return ListTile(
+                    return CheckboxListTile(
                       dense: true,
-                      leading: const Icon(Icons.graphic_eq),
                       title: Text(model.name),
                       subtitle: const Text('NAM A2'),
-                      trailing: const Icon(Icons.download),
-                      enabled: !_busy,
-                      onTap:
-                          _busy ? null : () => _download(selection.tone, model),
+                      value: _checked.contains(model.id),
+                      onChanged: _busy
+                          ? null
+                          : (checked) => setState(() {
+                                if (checked == true) {
+                                  _checked.add(model.id);
+                                } else {
+                                  _checked.remove(model.id);
+                                }
+                              }),
                     );
                   },
                 ),
@@ -10889,10 +13989,20 @@ class _MeterStrip extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Text(
-          'CPU ${snapshot.cpuPercent.round()}%\nXRUN ${snapshot.xruns}',
-          textAlign: TextAlign.right,
-          style: Theme.of(context).textTheme.labelSmall,
+        Tooltip(
+          message: snapshot.audioError ??
+              'Audio deadline usage, not total computer CPU. Worst: ${snapshot.worstCpuPercent.round()}%. Missed deadlines: ${snapshot.deadlineMisses}.',
+          child: Text(
+            snapshot.audioStatus == 'running'
+                ? 'DSP ${snapshot.cpuPercent.round()}% / MAX ${snapshot.worstCpuPercent.round()}%\nXRUN ${snapshot.xruns}'
+                : 'AUDIO ${snapshot.audioStatus.toUpperCase()}',
+            textAlign: TextAlign.right,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: snapshot.audioStatus == 'recovering'
+                      ? const Color(0xffff8b9b)
+                      : null,
+                ),
+          ),
         ),
       ],
     );
@@ -10939,7 +14049,9 @@ class _LevelMeter extends StatelessWidget {
 }
 
 class MeterSnapshot {
+  final bool patchActive;
   const MeterSnapshot({
+    this.patchActive = false,
     required this.inputDb,
     required this.outputDb,
     required this.clipped,
@@ -10947,18 +14059,28 @@ class MeterSnapshot {
     required this.xruns,
     required this.tunerHz,
     required this.tunerConfidence,
+    this.audioStatus = 'running',
+    this.audioError,
+    this.worstCpuPercent = 0,
+    this.deadlineMisses = 0,
   });
 
   const MeterSnapshot.silent()
-      : inputDb = -120,
+      : patchActive = false,
+        inputDb = -120,
         outputDb = -120,
         clipped = false,
         cpuPercent = 0,
         xruns = 0,
         tunerHz = 0,
-        tunerConfidence = 0;
+        tunerConfidence = 0,
+        audioStatus = 'disabled',
+        audioError = null,
+        worstCpuPercent = 0,
+        deadlineMisses = 0;
 
   factory MeterSnapshot.fromJson(Map<String, dynamic> json) => MeterSnapshot(
+        patchActive: json['patch_active'] as bool? ?? false,
         inputDb: (json['input_db'] as num?)?.toDouble() ?? -120,
         outputDb: (json['output_db'] as num?)?.toDouble() ?? -120,
         clipped: json['clipped'] as bool? ?? false,
@@ -10966,6 +14088,10 @@ class MeterSnapshot {
         xruns: json['xruns'] as int? ?? 0,
         tunerHz: (json['tuner_hz'] as num?)?.toDouble() ?? 0,
         tunerConfidence: (json['tuner_confidence'] as num?)?.toDouble() ?? 0,
+        audioStatus: json['audio_status'] as String? ?? 'running',
+        audioError: json['audio_error'] as String?,
+        worstCpuPercent: (json['worst_cpu_percent'] as num?)?.toDouble() ?? 0,
+        deadlineMisses: (json['deadline_misses'] as num?)?.toInt() ?? 0,
       );
 
   final double inputDb;
@@ -10975,10 +14101,16 @@ class MeterSnapshot {
   final int xruns;
   final double tunerHz;
   final double tunerConfidence;
+  final String audioStatus;
+  final String? audioError;
+  final double worstCpuPercent;
+  final int deadlineMisses;
 }
 
 class EngineSnapshot {
+  final Map<String, dynamic> audioSettings;
   const EngineSnapshot({
+    this.audioSettings = const {},
     required this.connected,
     required this.bypassed,
     required this.preBypassed,
@@ -11002,6 +14134,9 @@ class EngineSnapshot {
     required this.cabinetHighCutHz,
     required this.gateEnabled,
     required this.gateThresholdDb,
+    this.gateHoldMs = 20,
+    this.gateReleaseMs = 50,
+    this.gateRangeDb = 80,
     required this.compressorEnabled,
     required this.compressorThresholdDb,
     required this.compressorRatio,
@@ -11028,6 +14163,8 @@ class EngineSnapshot {
     required this.octaverEnabled,
     required this.octaverVisible,
     required this.octaverMix,
+    this.octaverClean = false,
+    this.octaverCleanLatencyMs = 0,
     required this.delayEnabled,
     required this.delayVisible,
     required this.delayTimeMs,
@@ -11047,7 +14184,8 @@ class EngineSnapshot {
   });
 
   const EngineSnapshot.disconnected()
-      : connected = false,
+      : audioSettings = const {},
+        connected = false,
         bypassed = true,
         preBypassed = true,
         ampBypassed = true,
@@ -11069,7 +14207,10 @@ class EngineSnapshot {
         cabinetLowCutHz = 80,
         cabinetHighCutHz = 8000,
         gateEnabled = false,
-        gateThresholdDb = -55,
+        gateThresholdDb = -80,
+        gateHoldMs = 20,
+        gateReleaseMs = 50,
+        gateRangeDb = 80,
         compressorEnabled = false,
         compressorThresholdDb = -18,
         compressorRatio = 3,
@@ -11096,6 +14237,8 @@ class EngineSnapshot {
         octaverEnabled = false,
         octaverVisible = false,
         octaverMix = .45,
+        octaverClean = false,
+        octaverCleanLatencyMs = 0,
         delayEnabled = false,
         delayVisible = false,
         delayTimeMs = 360,
@@ -11115,6 +14258,7 @@ class EngineSnapshot {
 
   factory EngineSnapshot.fromJson(Map<String, dynamic> json) {
     return EngineSnapshot(
+      audioSettings: Map<String, dynamic>.from(json),
       connected: true,
       bypassed: json['bypassed'] as bool? ?? true,
       preBypassed: json['pre_bypassed'] as bool? ?? false,
@@ -11138,7 +14282,10 @@ class EngineSnapshot {
       cabinetHighCutHz:
           (json['cabinet_high_cut_hz'] as num?)?.toDouble() ?? 8000,
       gateEnabled: json['gate_enabled'] as bool? ?? false,
-      gateThresholdDb: (json['gate_threshold_db'] as num?)?.toDouble() ?? -55,
+      gateThresholdDb: (json['gate_threshold_db'] as num?)?.toDouble() ?? -80,
+      gateHoldMs: (json['gate_hold_ms'] as num?)?.toDouble() ?? 20,
+      gateReleaseMs: (json['gate_release_ms'] as num?)?.toDouble() ?? 50,
+      gateRangeDb: (json['gate_range_db'] as num?)?.toDouble() ?? 80,
       compressorEnabled: json['compressor_enabled'] as bool? ?? false,
       compressorThresholdDb:
           (json['compressor_threshold_db'] as num?)?.toDouble() ?? -18,
@@ -11166,6 +14313,9 @@ class EngineSnapshot {
       octaverEnabled: json['octaver_enabled'] as bool? ?? false,
       octaverVisible: json['octaver_visible'] as bool? ?? false,
       octaverMix: (json['octaver_mix'] as num?)?.toDouble() ?? .45,
+      octaverClean: json['octaver_clean'] as bool? ?? false,
+      octaverCleanLatencyMs:
+          (json['octaver_clean_latency_ms'] as num?)?.toDouble() ?? 0,
       delayEnabled: json['delay_enabled'] as bool? ?? false,
       delayVisible: json['delay_visible'] as bool? ?? false,
       delayTimeMs: (json['delay_time_ms'] as num?)?.toDouble() ?? 360,
@@ -11209,6 +14359,9 @@ class EngineSnapshot {
   final double cabinetHighCutHz;
   final bool gateEnabled;
   final double gateThresholdDb;
+  final double gateHoldMs;
+  final double gateReleaseMs;
+  final double gateRangeDb;
   final bool compressorEnabled;
   final double compressorThresholdDb;
   final double compressorRatio;
@@ -11235,6 +14388,8 @@ class EngineSnapshot {
   final bool octaverEnabled;
   final bool octaverVisible;
   final double octaverMix;
+  final bool octaverClean;
+  final double octaverCleanLatencyMs;
   final bool delayEnabled;
   final bool delayVisible;
   final double delayTimeMs;
@@ -11278,7 +14433,12 @@ class EngineSnapshot {
       };
 
   Map<String, double> effectControls(EffectKind effect) => switch (effect) {
-        EffectKind.gate => {'gate_threshold_db': gateThresholdDb},
+        EffectKind.gate => {
+            'gate_threshold_db': gateThresholdDb,
+            'gate_hold_ms': gateHoldMs,
+            'gate_release_ms': gateReleaseMs,
+            'gate_range_db': gateRangeDb,
+          },
         EffectKind.compressor => {
             'compressor_threshold_db': compressorThresholdDb,
             'compressor_ratio': compressorRatio,
@@ -11401,16 +14561,51 @@ class RiffBufferStatus {
   const RiffBufferStatus({
     required this.availableSeconds,
     required this.capacitySeconds,
+    this.droppedFrames = 0,
   });
 
   factory RiffBufferStatus.fromJson(Map<String, dynamic> json) =>
       RiffBufferStatus(
         availableSeconds: (json['available_seconds'] as num?)?.toDouble() ?? 0,
         capacitySeconds: (json['capacity_seconds'] as num?)?.toDouble() ?? 180,
+        droppedFrames: (json['dropped_frames'] as num?)?.toInt() ?? 0,
       );
 
   final double availableSeconds;
   final double capacitySeconds;
+  final int droppedFrames;
+}
+
+class TempoEstimate {
+  const TempoEstimate(
+      {required this.bpm, required this.confidence, required this.candidates});
+
+  factory TempoEstimate.fromJson(Map<String, dynamic> json) => TempoEstimate(
+        bpm: (json['bpm'] as num?)?.toInt() ?? 100,
+        confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
+        candidates: (json['candidates'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TempoCandidate.fromJson)
+            .toList(growable: false),
+      );
+
+  final int bpm;
+  final double confidence;
+  final List<TempoCandidate> candidates;
+}
+
+class TempoCandidate {
+  const TempoCandidate({required this.bpm, required this.confidence});
+
+  factory TempoCandidate.fromJson(Map<String, dynamic> json) => TempoCandidate(
+        bpm: (json['bpm'] as num?)?.toInt() ?? 100,
+        confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
+      );
+
+  final int bpm;
+  final double confidence;
+
+  Map<String, dynamic> toJson() => {'bpm': bpm, 'confidence': confidence};
 }
 
 class SystemAudioOutput {
@@ -11480,6 +14675,31 @@ class PreviewChoice {
 }
 
 class ControlClient {
+  /// Preparation/rendering uses its own connection so meters and bypass stay responsive.
+  Future<Map<String, dynamic>> patchRequest(String type,
+      [Map<String, Object?> payload = const {}]) async {
+    final socket = await Socket.connect(
+        InternetAddress(socketPath, type: InternetAddressType.unix), 0,
+        timeout: const Duration(seconds: 2));
+    try {
+      socket.writeln(jsonEncode(
+          {'api': 1, 'id': 'patch-ui', 'type': type, 'payload': payload}));
+      final line = await socket
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .first
+          .timeout(const Duration(minutes: 3));
+      final response = jsonDecode(line) as Map<String, dynamic>;
+      if (response['type'] == 'error') {
+        throw EngineException(response['payload'].toString());
+      }
+      return response['payload'] as Map<String, dynamic>;
+    } finally {
+      socket.destroy();
+    }
+  }
+
   ControlClient({String? socketPath})
       : socketPath = socketPath ??
             Platform.environment['PEDAL_CONTROL_SOCKET'] ??
@@ -11590,6 +14810,14 @@ class ControlClient {
         .toList(growable: false);
   }
 
+  Future<Map<String, dynamic>> timelineCommand(
+      String command, Map<String, Object?> payload) async {
+    final response = await _requestRaw(command, payload,
+        timeout: const Duration(seconds: 45),
+        timeoutMessage: 'Timeline engine timed out');
+    return response['payload'] as Map<String, dynamic>;
+  }
+
   Future<RiffBufferStatus> riffBufferStatus() async {
     final response = await _requestRaw(
       'riff_buffer_status',
@@ -11640,6 +14868,55 @@ class ControlClient {
     return RiffCapture.fromJson(response['payload'] as Map<String, dynamic>);
   }
 
+  Future<RiffCapture> reampRiff({
+    required String cleanPath,
+    required String name,
+  }) async {
+    final response = await _requestRaw(
+      'reamp_riff',
+      {'clean_path': cleanPath, 'name': name},
+      timeout: const Duration(minutes: 2),
+      timeoutMessage: 'Reamping the guitar take timed out',
+    );
+    return RiffCapture.fromJson(response['payload'] as Map<String, dynamic>);
+  }
+
+  Future<List<double>> riffWaveform(String path) async {
+    final response = await _requestRaw(
+      'riff_waveform',
+      {'path': path, 'points': 192},
+      timeoutMessage: 'Guitar waveform analysis timed out',
+    );
+    final payload = response['payload'] as Map<String, dynamic>;
+    return (payload['peaks'] as List<dynamic>? ?? const [])
+        .whereType<num>()
+        .map((peak) => peak.toDouble())
+        .toList(growable: false);
+  }
+
+  Future<List<double>> riffBufferWaveform() async {
+    final response = await _requestRaw(
+      'riff_buffer_waveform',
+      const {'points': 192},
+      timeoutMessage: 'Guitar take waveform analysis timed out',
+    );
+    final payload = response['payload'] as Map<String, dynamic>;
+    return (payload['peaks'] as List<dynamic>? ?? const [])
+        .whereType<num>()
+        .map((peak) => peak.toDouble())
+        .toList(growable: false);
+  }
+
+  Future<TempoEstimate> estimateRiffTempo(String cleanPath) async {
+    final response = await _requestRaw(
+      'estimate_riff_tempo',
+      {'clean_path': cleanPath},
+      timeout: const Duration(seconds: 20),
+      timeoutMessage: 'Tempo analysis timed out',
+    );
+    return TempoEstimate.fromJson(response['payload'] as Map<String, dynamic>);
+  }
+
   Future<void> clearModel(ModelSlot slot) => _request(
         'clear_model',
         {'slot': slot.name},
@@ -11658,6 +14935,13 @@ class ControlClient {
         timeout: const Duration(seconds: 15),
         timeoutMessage: 'Cabinet IR preparation timed out',
       );
+
+  Future<double> matchRigLevel() async {
+    final response = await _requestRaw('match_rig_level', {},
+        timeout: const Duration(minutes: 3),
+        timeoutMessage: 'Rig level matching timed out');
+    return ((response['payload'] as Map)['rig_level_db'] as num).toDouble();
+  }
 
   Future<void> setControl(String control, double value) => _request(
         'set_control',
@@ -11680,6 +14964,8 @@ class ControlClient {
     PreviewSource source = PreviewSource.synthetic,
     bool processed = true,
     String? path,
+    double? startSeconds,
+    double? endSeconds,
   }) async {
     final sourceName = switch (source) {
       PreviewSource.builtIn => 'built_in',
@@ -11692,6 +14978,8 @@ class ControlClient {
         'source': sourceName,
         'processed': processed,
         if (path != null) 'path': path,
+        if (startSeconds != null) 'start_seconds': startSeconds,
+        if (endSeconds != null) 'end_seconds': endSeconds,
       },
       timeout: const Duration(minutes: 2),
       timeoutMessage: 'Audio preview rendering timed out',
@@ -11808,7 +15096,11 @@ class ControlClient {
       pending?.complete(message);
     } else if (message['type'] == 'preview') {
       pending?.complete(message);
-    } else if (message['type'] == 'riff' || message['type'] == 'riffs') {
+    } else if (message['type'] == 'riff' ||
+        message['type'] == 'riffs' ||
+        message['type'] == 'riff_buffer_status' ||
+        message['type'] == 'tempo_estimate' ||
+        message['type'] == 'riff_waveform') {
       pending?.complete(message);
     } else if (message['type'] == 'meters') {
       _meters.add(
@@ -11861,6 +15153,11 @@ class CatalogModel {
     required this.sizeBytes,
     required this.source,
     required this.favorite,
+    this.captureGroup,
+    this.captureId,
+    this.captureGroupName,
+    this.gear,
+    this.tags = const [],
   });
 
   factory CatalogModel.fromJson(Map<String, dynamic> json) => CatalogModel(
@@ -11869,6 +15166,17 @@ class CatalogModel {
         sizeBytes: json['size_bytes'] as int,
         source: json['source'] as String? ?? 'local',
         favorite: json['favorite'] as bool? ?? false,
+        captureGroup: json['capture_group'] as String?,
+        captureId: json['capture_id'] as String?,
+        captureGroupName: json['capture_group_name'] as String?,
+        gear: json['gear'] as String?,
+        tags: (json['tags'] is List ? json['tags'] as List : const [])
+            .whereType<String>()
+            .map((s) => s.trim().toLowerCase())
+            .where((s) => s.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort(),
       );
 
   final String name;
@@ -11876,6 +15184,44 @@ class CatalogModel {
   final int sizeBytes;
   final String source;
   final bool favorite;
+  final String? captureGroup;
+  final String? captureId;
+  final String? captureGroupName;
+  final String? gear;
+  final List<String> tags;
+
+  String get displayName => readableNamName(name);
+  String get collectionName {
+    final title = captureGroupName;
+    return title == null || RegExp(r'^Tone \d+$').hasMatch(title)
+        ? displayName
+        : readableNamName(title);
+  }
+
+  static String readableNamName(String value) => value
+      .replaceFirst(RegExp(r'\.nam$', caseSensitive: false), '')
+      .replaceFirst(RegExp(r'[-_]\d{5,}$'), '')
+      .replaceAll(RegExp(r'[_-]+'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  String get category {
+    final type = gear?.toLowerCase();
+    if (type == 'pedal') return 'Pedals';
+    if (type == 'amp' || type == 'amp-cab') return 'Amps';
+    final text = '$name ${captureGroupName ?? ''}'.toLowerCase();
+    final pedal = RegExp(
+            r'\b(pedal|overdrive|distortion|fuzz|tubescreamer|tube screamer|klon|rat|ds[- ]?1|sd[- ]?1|ts[- ]?808|ts[- ]?9|big muff)\b')
+        .hasMatch(text);
+    final amp = RegExp(
+            r'\b(amp|head|marshall|jcm|jcm[- ]?800|jcm[- ]?900|mesa|rectifier|boogie|peavey|5150|6505|twin|deluxe|champ|ac30|ac15|soldano|engl|roverb|rockerverb)\b')
+        .hasMatch(text);
+    return pedal == amp
+        ? 'Unclassified'
+        : pedal
+            ? 'Pedals'
+            : 'Amps';
+  }
 
   String get sourceLabel =>
       source.startsWith('tone3000:') ? 'TONE3000' : 'LOCAL';
@@ -11947,6 +15293,8 @@ class BackingTrack {
     required this.status,
     required this.durationSeconds,
     required this.strength,
+    required this.genre,
+    required this.bpm,
     this.path,
     this.error,
   });
@@ -11961,6 +15309,8 @@ class BackingTrack {
         status: json['status'] as String? ?? 'failed',
         durationSeconds: json['duration_seconds'] as int? ?? 20,
         strength: (json['strength'] as num?)?.toDouble() ?? .65,
+        genre: json['genre'] as String? ?? 'Unsorted',
+        bpm: json['bpm'] as int? ?? 120,
         path: json['path'] as String?,
         error: json['error'] as String?,
       );
@@ -11973,6 +15323,8 @@ class BackingTrack {
   final String status;
   final int durationSeconds;
   final double strength;
+  final String genre;
+  final int bpm;
   final String? path;
   final String? error;
 }
@@ -12199,7 +15551,15 @@ class CatalogClient {
             '/tmp/pedal-catalog.sock';
 
   final String socketPath;
+  Future<Map<String, dynamic>> chordCommand(
+          String command, Map<String, dynamic> payload) =>
+      _payload('chords_$command', payload,
+          timeout: const Duration(seconds: 90));
   int _requestId = 0;
+
+  Future<Map<String, dynamic>> transcriptionCommand(
+          String command, Map<String, dynamic> payload) =>
+      _payload('transcription_$command', payload);
 
   Future<List<CatalogModel>> listModels() async {
     final response = await _request('list_models', const {});
@@ -12226,6 +15586,10 @@ class CatalogClient {
     return listModels();
   }
 
+  Future<void> syncToneTags(String toneId) async {
+    await _payload('tone3000_sync_tags', {'tone_id': toneId});
+  }
+
   Future<Tone3000Status> tone3000Status() async {
     final payload = await _payload('tone3000_status', const {});
     return Tone3000Status.fromJson(payload);
@@ -12245,6 +15609,8 @@ class CatalogClient {
     required String riffId,
     required String style,
     required int durationSeconds,
+    String genre = 'Unsorted',
+    int bpm = 120,
   }) async {
     final payload = await _payload(
       'backing_track_create',
@@ -12253,14 +15619,18 @@ class CatalogClient {
         'style': style,
         'duration_seconds': durationSeconds,
         'strength': .65,
+        'genre': genre,
+        'bpm': bpm,
       },
       timeout: const Duration(seconds: 10),
     );
     return BackingTrack.fromJson(payload);
   }
 
-  Future<List<BackingTrack>> listBackingTracks(String riffId) async {
-    final payload = await _payload('backing_track_list', {'riff_id': riffId});
+  Future<List<BackingTrack>> listBackingTracks([String? riffId]) async {
+    final payload = await _payload('backing_track_list', {
+      if (riffId != null) 'riff_id': riffId,
+    });
     return (payload['tracks'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(BackingTrack.fromJson)

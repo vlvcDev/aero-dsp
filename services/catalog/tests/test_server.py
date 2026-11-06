@@ -1,12 +1,14 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 CATALOG_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CATALOG_ROOT))
 
-from pedal_catalog.index import scan_models  # noqa: E402
+from pedal_catalog.index import scan_models, write_capture_metadata, list_models  # noqa: E402
+from pedal_catalog.tone3000_service import Tone3000Service
 from pedal_catalog.server import handle_request  # noqa: E402
 
 
@@ -32,6 +34,26 @@ class FakeTone3000Service:
 
 
 class CatalogServerTests(unittest.TestCase):
+    def test_tag_sync_updates_local_group_without_downloading_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for i in ('1', '2'):
+                path = root / f'{i}.nam'
+                path.write_bytes(b'unchanged audio model')
+                write_capture_metadata(path, '7', i, f'Capture {i}')
+            db = root / 'catalog.db'
+            scan_models(root, db)
+            service = Mock()
+            service.client.get_tone.return_value = {'id': 7, 'name': 'Amp', 'gear': 'amp', 'tags': ['Clean', 'clean']}
+            service._tone_summary = Tone3000Service._tone_summary
+            result = handle_request({'api': 1, 'id': 'x', 'type': 'tone3000_sync_tags',
+                                     'payload': {'tone_id': '7'}}, root, db, service)
+            self.assertEqual(result['type'], 'tone3000_tags_synced')
+            self.assertEqual([m.tags for m in list_models(db)], [('clean',), ('clean',)])
+            service.client.get_tone.assert_called_once_with('7')
+            service.download.assert_not_called()
+            self.assertEqual((root / '1.nam').read_bytes(), b'unchanged audio model')
+
     def test_tone3000_status_is_optional_and_selection_is_forwarded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -73,6 +73,20 @@ mod tests {
             pedal_mix: 0.75,
             amp_bass_db: 2.5,
             amp_volume_db: -3.0,
+            gate_hold_ms: 65.0,
+            gate_release_ms: 175.0,
+            gate_range_db: 40.0,
+            nam_quality: 0,
+            render_nam_quality: 1,
+            pedal_align_enabled: false,
+            pedal_eq: crate::nam_eq::NamEqSettings {
+                pre: true,
+                ..Default::default()
+            },
+            amp_eq: crate::nam_eq::NamEqSettings {
+                enabled: false,
+                ..Default::default()
+            },
             ..EngineState::default()
         };
 

@@ -7,10 +7,51 @@ from pathlib import Path
 CATALOG_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CATALOG_ROOT))
 
-from pedal_catalog.index import list_models, scan_models, upsert_model  # noqa: E402
+from pedal_catalog.index import list_models, scan_models, upsert_model, write_capture_metadata  # noqa: E402
 
 
 class CatalogIndexTests(unittest.TestCase):
+    def test_missing_files_are_hidden_and_gear_survives_metadata_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model, db = root / 'capture.nam', root / 'catalog.db'
+            model.write_bytes(b'model')
+            write_capture_metadata(model, '1', '2', 'Gain 5', 'Drive', 'pedal', [' Distortion ', 'distortion', '', 42])
+            upsert_model(model, db)
+            write_capture_metadata(model, '1', '2', 'Gain 5')
+            self.assertEqual(list_models(db)[0].gear, 'pedal')
+            self.assertEqual(list_models(db)[0].tags, ('distortion',))
+            self.assertEqual(list_models(db)[0].capture_group_name, 'Drive')
+            model.unlink()
+            self.assertEqual(list_models(db), [])
+
+    def test_capture_group_survives_rescan_rebuild_and_later_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            models = root / 'models'
+            models.mkdir()
+            a, b = models / 'gain-1.nam', models / 'gain-2.nam'
+            a.write_bytes(b'first')
+            write_capture_metadata(a, '7', '1', 'Gain 1', 'Amp head')
+            db = root / 'catalog.db'
+            upsert_model(a, db)
+            scan_models(models, db)
+            b.write_bytes(b'second')
+            write_capture_metadata(b, '7', '2', 'Gain 2', 'Amp head')
+            scan_models(models, db)
+            for database in (db, root / 'rebuilt.db'):
+                scan_models(models, database)
+                records = list_models(database)
+                self.assertEqual({r.capture_group for r in records}, {'tone3000:7'})
+                self.assertEqual({r.capture_id for r in records}, {'1','2'})
+                self.assertEqual({r.capture_group_name for r in records}, {'Amp head'})
+                self.assertEqual([r.name for r in records], ['Gain 1','Gain 2'])
+            local = models / 'local.nam'
+            local.write_bytes(b'local')
+            write_capture_metadata(local, '8', '3', 'Gain 1')
+            scan_models(models, db)
+            self.assertEqual(len({r.capture_group for r in list_models(db)}), 2)
+
     def test_scan_indexes_only_nam_files_and_updates_changed_content(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -61,6 +102,8 @@ class CatalogIndexTests(unittest.TestCase):
                     "SELECT source FROM models WHERE path = ?", (str(model.resolve()),)
                 ).fetchone()[0]
             self.assertEqual(source, "tone3000:model:99")
+            scan_models(root, database)
+            self.assertEqual(list_models(database)[0].source, 'tone3000:model:99')
 
 
 if __name__ == "__main__":

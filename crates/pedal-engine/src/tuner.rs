@@ -1,8 +1,8 @@
 //! Clean-input pitch detection for the tuner control surface.
 //!
 //! The analyser is inactive until the tuner screen opens. It takes a small
-//! downsampled autocorrelation snapshot roughly twelve times a second, which
-//! keeps the work comfortably outside the NAM-heavy path on Pi hardware.
+//! downsampled snapshot and hands it to a background analyser. Expensive pitch
+//! detection never runs in the NAM/audio callback; stale snapshots are replaced.
 
 use crate::dsp::MonoProcessor;
 use std::sync::Arc;
@@ -93,7 +93,8 @@ pub struct TunerTapProcessor<P> {
     write_index: usize,
     history_filled: usize,
     frames_since_analysis: usize,
-    sample_rate: f32,
+    windows: Arc<crossbeam_queue::ArrayQueue<[f32; ANALYSIS_FRAMES]>>,
+    alive: Arc<AtomicBool>,
 }
 
 impl<P> TunerTapProcessor<P> {
@@ -103,6 +104,27 @@ impl<P> TunerTapProcessor<P> {
         telemetry: Arc<TunerTelemetry>,
         sample_rate: u32,
     ) -> Self {
+        let windows = Arc::new(crossbeam_queue::ArrayQueue::new(2));
+        let alive = Arc::new(AtomicBool::new(true));
+        let worker_windows = Arc::clone(&windows);
+        let worker_alive = Arc::clone(&alive);
+        let worker_parameters = Arc::clone(&parameters);
+        let worker_telemetry = Arc::clone(&telemetry);
+        std::thread::Builder::new()
+            .name("pitch-analysis".into())
+            .spawn(move || {
+                while worker_alive.load(Ordering::Acquire) {
+                    if let Some(window) = worker_windows.pop() {
+                        let (hz, confidence) = analyse(&window, sample_rate as f32);
+                        if worker_alive.load(Ordering::Acquire) && worker_parameters.enabled() {
+                            worker_telemetry.record(hz, confidence);
+                        }
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                }
+            })
+            .expect("start pitch analysis worker");
         Self {
             processor,
             parameters,
@@ -111,13 +133,16 @@ impl<P> TunerTapProcessor<P> {
             write_index: 0,
             history_filled: 0,
             frames_since_analysis: 0,
-            sample_rate: sample_rate as f32,
+            windows,
+            alive,
         }
     }
 
     fn capture(&mut self, samples: &[f32]) {
         if !self.parameters.enabled() {
             self.frames_since_analysis = 0;
+            self.history_filled = 0;
+            while self.windows.pop().is_some() {}
             self.telemetry.clear();
             return;
         }
@@ -129,88 +154,97 @@ impl<P> TunerTapProcessor<P> {
         self.frames_since_analysis += samples.len();
         if self.history_filled == self.history.len() && self.frames_since_analysis >= ANALYSIS_HOP {
             self.frames_since_analysis = 0;
-            self.analyse();
+            let mut window = [0.0_f32; ANALYSIS_FRAMES];
+            for (index, sample) in window.iter_mut().enumerate() {
+                let source = (self.write_index + index * DECIMATION) % self.history.len();
+                *sample = self.history[source];
+            }
+            self.windows.force_push(window);
         }
     }
+}
 
-    fn analyse(&self) {
-        let mut window = [0.0_f32; ANALYSIS_FRAMES];
-        for (index, sample) in window.iter_mut().enumerate() {
-            let source = (self.write_index + index * DECIMATION) % self.history.len();
-            *sample = self.history[source];
-        }
-        let rms = (window.iter().map(|sample| sample * sample).sum::<f32>()
-            / ANALYSIS_FRAMES as f32)
-            .sqrt();
-        if rms < 0.0025 {
-            self.telemetry.clear();
-            return;
-        }
+fn analyse(window: &[f32; ANALYSIS_FRAMES], sample_rate: f32) -> (f32, f32) {
+    let mean = window.iter().sum::<f32>() / ANALYSIS_FRAMES as f32;
+    let window = window.map(|s| s - mean);
+    let rms =
+        (window.iter().map(|sample| sample * sample).sum::<f32>() / ANALYSIS_FRAMES as f32).sqrt();
+    if rms < 0.0025 {
+        return (0.0, 0.0);
+    }
 
-        let analysis_rate = self.sample_rate / DECIMATION as f32;
-        let minimum_lag = (analysis_rate / MAX_FREQUENCY_HZ) as usize;
-        let maximum_lag = (analysis_rate / MIN_FREQUENCY_HZ) as usize;
-        let lag_count = maximum_lag - minimum_lag + 1;
-        let mut scores = [0.0_f32; ANALYSIS_FRAMES];
-        let mut strongest_lag = minimum_lag;
-        let mut best_score = -1.0_f32;
-        for lag in minimum_lag..=maximum_lag {
-            let mut cross = 0.0;
-            let mut left_energy = 0.0;
-            let mut right_energy = 0.0;
-            for index in lag..ANALYSIS_FRAMES {
-                let left = window[index];
-                let right = window[index - lag];
-                cross += left * right;
-                left_energy += left * left;
-                right_energy += right * right;
-            }
-            let score = cross / (left_energy * right_energy).sqrt().max(0.000_001);
-            scores[lag - minimum_lag] = score;
-            if score > best_score {
-                best_score = score;
-                strongest_lag = lag;
-            }
+    let analysis_rate = sample_rate / DECIMATION as f32;
+    let minimum_lag = ((analysis_rate / MAX_FREQUENCY_HZ) as usize).clamp(1, ANALYSIS_FRAMES - 2);
+    let maximum_lag =
+        ((analysis_rate / MIN_FREQUENCY_HZ) as usize).clamp(minimum_lag, ANALYSIS_FRAMES - 1);
+    let lag_count = maximum_lag - minimum_lag + 1;
+    let mut scores = [0.0_f32; ANALYSIS_FRAMES];
+    let mut strongest_lag = minimum_lag;
+    let mut best_score = -1.0_f32;
+    for lag in minimum_lag..=maximum_lag {
+        let mut cross = 0.0;
+        let mut left_energy = 0.0;
+        let mut right_energy = 0.0;
+        for index in lag..ANALYSIS_FRAMES {
+            let left = window[index];
+            let right = window[index - lag];
+            cross += left * right;
+            left_energy += left * left;
+            right_energy += right * right;
         }
-        if best_score < 0.55 {
-            self.telemetry.clear();
-            return;
+        let score = cross / (left_energy * right_energy).sqrt().max(0.000_001);
+        scores[lag - minimum_lag] = score;
+        if score > best_score {
+            best_score = score;
+            strongest_lag = lag;
         }
-        let fundamental_threshold = (best_score * FUNDAMENTAL_PEAK_RATIO).max(0.55);
-        let best_offset = strongest_lag - minimum_lag;
-        let fundamental_offset = (1..lag_count.saturating_sub(1))
-            .find(|&offset| {
-                let score = scores[offset];
-                score >= fundamental_threshold
-                    && score >= scores[offset - 1]
-                    && score > scores[offset + 1]
-            })
-            .unwrap_or(best_offset);
-        let best_lag = minimum_lag + fundamental_offset;
-        let previous = fundamental_offset
-            .checked_sub(1)
-            .map(|offset| scores[offset])
-            .unwrap_or(-1.0);
-        let after = if fundamental_offset + 1 < lag_count {
-            scores[fundamental_offset + 1]
-        } else {
-            -1.0
-        };
-        let refinement = if previous > -0.5 && after > -0.5 {
-            (0.5 * (previous - after) / (previous - 2.0 * best_score + after)).clamp(-0.5, 0.5)
-        } else {
-            0.0
-        };
-        let frequency = analysis_rate / (best_lag as f32 + refinement);
-        self.telemetry.record(frequency, scores[fundamental_offset]);
+    }
+    if best_score < 0.55 {
+        return (0.0, 0.0);
+    }
+    let fundamental_threshold = (best_score * FUNDAMENTAL_PEAK_RATIO).max(0.55);
+    let best_offset = strongest_lag - minimum_lag;
+    let fundamental_offset = (1..lag_count.saturating_sub(1))
+        .find(|&offset| {
+            let score = scores[offset];
+            score >= fundamental_threshold
+                && score >= scores[offset - 1]
+                && score > scores[offset + 1]
+        })
+        .unwrap_or(best_offset);
+    let best_lag = minimum_lag + fundamental_offset;
+    let previous = fundamental_offset
+        .checked_sub(1)
+        .map(|offset| scores[offset])
+        .unwrap_or(-1.0);
+    let after = if fundamental_offset + 1 < lag_count {
+        scores[fundamental_offset + 1]
+    } else {
+        -1.0
+    };
+    let refinement = if previous > -0.5 && after > -0.5 {
+        (0.5 * (previous - after) / (previous - 2.0 * scores[fundamental_offset] + after))
+            .clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    let frequency = analysis_rate / (best_lag as f32 + refinement);
+    (frequency, scores[fundamental_offset])
+}
+
+impl<P> Drop for TunerTapProcessor<P> {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
     }
 }
 
 impl<P: MonoProcessor> MonoProcessor for TunerTapProcessor<P> {
+    fn process_stereo(&mut self, samples: &mut [f32], output: &mut [[f32; 2]]) {
+        self.capture(samples);
+        self.processor.process_stereo(samples, output);
+    }
     fn process(&mut self, samples: &mut [f32]) {
-        // Capture before applying any NAM/effect processor. The high-pass in
-        // SafetyProcessor has already removed unusable DC without colouring
-        // the guitar signal in a musically significant way.
+        // Capture raw input before applying any NAM/effect processor.
         self.capture(samples);
         self.processor.process(samples);
     }
@@ -239,6 +273,10 @@ mod tests {
             .collect::<Vec<_>>();
         for block in samples.chunks_mut(64) {
             tuner.process(block);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while telemetry.snapshot().0 == 0.0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         telemetry.snapshot()
     }

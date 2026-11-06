@@ -18,11 +18,16 @@ enum PedalNamStatus
   PEDAL_NAM_PROCESS_FAILED = 5
 };
 
-int pedal_nam_load(const char* path, double sample_rate, int max_buffer_frames, PedalNamModel** output,
+int pedal_nam_load(const char* path, double sample_rate, int max_buffer_frames, int full_size, PedalNamModel** output,
                    char* error_message, size_t error_message_capacity);
 void pedal_nam_free(PedalNamModel* model);
 int pedal_nam_process(PedalNamModel* model, const float* input, float* output, int frames);
 double pedal_nam_expected_sample_rate(const PedalNamModel* model);
+/* Optional calibration/loudness values return NaN when unavailable. */
+double pedal_nam_input_level(const PedalNamModel* model);
+double pedal_nam_output_level(const PedalNamModel* model);
+double pedal_nam_loudness(const PedalNamModel* model);
+int pedal_nam_supports_sizes(const PedalNamModel* model);
 
 #ifdef __cplusplus
 }

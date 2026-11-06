@@ -64,12 +64,20 @@ Tap the large rig name to open the preset library. It supports save, load, renam
 
 ## Development toolchain
 
+### Optional local guitar transcription
+
+Run `bash tools/setup-transcription.sh` once to install Spotify Basic Pitch in an
+isolated worker environment. Restart the app/catalog, then use **Generate guitar
+tabs** (music-list icon) on a recorded guitar track in Studio. No API key is
+required. The selected clean clip becomes a saved tab draft plus MIDI; original
+recordings are untouched. See [setup, limits and tests](docs/guitar-transcription.md).
+
 Rust 1.98.1 and Flutter 3.47.4 are installed outside Snap in `/home/vlvcdev/Documents/Codex/.pedal-dev-tools`. Load them into a terminal with `source tools/dev-env.sh`.
 
 The Rust workspace, including its ALSA feature, compiles on this host. Flutter analysis and widget tests also run. Building the native Flutter Linux bundle requires system development packages that must be installed from an administrator-owned terminal:
 
 ```sh
-sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libasound2-dev
+sudo apt-get install -y clang libclang-dev cmake ninja-build pkg-config libgtk-3-dev libasound2-dev
 ```
 
 Afterward, run `make check` and `make ui-build`.

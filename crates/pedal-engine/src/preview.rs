@@ -1,21 +1,16 @@
 use crate::EngineState;
-use crate::cabinet::{CabinetImpulse, CabinetParameters, CabinetProcessor};
-use crate::dsp::{
-    AmpControlProcessor, AmpParameters, AmpProcessor, BypassProcessor, MonoProcessor,
-    PedalControlProcessor, PedalParameters, RealtimeTelemetry, SafetyProcessor, SerialProcessor,
-    SwapMailbox,
-};
-use crate::effects::{EffectChainProcessor, EffectsParameters};
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use crate::audio_file::{AudioFile, resample, write_float_wav};
+use crate::cabinet::CabinetImpulse;
+use crate::dsp::{AmpProcessor, MonoProcessor, RealtimeTelemetry};
+#[cfg(test)]
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 const SAMPLE_RATE: u32 = 48_000;
 const BLOCK_FRAMES: usize = 64;
 const DURATION_SECONDS: f32 = 4.25;
-const MAX_INPUT_SECONDS: usize = 60;
+const MAX_INPUT_SECONDS: usize = 180;
 
 pub struct PreviewResult {
     pub path: PathBuf,
@@ -23,7 +18,35 @@ pub struct PreviewResult {
 }
 
 pub fn render(state: &EngineState, destination: &Path) -> Result<PreviewResult, String> {
-    render_source(state, destination, None, true)
+    render_source(state, destination, None, true, None, None)
+}
+
+/// Static post-rig matching from the same reference performance for every rig.
+/// Not an AGC: it never rides the player's level or alters NAM drive/EQ settings.
+pub fn audition_level(state: &EngineState, destination: &Path) -> Result<f32, String> {
+    if state.bypassed {
+        return Err("Engage the rig before matching its level".into());
+    }
+    let mut reference = state.clone();
+    reference.rig_level_db = 0.0;
+    reference.render_quality_profile = 3; // Match the live rig, not a higher export profile.
+    reference.render_nam_quality = 2;
+    render_source_inner(&reference, destination, None, true, None, None, false)?;
+    let audio = AudioFile::load(destination)?;
+    let frames = ((DURATION_SECONDS * SAMPLE_RATE as f32) as usize * audio.channels)
+        .min(audio.samples.len());
+    let signal = &audio.samples[..frames];
+    let rms =
+        (signal.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / frames.max(1) as f64).sqrt();
+    if rms < 0.001 {
+        return Err(
+            "Reference is too quiet to level-match safely; check the gate and models".into(),
+        );
+    }
+    let peak = signal.iter().fold(0.0_f32, |a, s| a.max(s.abs()));
+    let target = (-18.0 - 20.0 * rms.log10()) as f32;
+    let headroom = -1.0 - 20.0 * peak.max(1e-9).log10();
+    Ok(target.min(headroom).clamp(-24.0, 6.0))
 }
 
 pub fn render_source(
@@ -31,149 +54,231 @@ pub fn render_source(
     destination: &Path,
     source: Option<&Path>,
     processed: bool,
+    start_seconds: Option<f32>,
+    end_seconds: Option<f32>,
 ) -> Result<PreviewResult, String> {
-    let mut samples = match source {
-        Some(path) => read_wav_mono(path)?,
-        None => guitar_riff(),
+    render_source_inner(
+        state,
+        destination,
+        source,
+        processed,
+        start_seconds,
+        end_seconds,
+        true,
+    )
+}
+
+fn render_source_inner(
+    state: &EngineState,
+    destination: &Path,
+    source: Option<&Path>,
+    processed: bool,
+    start_seconds: Option<f32>,
+    end_seconds: Option<f32>,
+    include_tails: bool,
+) -> Result<PreviewResult, String> {
+    let (mut samples, channels) = match source {
+        Some(path) => {
+            let mut audio = AudioFile::load(path)?;
+            audio
+                .samples
+                .truncate(audio.sample_rate as usize * MAX_INPUT_SECONDS * audio.channels);
+            if processed {
+                (
+                    resample(&audio.mono(), 1, audio.sample_rate, SAMPLE_RATE)?,
+                    1,
+                )
+            } else {
+                (
+                    resample(
+                        &audio.samples,
+                        audio.channels,
+                        audio.sample_rate,
+                        SAMPLE_RATE,
+                    )?,
+                    audio.channels,
+                )
+            }
+        }
+        None => (guitar_riff(), 1),
     };
+    if samples.is_empty() {
+        return Err("WAV contains no audio".into());
+    }
+    if start_seconds.is_some() || end_seconds.is_some() {
+        let start_seconds = start_seconds.unwrap_or(0.0).max(0.0);
+        let end_seconds = end_seconds
+            .unwrap_or(samples.len() as f32 / channels as f32 / SAMPLE_RATE as f32)
+            .max(start_seconds);
+        let start = (start_seconds * SAMPLE_RATE as f32).round() as usize * channels;
+        let end =
+            ((end_seconds * SAMPLE_RATE as f32).round() as usize * channels).min(samples.len());
+        if start >= end {
+            return Err("the selected preview range is empty".to_owned());
+        }
+        samples = samples[start..end].to_vec();
+    }
     if !processed {
-        write_stereo_wav(destination, &samples, SAMPLE_RATE)?;
+        if channels == 1 {
+            write_stereo_wav(destination, &samples, SAMPLE_RATE)?;
+        } else {
+            write_float_wav(
+                destination,
+                channels as u16,
+                SAMPLE_RATE,
+                samples.iter().copied(),
+            )?;
+        }
         return Ok(PreviewResult {
             path: destination.to_owned(),
-            duration_seconds: samples.len() as f32 / SAMPLE_RATE as f32,
+            duration_seconds: samples.len() as f32 / channels as f32 / SAMPLE_RATE as f32,
         });
     }
 
     let pre = load_model(
         state.pre_model.as_deref(),
         state.pre_bypassed || state.bypassed,
+        crate::quality::render_nam_size(state),
+        true,
     )?;
-    let amp = load_model(state.model.as_deref(), state.amp_bypassed || state.bypassed)?;
-    let pedal_parameters = Arc::new(PedalParameters::new(
-        state.pedal_drive_db,
-        state.pedal_mix,
-        state.pedal_level_db,
-    ));
-    let amp_parameters = Arc::new(AmpParameters::new(
-        state.amp_bass_db,
-        state.amp_mid_db,
-        state.amp_treble_db,
-        state.amp_volume_db,
-    ));
-    let effects_parameters = Arc::new(EffectsParameters::from_state(state));
-    let cabinet_parameters = Arc::new(CabinetParameters::new(
-        state.cabinet_enabled,
-        state.cabinet_gain_db,
-        state.cabinet_low_cut_hz,
-        state.cabinet_high_cut_hz,
-    ));
+    let amp = load_model(
+        state.model.as_deref(),
+        state.amp_bypassed || state.bypassed,
+        crate::quality::render_nam_size(state),
+        false,
+    )?;
     let cabinet = match state.cabinet_ir.as_deref() {
         Some(path) => Some(
-            CabinetImpulse::load(Path::new(path), SAMPLE_RATE)
-                .map_err(|error| format!("could not prepare preview cabinet {path}: {error}"))?,
+            CabinetImpulse::load_with_duration(
+                Path::new(path),
+                SAMPLE_RATE,
+                crate::quality::ir_seconds(if state.render_quality_profile == 3 {
+                    state.quality_profile
+                } else {
+                    state.render_quality_profile
+                }),
+            )
+            .map_err(|error| format!("could not prepare preview cabinet {path}: {error}"))?,
         ),
         None => None,
     };
-    let pre = PedalControlProcessor::new(pre, pedal_parameters, BLOCK_FRAMES);
-    let pre = BypassProcessor::new(pre, Arc::new(AtomicBool::new(state.pre_bypassed)));
-    let amp = AmpControlProcessor::new(amp, amp_parameters, SAMPLE_RATE);
-    let amp = BypassProcessor::new(amp, Arc::new(AtomicBool::new(state.amp_bypassed)));
-    let chain = SerialProcessor::new(pre, amp);
-    let chain = CabinetProcessor::new(
-        chain,
-        cabinet,
-        cabinet_parameters,
-        Arc::new(SwapMailbox::default()),
-        SAMPLE_RATE,
-    );
     // A preview starts with an empty in-memory loop; it still renders the
     // rest of the board exactly as the live engine does.
-    let chain = EffectChainProcessor::new(chain, effects_parameters, SAMPLE_RATE, 30);
-    let chain = BypassProcessor::new(chain, Arc::new(AtomicBool::new(state.bypassed)));
     let telemetry = Arc::new(RealtimeTelemetry::default());
-    let mut processor = SafetyProcessor::new(chain, telemetry, SAMPLE_RATE);
+    let mut processor = crate::rig::build(
+        pre,
+        amp,
+        cabinet,
+        crate::rig::RigControls::from_state_at_rate(state, SAMPLE_RATE),
+        SAMPLE_RATE,
+        BLOCK_FRAMES,
+        telemetry,
+    );
 
-    for block in samples.chunks_mut(BLOCK_FRAMES) {
-        processor.process(block);
+    let mut stereo = vec![[0.0; 2]; samples.len()];
+    for (block, out) in samples
+        .chunks_mut(BLOCK_FRAMES)
+        .zip(stereo.chunks_mut(BLOCK_FRAMES))
+    {
+        processor.process_stereo(block, out);
     }
-    write_stereo_wav(destination, &samples, SAMPLE_RATE)?;
+    if include_tails {
+        append_tails(&mut processor, state, &mut stereo);
+    }
+    write_float_wav(destination, 2, SAMPLE_RATE, stereo.iter().flat_map(|f| *f))?;
     Ok(PreviewResult {
         path: destination.to_owned(),
-        duration_seconds: samples.len() as f32 / SAMPLE_RATE as f32,
+        duration_seconds: stereo.len() as f32 / SAMPLE_RATE as f32,
     })
 }
 
-fn read_wav_mono(path: &Path) -> Result<Vec<f32>, String> {
-    let mut reader = hound::WavReader::open(path)
-        .map_err(|error| format!("could not open WAV {}: {error}", path.display()))?;
-    let spec = reader.spec();
-    if spec.channels == 0 || spec.sample_rate == 0 {
-        return Err("WAV has an invalid channel count or sample rate".to_owned());
+fn append_tails(processor: &mut impl MonoProcessor, s: &EngineState, samples: &mut Vec<[f32; 2]>) {
+    if s.bypassed {
+        return;
     }
-    let interleaved = match spec.sample_format {
-        hound::SampleFormat::Float => reader
-            .samples::<f32>()
-            .map(|sample| sample.map_err(|error| error.to_string()))
-            .collect::<Result<Vec<_>, _>>()?,
-        hound::SampleFormat::Int if spec.bits_per_sample <= 16 => reader
-            .samples::<i16>()
-            .map(|sample| {
-                sample
-                    .map(|value| value as f32 / i16::MAX as f32)
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        hound::SampleFormat::Int if spec.bits_per_sample <= 32 => {
-            let scale = ((1_i64 << (spec.bits_per_sample - 1)) - 1) as f32;
-            reader
-                .samples::<i32>()
-                .map(|sample| {
-                    sample
-                        .map(|value| value as f32 / scale)
-                        .map_err(|error| error.to_string())
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        }
-        _ => return Err("WAV must use 16-, 24-, or 32-bit PCM/float audio".to_owned()),
+    let delay = if s.delay_enabled {
+        s.delay_time_ms / 1000.0
+    } else {
+        0.0
     };
-    let channels = usize::from(spec.channels);
-    let mut mono = Vec::with_capacity(interleaved.len() / channels);
-    for frame in interleaved.chunks_exact(channels) {
-        mono.push(frame.iter().sum::<f32>() / channels as f32);
-    }
-    if mono.is_empty() {
-        return Err("WAV contains no audio".to_owned());
-    }
-    let limit = spec.sample_rate as usize * MAX_INPUT_SECONDS;
-    mono.truncate(limit);
-    Ok(resample_linear(&mono, spec.sample_rate, SAMPLE_RATE))
-}
-
-fn resample_linear(input: &[f32], source_rate: u32, destination_rate: u32) -> Vec<f32> {
-    if source_rate == destination_rate || input.len() < 2 {
-        return input.to_vec();
-    }
-    let output_len = input.len() * destination_rate as usize / source_rate as usize;
-    let ratio = source_rate as f64 / destination_rate as f64;
-    (0..output_len)
-        .map(|index| {
-            let position = index as f64 * ratio;
-            let lower = position.floor() as usize;
-            let upper = (lower + 1).min(input.len() - 1);
-            let fraction = (position - lower as f64) as f32;
-            input[lower] + (input[upper] - input[lower]) * fraction
+    let echoes = if s.delay_enabled && s.delay_feedback > 0.01 {
+        (0.0001_f32.ln() / s.delay_feedback.clamp(0.01, 0.92).ln()).ceil()
+    } else {
+        1.0
+    };
+    let reverb = if s.reverb_enabled {
+        s.reverb_decay_seconds * 1.5
+    } else {
+        0.0
+    };
+    let cabinet = if s.cabinet_enabled {
+        crate::quality::ir_seconds(if s.render_quality_profile == 3 {
+            s.quality_profile
+        } else {
+            s.render_quality_profile
         })
-        .collect()
+    } else {
+        0.0
+    };
+    let octave = if s.octaver_enabled && s.octaver_clean {
+        crate::octaver::clean_latency_frames(SAMPLE_RATE) as f32 / SAMPLE_RATE as f32
+    } else {
+        0.0
+    };
+    let modulation =
+        if s.chorus_enabled { 0.04 } else { 0.0 } + if s.flanger_enabled { 0.012 } else { 0.0 };
+    let maximum = (delay * echoes + reverb + cabinet + octave + modulation).clamp(0.0, 30.0);
+    if maximum == 0.0 {
+        return;
+    }
+    let minimum = ((delay + cabinet + octave + 0.25) * SAMPLE_RATE as f32) as usize;
+    let limit = (maximum * SAMPLE_RATE as f32).ceil() as usize;
+    let mut quiet = 0;
+    let mut rendered = 0;
+    while rendered < limit {
+        let frames = (limit - rendered).min(BLOCK_FRAMES);
+        let mut tail = [0.0; BLOCK_FRAMES];
+        let mut stereo = [[0.0; 2]; BLOCK_FRAMES];
+        processor.process_stereo(&mut tail[..frames], &mut stereo[..frames]);
+        samples.extend_from_slice(&stereo[..frames]);
+        rendered += frames;
+        if stereo[..frames].iter().flatten().all(|s| s.abs() < 0.00001) {
+            quiet += frames;
+        } else {
+            quiet = 0;
+        }
+        if rendered >= minimum && quiet >= SAMPLE_RATE as usize / 4 {
+            break;
+        }
+    }
+    let fade = (SAMPLE_RATE as usize / 100).min(rendered);
+    let start = samples.len() - fade;
+    for (i, frame) in samples[start..].iter_mut().enumerate() {
+        for sample in frame {
+            *sample *= 1.0 - i as f32 / fade.saturating_sub(1).max(1) as f32;
+        }
+    }
 }
 
-fn load_model(path: Option<&str>, bypassed: bool) -> Result<AmpProcessor, String> {
+fn load_model(
+    path: Option<&str>,
+    bypassed: bool,
+    quality: nam_bridge::NamQuality,
+    alignment: bool,
+) -> Result<AmpProcessor, String> {
     if bypassed || path.is_none() {
         return Ok(AmpProcessor::Clean);
     }
     let path = path.expect("checked above");
-    nam_bridge::NamModel::load(path, f64::from(SAMPLE_RATE), BLOCK_FRAMES)
-        .map(AmpProcessor::Nam)
-        .map_err(|error| format!("could not prepare preview model {path}: {error}"))
+    crate::quality::load_nam(
+        path,
+        f64::from(SAMPLE_RATE),
+        BLOCK_FRAMES,
+        quality,
+        alignment,
+    )
+    .map(AmpProcessor::Nam)
+    .map_err(|error| format!("could not prepare preview model {path}: {error}"))
 }
 
 fn guitar_riff() -> Vec<f32> {
@@ -217,69 +322,43 @@ fn add_pluck(output: &mut [f32], start_seconds: f32, frequency: f32, mut seed: u
 }
 
 fn write_stereo_wav(path: &Path, mono: &[f32], sample_rate: u32) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let temporary = path.with_extension("wav.new");
-    let file = File::create(&temporary).map_err(|error| error.to_string())?;
-    let mut writer = BufWriter::new(file);
-    let data_bytes = u32::try_from(mono.len().saturating_mul(4))
-        .map_err(|_| "preview is too large for a WAV file".to_owned())?;
-    writer
-        .write_all(b"RIFF")
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&(36_u32 + data_bytes).to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(b"WAVEfmt ")
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&16_u32.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&1_u16.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&2_u16.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&sample_rate.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&(sample_rate * 4).to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&4_u16.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&16_u16.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(b"data")
-        .map_err(|error| error.to_string())?;
-    writer
-        .write_all(&data_bytes.to_le_bytes())
-        .map_err(|error| error.to_string())?;
-    for sample in mono {
-        let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
-        writer
-            .write_all(&pcm.to_le_bytes())
-            .and_then(|_| writer.write_all(&pcm.to_le_bytes()))
-            .map_err(|error| error.to_string())?;
-    }
-    writer.flush().map_err(|error| error.to_string())?;
-    writer
-        .get_ref()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
-    fs::rename(&temporary, path).map_err(|error| error.to_string())?;
-    Ok(())
+    write_float_wav(path, 2, sample_rate, mono.iter().flat_map(|s| [*s, *s]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimming_preserves_stereo_float_samples_and_headroom() {
+        let stem = format!("pedal-preview-stereo-{}", std::process::id());
+        let input = std::env::temp_dir().join(format!("{stem}.wav"));
+        let output = std::env::temp_dir().join(format!("{stem}-out.wav"));
+        let samples: Vec<_> = (0..4800)
+            .flat_map(|i| {
+                let s = (i as f32 * 0.1).sin() * 1.2;
+                [s, -s]
+            })
+            .collect();
+        write_float_wav(&input, 2, 48_000, samples.iter().copied()).unwrap();
+        render_source(
+            &EngineState::default(),
+            &output,
+            Some(&input),
+            false,
+            Some(0.025),
+            Some(0.075),
+        )
+        .unwrap();
+        let out = AudioFile::load(&output).unwrap();
+        assert_eq!(out.channels, 2);
+        assert_eq!(out.samples, &samples[1200 * 2..3600 * 2]);
+        assert!(out.samples.iter().any(|s| s.abs() > 1.0));
+        let peaks = crate::riff_vault::waveform_peaks(&output, 32).unwrap();
+        assert!(peaks.iter().all(|p| *p > 1.0));
+        std::fs::remove_file(input).unwrap();
+        std::fs::remove_file(output).unwrap();
+    }
 
     #[test]
     fn clean_preview_is_a_non_silent_stereo_wav() {
@@ -315,8 +394,15 @@ mod tests {
         }
         writer.finalize().expect("test WAV should finalize");
 
-        let result = render_source(&EngineState::default(), &output, Some(&input), false)
-            .expect("input should render");
+        let result = render_source(
+            &EngineState::default(),
+            &output,
+            Some(&input),
+            false,
+            None,
+            None,
+        )
+        .expect("input should render");
         let bytes = fs::read(&output).expect("output should be readable");
         fs::remove_file(input).ok();
         fs::remove_file(output).ok();
@@ -326,5 +412,39 @@ mod tests {
             48_000
         );
         assert!((0.99..1.01).contains(&result.duration_seconds));
+    }
+
+    #[test]
+    fn preview_can_render_only_the_selected_take_range() {
+        let stem = format!("pedal-preview-slice-test-{}", std::process::id());
+        let input = std::env::temp_dir().join(format!("{stem}.wav"));
+        let output = std::env::temp_dir().join(format!("{stem}-out.wav"));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&input, spec).expect("test WAV should open");
+        for frame in 0..48_000 {
+            writer
+                .write_sample((frame as i16).wrapping_mul(11))
+                .expect("sample should write");
+        }
+        writer.finalize().expect("test WAV should finalize");
+
+        let result = render_source(
+            &EngineState::default(),
+            &output,
+            Some(&input),
+            false,
+            Some(0.25),
+            Some(0.75),
+        )
+        .expect("selection should render");
+        fs::remove_file(input).ok();
+        fs::remove_file(output).ok();
+
+        assert!((0.49..0.51).contains(&result.duration_seconds));
     }
 }

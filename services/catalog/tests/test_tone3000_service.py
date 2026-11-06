@@ -70,6 +70,39 @@ class FakeClient:
 
 
 class Tone3000ServiceTests(unittest.TestCase):
+    def test_capture_listing_includes_all_pages(self):
+        class PagedClient(FakeClient):
+            def list_models(self, tone_id, *, architecture=2, page=1):
+                return {'results': [dict(id=i, name=f'Capture {i}', model_url=f'https://www.tone3000.com/{i}.nam')
+                                    for i in range((page-1)*20, min(page*20, 23))]}
+        with tempfile.TemporaryDirectory() as directory:
+            service = Tone3000Service('key', 'http://pedal.local/callback', Path(directory)/'tokens.json', client=PagedClient())
+            self.assertEqual(len(service.models('7')), 23)
+
+    def test_later_capture_adopts_legacy_sibling_without_moving_it(self):
+        from pedal_catalog.index import scan_models, list_models
+        class MultiClient(FakeClient):
+            def list_models(self, tone_id, *, architecture=2):
+                result = super().list_models(tone_id, architecture=architecture)
+                result['results'].append(dict(id=10, name='Crunch', model_url='https://www.tone3000.com/models/crunch.nam'))
+                return result
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            models = root / 'models'
+            models.mkdir()
+            old = models / 'Clean-Bright-9.nam'
+            old.write_bytes(b'original')
+            service = Tone3000Service('key', 'http://pedal.local/callback', root / 'tokens.json', client=MultiClient())
+            service._selected_tone_id = '7'
+            service.selected()
+            service.download('7', '10', models)
+            scan_models(models, root / 'db')
+            records = list_models(root / 'db')
+            self.assertEqual(len(records), 2)
+            self.assertEqual({r.capture_group for r in records}, {'tone3000:7'})
+            self.assertEqual({r.capture_group_name for r in records}, {'Clean Combo'})
+            self.assertEqual(old.read_bytes(), b'original')
+
     def test_auth_persists_private_tokens_and_corrupt_file_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             token_file = Path(directory) / "tokens.json"
@@ -115,7 +148,7 @@ class Tone3000ServiceTests(unittest.TestCase):
 
             self.assertEqual(
                 selection["tone"],
-                {"id": "7", "name": "Clean Combo", "author": "Ada", "gear": "amp"},
+            {"id": "7", "name": "Clean Combo", "author": "Ada", "gear": "amp", "tags": []},
             )
             self.assertEqual(selection["models"][0]["id"], "9")
             self.assertEqual(

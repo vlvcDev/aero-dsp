@@ -12,6 +12,7 @@ from .tone3000 import DEFAULT_BASE_URL
 from .tone3000_service import Tone3000Service
 from .tone_maker import ToneMakerService
 from .tone_memory import ToneMemoryService
+from .transcription import TranscriptionService
 
 
 def parser() -> argparse.ArgumentParser:
@@ -126,6 +127,7 @@ def main() -> None:
             tone_maker,
             backing_tracks,
             tone_memory,
+            TranscriptionService(arguments.riff_directory),
         )
 
 

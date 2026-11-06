@@ -228,6 +228,7 @@ mod alsa_backend {
                 Ok(false) => continue,
                 Err(error) => {
                     stats.recoveries += 1;
+                    processor.discontinuity();
                     if let Some(telemetry) = telemetry {
                         telemetry.record_xrun();
                     }
@@ -241,6 +242,7 @@ mod alsa_backend {
                 Ok(captured) => captured,
                 Err(error) => {
                     stats.recoveries += 1;
+                    processor.discontinuity();
                     if let Some(telemetry) = telemetry {
                         telemetry.record_xrun();
                     }
@@ -283,6 +285,7 @@ mod alsa_backend {
                     Ok(false) => continue,
                     Err(error) => {
                         stats.recoveries += 1;
+                        processor.discontinuity();
                         if let Some(telemetry) = telemetry {
                             telemetry.record_xrun();
                         }
@@ -299,6 +302,7 @@ mod alsa_backend {
                     Ok(count) => written += count,
                     Err(error) => {
                         stats.recoveries += 1;
+                        processor.discontinuity();
                         if let Some(telemetry) = telemetry {
                             telemetry.record_xrun();
                         }

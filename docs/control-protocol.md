@@ -1,6 +1,55 @@
 # Control protocol v1
 
+## Patch Lab audio
+
+- `patch_status`: reports `available`, `active`, `faulted`, `switching`; when
+  available, includes device `sample_rate`, global `bypassed`, and selected patch
+  `latency_samples` (nominal added algorithmic latency).
+- `apply_patch`: payload contains version-1 `document` and absolute asset
+  `directory`. Prepares off the audio thread and queues a faded route exchange.
+  Requires matching device rate and at most 64 samples of added algorithmic latency. A successful
+  `{queued:true}` response means accepted, not yet audible; poll status.
+- `deactivate_patch`: queues return to the existing pedalboard.
+- `render_patch`: same payload, plus optional absolute WAV `path` (default:
+  bundled test clip). Renders up to 30 seconds plus 3-second tail; response
+  includes `path`, `duration_seconds`, and audition `attenuation_db`.
+
+Success responses use type `patch`; failures use `error` / `patch_failed`.
+Meters include `patch_active` so clients can show the live route outside the
+editor. Preparation/rendering should use a separate connection from meters and
+bypass. Activation is session-only and resets on audio-worker restart. Relative
+NAM/IR paths must resolve within `directory`, including symlink containment.
+
 Messages are UTF-8 JSON objects separated by newlines. Every request has `api`, `id`, `type`, and `payload`. Responses echo `id`; unsolicited events use a new engine-generated ID.
+
+## Per-NAM EQ controls
+
+`set_control` accepts `pedal_eq_` or `amp_eq_` prefixes, followed by:
+
+- `enabled`, `pre`: 0 or 1; `pre=0` is wet-only post-model EQ.
+- `reset`: 1 restores flat defaults, enabled and post-model; 0 does nothing.
+- `band_N_freq_hz`: 20–20000 Hz, `band_N_gain_db`: −15–15 dB,
+  `band_N_q`: 0.1–10, where N is 0–5.
+- `band_N_cut`: 0 shelf / 1 cut, valid only for N=0 or N=5.
+
+Each state snapshot includes `pedal_eq` and `amp_eq` objects containing
+`enabled`, `pre`, and six `bands` (`freq_hz`, `gain_db`, `q`, `cut`). These values
+persist in presets and offline state. Unknown fields/indices, nonfinite values,
+and out-of-range controls are rejected without changing settings. Legacy
+presets default to flat EQ. See [NAM EQ](nam-eq.md) for routing details.
+
+## Drive dry/wet alignment
+
+`set_control` with `control: "pedal_align_enabled"` accepts only 0 or 1
+(default 1). This is a preset control. State snapshots also include transient
+`pedal_alignment`: null when unmeasured, otherwise `{status, delay_samples,
+correlation, peak_ratio, lobe_ratio}`. Status is `accepted`, `uncertain`, `silent`,
+`inverted`, `at_limit`, `level_dependent` or `probe_failed`. Only `accepted`
+results affect the dry blend; a zero accepted delay requires no correction.
+Scores are diagnostics, not probabilities. Measurements are recalculated on
+model load and are not serialized into saved engine state or presets.
+
+See [dry/wet alignment](dry-wet-alignment.md) for scope and validation.
 
 ## Get state
 
@@ -72,6 +121,11 @@ The supported controls and ranges are:
 | `amp_treble_db` | -12 to +12 dB | After the amp NAM |
 | `amp_volume_db` | -24 to +12 dB | After the amp tone stack |
 | `gate_threshold_db` | -80 to -10 dB | Noise gate threshold |
+| `nam_quality` | 0 Lite, 1 Full | Live NAM tier preference; prepares both slots before a faded swap |
+| `render_nam_quality` | 0 Lite, 1 Full, 2 Same as live | Offline NAM tier override; does not alter the live rig |
+| `gate_hold_ms` | 0 to 500 ms | Consecutive time below the closing threshold before release |
+| `gate_release_ms` | 5 to 1000 ms | Gate gain-release time constant |
+| `gate_range_db` | 0 to 90 dB | Maximum closed-gate attenuation; 0 leaves unity gain |
 | `compressor_threshold_db` | -48 to 0 dB | Compressor threshold |
 | `compressor_ratio` | 1 to 20 | Compressor ratio |
 | `eq_low_db`, `eq_mid_db`, `eq_high_db` | -12 to +12 dB | Post-amp three-band EQ |

@@ -63,9 +63,8 @@ impl<P> MetronomeProcessor<P> {
     }
 }
 
-impl<P: MonoProcessor> MonoProcessor for MetronomeProcessor<P> {
-    fn process(&mut self, samples: &mut [f32]) {
-        self.processor.process(samples);
+impl<P> MetronomeProcessor<P> {
+    fn add_click(&mut self, samples: &mut [f32]) {
         let (enabled, bpm, generation) = self.parameters.snapshot();
         if generation != self.generation {
             self.generation = generation;
@@ -96,6 +95,28 @@ impl<P: MonoProcessor> MonoProcessor for MetronomeProcessor<P> {
             if self.beat_phase >= frames_per_beat {
                 self.beat_phase -= frames_per_beat;
                 self.beat_index = (self.beat_index + 1) % 4;
+            }
+        }
+    }
+}
+
+impl<P: MonoProcessor> MonoProcessor for MetronomeProcessor<P> {
+    fn discontinuity(&mut self) {
+        self.processor.discontinuity();
+    }
+    fn process(&mut self, samples: &mut [f32]) {
+        self.processor.process(samples);
+        self.add_click(samples);
+    }
+    fn process_stereo(&mut self, samples: &mut [f32], output: &mut [[f32; 2]]) {
+        self.processor.process_stereo(samples, output);
+        let mut click = [0.0; 1024];
+        for chunk in output.chunks_mut(1024) {
+            click.fill(0.0);
+            self.add_click(&mut click[..chunk.len()]);
+            for (frame, value) in chunk.iter_mut().zip(click) {
+                frame[0] += value;
+                frame[1] += value;
             }
         }
     }

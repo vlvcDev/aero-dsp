@@ -11,19 +11,25 @@ import json
 import mimetypes
 import os
 import secrets
+import struct
 import threading
 import time
 import urllib.error
 import urllib.request
+import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 
 STABLE_AUDIO_URL = "https://api.stability.ai/v2beta/audio/stable-audio-2/audio-to-audio"
+STABLE_AUDIO_MODEL = "stable-audio-2.5"
+STABLE_AUDIO_STEPS = 8
 DEFAULT_DURATION_SECONDS = 20
 DEFAULT_STRENGTH = 0.65
 MAX_STYLE_LENGTH = 500
+MIN_REFERENCE_SECONDS = 6
+MAX_REFERENCE_SECONDS = 190
 
 
 class BackingTrackError(RuntimeError):
@@ -44,12 +50,7 @@ class UrllibStableAudioTransport:
             detail = ""
             try:
                 body = json.loads(error.read())
-                detail = str(
-                    body.get("message")
-                    or body.get("error", {}).get("message")
-                    or body.get("error")
-                    or ""
-                )
+                detail = _stable_error_detail(body)
             except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
                 pass
             suffix = f": {detail}" if detail else ""
@@ -75,6 +76,8 @@ class BackingTrack:
     status: str
     duration_seconds: int
     strength: float
+    genre: str = "Unsorted"
+    bpm: int = 120
     path: str | None = None
     error: str | None = None
 
@@ -116,6 +119,8 @@ class BackingTrackService:
         *,
         duration_seconds: int = DEFAULT_DURATION_SECONDS,
         strength: float = DEFAULT_STRENGTH,
+        genre: str = "Unsorted",
+        bpm: int = 120,
     ) -> BackingTrack:
         if not self.available:
             raise BackingTrackError("Stable Audio is not configured on this device")
@@ -127,9 +132,20 @@ class BackingTrackService:
             raise BackingTrackError("Backing tracks can be 5 to 60 seconds long")
         if not 0.01 <= strength <= 1:
             raise BackingTrackError("Reference strength must be between 0.01 and 1")
+        genre = _safe_genre(genre)
+        if not 40 <= bpm <= 240:
+            raise BackingTrackError("Backing track BPM must be between 40 and 240")
         clean_path = self._safe_riff_audio_path(riff.get("clean_path"))
         if not clean_path.is_file():
             raise BackingTrackError("The clean DI for that riff is no longer available")
+        reference_seconds = _wav_duration_seconds(clean_path)
+        if reference_seconds is not None and not (
+            MIN_REFERENCE_SECONDS <= reference_seconds <= MAX_REFERENCE_SECONDS
+        ):
+            raise BackingTrackError(
+                "Stable Audio needs a clean guitar reference between "
+                f"{MIN_REFERENCE_SECONDS} and {MAX_REFERENCE_SECONDS} seconds"
+            )
 
         created_at_ms = int(self.clock() * 1000)
         track = BackingTrack(
@@ -141,6 +157,8 @@ class BackingTrackService:
             status="queued",
             duration_seconds=duration_seconds,
             strength=strength,
+            genre=genre,
+            bpm=bpm,
         )
         with self._lock:
             self._jobs[track.id] = track
@@ -166,7 +184,7 @@ class BackingTrackService:
     def list_tracks(self, riff_id: str | None = None) -> list[BackingTrack]:
         tracks = []
         if self.tracks_directory.exists():
-            for file in self.tracks_directory.glob("*.json"):
+            for file in self.tracks_directory.rglob("*.json"):
                 try:
                     data = json.loads(file.read_text())
                     track = BackingTrack(**data)
@@ -189,10 +207,11 @@ class BackingTrackService:
         try:
             body, content_type = _multipart_body(
                 fields={
-                    "prompt": _prompt_for(track.style),
+                    "prompt": _prompt_for(track.style, bpm=track.bpm),
                     "output_format": "wav",
                     "duration": str(track.duration_seconds),
-                    "steps": "8",
+                    "model": STABLE_AUDIO_MODEL,
+                    "steps": str(STABLE_AUDIO_STEPS),
                     "strength": str(track.strength),
                 },
                 file_field="audio",
@@ -205,12 +224,14 @@ class BackingTrackService:
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Accept": "audio/*",
+                    "Stability-Client-Id": "aero-dsp",
                     "Content-Type": content_type,
                 },
             )
             audio = self.transport.generate(request)
-            self.tracks_directory.mkdir(parents=True, exist_ok=True)
-            destination = self.tracks_directory / f"{track.id}.wav"
+            destination_directory = self.tracks_directory / _directory_segment(track.genre) / f"{track.bpm}-bpm"
+            destination_directory.mkdir(parents=True, exist_ok=True)
+            destination = destination_directory / f"{track.id}.wav"
             temporary = destination.with_suffix(".wav.new")
             temporary.write_bytes(audio)
             os.replace(temporary, destination)
@@ -239,8 +260,9 @@ class BackingTrackService:
                 setattr(track, name, value)
 
     def _write_metadata(self, track: BackingTrack) -> None:
-        self.tracks_directory.mkdir(parents=True, exist_ok=True)
-        destination = self.tracks_directory / f"{track.id}.json"
+        destination_directory = self.tracks_directory / _directory_segment(track.genre) / f"{track.bpm}-bpm"
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        destination = destination_directory / f"{track.id}.json"
         temporary = destination.with_suffix(".json.new")
         temporary.write_text(json.dumps(track.as_payload(), indent=2) + "\n")
         os.replace(temporary, destination)
@@ -271,12 +293,89 @@ class BackingTrackService:
         return path
 
 
-def _prompt_for(style: str) -> str:
+def _stable_error_detail(body: Any) -> str:
+    if not isinstance(body, dict):
+        return ""
+    message = body.get("message")
+    if isinstance(message, str) and message:
+        return message
+    error = body.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    if isinstance(error, str) and error:
+        return error
+    errors = body.get("errors")
+    if isinstance(errors, list):
+        messages = []
+        for item in errors:
+            if isinstance(item, dict):
+                message = item.get("message") or item.get("error")
+                if message:
+                    messages.append(str(message))
+            elif item:
+                messages.append(str(item))
+        return "; ".join(messages)
+    return ""
+
+
+def _wav_duration_seconds(path: Path) -> float | None:
+    try:
+        with wave.open(str(path), "rb") as reader:
+            rate = reader.getframerate()
+            return reader.getnframes() / rate if rate else None
+    except (wave.Error, OSError):
+        # Python's wave module rejects IEEE-float WAV masters. Inspect only
+        # their headers so the same reference-duration checks still apply.
+        try:
+            with path.open("rb") as stream:
+                header = stream.read(12)
+                if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+                    return None
+                limit = min(path.stat().st_size, struct.unpack("<I", header[4:8])[0] + 8)
+                rate = block_align = data_size = None
+                while stream.tell() + 8 <= limit:
+                    chunk, size = struct.unpack("<4sI", stream.read(8))
+                    start = stream.tell()
+                    if start + size > limit:
+                        return None
+                    if chunk == b"fmt ":
+                        fmt = stream.read(min(size, 40))
+                        if len(fmt) < 16:
+                            return None
+                        tag, channels, rate, _, block_align, bits = struct.unpack("<HHIIHH", fmt[:16])
+                        if tag == 0xFFFE and len(fmt) >= 40:
+                            tag = struct.unpack("<I", fmt[24:28])[0]
+                        if tag not in (1, 3) or not rate or not channels or block_align != channels * ((bits + 7) // 8):
+                            return None
+                    elif chunk == b"data":
+                        data_size = size
+                    if rate and block_align and data_size is not None:
+                        return (data_size // block_align) / rate
+                    stream.seek(start + size + (size & 1))
+        except (OSError, ValueError, struct.error):
+            pass
+        return None
+
+
+def _safe_genre(value: str) -> str:
+    value = " ".join(value.strip().split())
+    if not 2 <= len(value) <= 48:
+        raise BackingTrackError("Choose a genre between 2 and 48 characters")
+    return value
+
+
+def _directory_segment(value: str) -> str:
+    safe = "".join(character.lower() if character.isalnum() else "-" for character in value)
+    return "-".join(segment for segment in safe.split("-") if segment) or "unsorted"
+
+
+def _prompt_for(style: str, *, bpm: int | None = None) -> str:
     return (
         "Instrumental backing track following the pulse and harmonic center of the "
         "supplied clean electric-guitar riff. "
         f"{style}. "
-        "Feature supporting drums and bass, leave room for the player's guitar, no vocals, "
+        + (f"Keep a steady {bpm} BPM pulse. " if bpm else "")
+        + "Feature supporting drums and bass, leave room for the player's guitar, no vocals, "
         "no lead-guitar melody, and finish so the result can loop cleanly."
     )
 

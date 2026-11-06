@@ -11,6 +11,8 @@ from pedal_catalog.tone_maker import (  # noqa: E402
     CONTROL_RANGES,
     ToneMakerService,
     TonePlan,
+    ToneIntent,
+    conservative_recipe,
 )
 from pedal_catalog.jev_ranker import JevError, JevRigRanker  # noqa: E402
 from pedal_catalog.tone_memory import ToneMemoryService  # noqa: E402
@@ -127,6 +129,12 @@ def ranking_payload():
 
 
 class ToneMakerTests(unittest.TestCase):
+    def test_gate_base_default_and_explicit_high_gain_recipe(self):
+        controls, _ = conservative_recipe(ToneIntent())
+        self.assertEqual(controls['gate_threshold_db'], -80.0)
+        controls, _ = conservative_recipe(ToneIntent(gain='high'))
+        self.assertEqual(controls['gate_threshold_db'], -48.0)
+
     def test_amp_plus_cab_candidate_never_searches_or_loads_a_second_ir(self):
         transport = FakeOpenAITransport(plan_payload(), ranking_payload())
         service = ToneMakerService("sk-test", transport=transport, clock=lambda: 100)

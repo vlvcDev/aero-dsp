@@ -7,6 +7,10 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PresetRig {
+    pub pedal_align_enabled: bool,
+    pub pedal_eq: crate::nam_eq::NamEqSettings,
+    pub amp_eq: crate::nam_eq::NamEqSettings,
+    pub rig_level_db: f32,
     pub pre_bypassed: bool,
     pub pre_model: Option<String>,
     pub amp_bypassed: bool,
@@ -25,6 +29,9 @@ pub struct PresetRig {
     pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
     pub gate_threshold_db: f32,
+    pub gate_hold_ms: f32,
+    pub gate_release_ms: f32,
+    pub gate_range_db: f32,
     pub compressor_enabled: bool,
     pub compressor_threshold_db: f32,
     pub compressor_ratio: f32,
@@ -51,6 +58,7 @@ pub struct PresetRig {
     pub octaver_enabled: bool,
     pub octaver_visible: bool,
     pub octaver_mix: f32,
+    pub octaver_clean: bool,
     pub delay_enabled: bool,
     pub delay_visible: bool,
     pub delay_time_ms: f32,
@@ -72,6 +80,10 @@ impl Default for PresetRig {
 impl PresetRig {
     pub fn from_state(state: &EngineState) -> Self {
         Self {
+            pedal_align_enabled: state.pedal_align_enabled,
+            pedal_eq: state.pedal_eq,
+            amp_eq: state.amp_eq,
+            rig_level_db: state.rig_level_db,
             pre_bypassed: state.pre_bypassed,
             pre_model: state.pre_model.clone(),
             amp_bypassed: state.amp_bypassed,
@@ -90,6 +102,9 @@ impl PresetRig {
             cabinet_high_cut_hz: state.cabinet_high_cut_hz,
             gate_enabled: state.gate_enabled,
             gate_threshold_db: state.gate_threshold_db,
+            gate_hold_ms: state.gate_hold_ms,
+            gate_release_ms: state.gate_release_ms,
+            gate_range_db: state.gate_range_db,
             compressor_enabled: state.compressor_enabled,
             compressor_threshold_db: state.compressor_threshold_db,
             compressor_ratio: state.compressor_ratio,
@@ -116,6 +131,7 @@ impl PresetRig {
             octaver_enabled: state.octaver_enabled,
             octaver_visible: state.octaver_visible,
             octaver_mix: state.octaver_mix,
+            octaver_clean: state.octaver_clean,
             delay_enabled: state.delay_enabled,
             delay_visible: state.delay_visible,
             delay_time_ms: state.delay_time_ms,
@@ -130,6 +146,10 @@ impl PresetRig {
     }
 
     pub fn apply_to(&self, state: &mut EngineState) {
+        state.pedal_align_enabled = self.pedal_align_enabled;
+        state.pedal_eq = self.pedal_eq;
+        state.amp_eq = self.amp_eq;
+        state.rig_level_db = self.rig_level_db;
         state.pre_bypassed = self.pre_bypassed;
         state.pre_model.clone_from(&self.pre_model);
         state.amp_bypassed = self.amp_bypassed;
@@ -148,6 +168,9 @@ impl PresetRig {
         state.cabinet_high_cut_hz = self.cabinet_high_cut_hz;
         state.gate_enabled = self.gate_enabled;
         state.gate_threshold_db = self.gate_threshold_db;
+        state.gate_hold_ms = self.gate_hold_ms;
+        state.gate_release_ms = self.gate_release_ms;
+        state.gate_range_db = self.gate_range_db;
         state.compressor_enabled = self.compressor_enabled;
         state.compressor_threshold_db = self.compressor_threshold_db;
         state.compressor_ratio = self.compressor_ratio;
@@ -174,6 +197,7 @@ impl PresetRig {
         state.octaver_enabled = self.octaver_enabled;
         state.octaver_visible = self.octaver_visible;
         state.octaver_mix = self.octaver_mix;
+        state.octaver_clean = self.octaver_clean;
         state.delay_enabled = self.delay_enabled;
         state.delay_visible = self.delay_visible;
         state.delay_time_ms = self.delay_time_ms;
@@ -283,6 +307,49 @@ pub fn save_atomic(path: &Path, store: &PresetStore) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gate_controls_round_trip_and_legacy_presets_get_defaults() {
+        assert_eq!(crate::EngineState::default().gate_threshold_db, -80.0);
+        let empty: super::PresetRig = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.gate_threshold_db, -80.0);
+        let empty_state: crate::EngineState = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty_state.gate_threshold_db, -80.0);
+        let state = crate::EngineState {
+            gate_hold_ms: 75.0,
+            gate_release_ms: 225.0,
+            gate_range_db: 35.0,
+            ..Default::default()
+        };
+        let rig = super::PresetRig::from_state(&state);
+        let encoded = serde_json::to_string(&rig).unwrap();
+        let restored: super::PresetRig = serde_json::from_str(&encoded).unwrap();
+        let mut applied = crate::EngineState::default();
+        restored.apply_to(&mut applied);
+        assert_eq!(applied.gate_hold_ms, 75.0);
+        assert_eq!(applied.gate_release_ms, 225.0);
+        assert_eq!(applied.gate_range_db, 35.0);
+        let legacy: super::PresetRig =
+            serde_json::from_str(r#"{"gate_threshold_db":-42}"#).unwrap();
+        assert_eq!(legacy.gate_threshold_db, -42.0);
+        assert_eq!(legacy.gate_hold_ms, 20.0);
+        assert_eq!(legacy.gate_release_ms, 50.0);
+        assert_eq!(legacy.gate_range_db, 80.0);
+    }
+
+    #[test]
+    fn clean_octaver_round_trips_and_old_presets_default_to_analog() {
+        let legacy: super::PresetRig = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.octaver_clean);
+        let state = crate::EngineState {
+            octaver_clean: true,
+            ..Default::default()
+        };
+        let serialized = serde_json::to_string(&super::PresetRig::from_state(&state)).unwrap();
+        let rig: super::PresetRig = serde_json::from_str(&serialized).unwrap();
+        let mut restored = crate::EngineState::default();
+        rig.apply_to(&mut restored);
+        assert!(restored.octaver_clean);
+    }
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
