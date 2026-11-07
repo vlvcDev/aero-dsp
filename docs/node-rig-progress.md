@@ -289,3 +289,25 @@ Studio recording compensation setting yet. Six DSP tests include one targeted
 high-frequency alias comparison; this is not comprehensive perceptual or alias
 qualification. Engine library and socket preview tests plus Flutter control,
 validation and custom-node tests pass. Physical guitar listening remains needed.
+
+## Building and comparing complete rigs
+
+Add Node groups processors by role. Overdrive passes the low fundamental through
+a clean path and clips the upper band. Edge Amp has a separate drive, tone,
+touch compression and master. Its envelope responds differently to the attack
+and sustain of a note. Add a cabinet node for speaker coloration. Both processors
+report one sample of nominal latency. Chorus, flanger and octave-down have
+intentional wet-path delays; tremolo modulates amplitude. None requires a NAM.
+
+Use Load starter rig to try Glass Arpeggios, Split Drive, or Octave Motion.
+Loading changes the draft and can be undone. Apply to guitar activates it.
+When saving a Custom Node, expose up to four numeric parameters and give each
+a name. Its inspector can then change those values for this copy of the node.
+
+Compare rigs stores two draft snapshots during the editor session. Capture A,
+close the workbench, change the draft, reopen it and capture B. Choose the bundled
+DI, a WAV, or the latest saved clean take. Play A and Play B render the same
+performance. The engine matches stereo RMS after processing over frames where
+source peak exceeds -60 dBFS, and applies shared attenuation for peak headroom.
+This preserves input gain and clipping character. Recall to draft returns the
+chosen rig and its asset directory for further editing, saving, or live use.

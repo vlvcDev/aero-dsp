@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "sample_rate": 48000,
+  "graph": {
+    "version": 1,
+    "nodes": [
+      {
+        "id": 1,
+        "inputs": [],
+        "processor": {
+          "type": "input"
+        }
+      },
+      {
+        "id": 2,
+        "inputs": [
+          1
+        ],
+        "processor": {
+          "type": "external"
+        }
+      },
+      {
+        "id": 3,
+        "inputs": [
+          2
+        ],
+        "processor": {
+          "type": "external"
+        }
+      },
+      {
+        "id": 4,
+        "inputs": [
+          3
+        ],
+        "processor": {
+          "type": "external"
+        }
+      },
+      {
+        "id": 5,
+        "inputs": [
+          4
+        ],
+        "processor": {
+          "type": "output"
+        }
+      }
+    ]
+  },
+  "processors": {
+    "2": {
+      "type": "octaver",
+      "clean_mode": false,
+      "mix": 0.3
+    },
+    "3": {
+      "type": "fuzz",
+      "drive_db": 16,
+      "bias": 0.12,
+      "tone": 0.5,
+      "mix": 0.7,
+      "output_db": -10
+    },
+    "4": {
+      "type": "tremolo",
+      "rate_hz": 3.2,
+      "depth": 0.45
+    }
+  }
+}

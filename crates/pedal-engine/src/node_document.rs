@@ -44,13 +44,54 @@ pub enum NativeProcessor {
         mix: f32,
         output_db: f32,
     },
+    Chorus {
+        rate_hz: f32,
+        depth: f32,
+        mix: f32,
+    },
+    Flanger {
+        rate_hz: f32,
+        depth: f32,
+        feedback: f32,
+        mix: f32,
+    },
+    Tremolo {
+        rate_hz: f32,
+        depth: f32,
+    },
+    Octaver {
+        clean_mode: bool,
+        mix: f32,
+    },
+    EdgeAmp {
+        drive_db: f32,
+        tone: f32,
+        touch: f32,
+        master_db: f32,
+    },
+    Overdrive {
+        drive_db: f32,
+        tone: f32,
+        mix: f32,
+        output_db: f32,
+    },
     Custom {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        macros: Vec<MacroMapping>,
         name: String,
         library_id: String,
         revision: u32,
         asset_directory: String,
         document: Box<RigDocument>,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacroMapping {
+    pub node_id: u32,
+    pub parameter: String,
+    pub label: String,
 }
 
 struct CustomNode(PreparedGraph);
@@ -224,6 +265,68 @@ impl RigDocument {
                     )
                     .map_err(|e| format!("Fuzz node {id}: {e}"))?,
                 ),
+                NativeProcessor::Chorus {
+                    rate_hz,
+                    depth,
+                    mix,
+                } => Box::new(crate::effects::ModulationNode::new(
+                    self.sample_rate,
+                    crate::effects::ModulationKind::Chorus,
+                    *rate_hz,
+                    *depth,
+                    0.0,
+                    *mix,
+                )?),
+                NativeProcessor::Flanger {
+                    rate_hz,
+                    depth,
+                    feedback,
+                    mix,
+                } => Box::new(crate::effects::ModulationNode::new(
+                    self.sample_rate,
+                    crate::effects::ModulationKind::Flanger,
+                    *rate_hz,
+                    *depth,
+                    *feedback,
+                    *mix,
+                )?),
+                NativeProcessor::Tremolo { rate_hz, depth } => {
+                    Box::new(crate::effects::ModulationNode::new(
+                        self.sample_rate,
+                        crate::effects::ModulationKind::Tremolo,
+                        *rate_hz,
+                        *depth,
+                        0.0,
+                        0.0,
+                    )?)
+                }
+                NativeProcessor::Octaver { clean_mode, mix } => Box::new(
+                    crate::effects::OctaverNode::new(self.sample_rate, *clean_mode, *mix)?,
+                ),
+                NativeProcessor::EdgeAmp {
+                    drive_db,
+                    tone,
+                    touch,
+                    master_db,
+                } => Box::new(crate::edge_amp::EdgeAmp::new(
+                    self.sample_rate,
+                    *drive_db,
+                    *tone,
+                    *touch,
+                    *master_db,
+                )?),
+                NativeProcessor::Overdrive {
+                    drive_db,
+                    tone,
+                    mix,
+                    output_db,
+                } => Box::new(crate::overdrive::OverdriveNode::new(
+                    self.sample_rate,
+                    *drive_db,
+                    *tone,
+                    *mix,
+                    *output_db,
+                )?),
                 NativeProcessor::Custom {
                     asset_directory,
                     document,
@@ -370,6 +473,41 @@ mod tests {
         assert!(d.prepare(Path::new(".")).is_ok());
     }
 
+    #[test]
+    fn pedal_descriptors_roundtrip_prepare_and_reject_invalid_parameters() {
+        for json in [
+            r#"{"type":"chorus","rate_hz":0.8,"depth":0.5,"mix":0.35}"#,
+            r#"{"type":"flanger","rate_hz":0.3,"depth":0.55,"feedback":0.25,"mix":0.4}"#,
+            r#"{"type":"tremolo","rate_hz":4.0,"depth":0.55}"#,
+            r#"{"type":"octaver","clean_mode":false,"mix":0.45}"#,
+        ] {
+            let processor: NativeProcessor = serde_json::from_str(json).unwrap();
+            let encoded = serde_json::to_string(&processor).unwrap();
+            let mut d = document();
+            d.graph.nodes[1].inputs = vec![3];
+            d.graph.nodes.push(Node {
+                id: 3,
+                inputs: vec![1],
+                processor: Processor::External,
+            });
+            d.processors
+                .insert(3, serde_json::from_str(&encoded).unwrap());
+            assert!(d.prepare(Path::new(".")).is_ok());
+        }
+        let bad: NativeProcessor =
+            serde_json::from_str(r#"{"type":"chorus","rate_hz":9.0,"depth":0.5,"mix":0.35}"#)
+                .unwrap();
+        let mut d = document();
+        d.graph.nodes[1].inputs = vec![3];
+        d.graph.nodes.push(Node {
+            id: 3,
+            inputs: vec![1],
+            processor: Processor::External,
+        });
+        d.processors.insert(3, bad);
+        assert!(d.prepare(Path::new(".")).is_err());
+    }
+
     fn wrapped(inner: RigDocument) -> RigDocument {
         let mut d = document();
         d.graph.nodes[1].inputs = vec![3];
@@ -381,6 +519,7 @@ mod tests {
         d.processors.insert(
             3,
             NativeProcessor::Custom {
+                macros: vec![],
                 name: "snapshot".into(),
                 library_id: "id".into(),
                 revision: 1,

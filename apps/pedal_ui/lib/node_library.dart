@@ -8,8 +8,11 @@ class CustomNodeRevision {
       required this.revision,
       required this.name,
       required String documentJson,
-      required this.assetDirectory})
-      : _documentJson = documentJson;
+      required this.assetDirectory,
+      List<NodeMacro> macros = const []})
+      : macros = List.unmodifiable(macros),
+        _documentJson = documentJson;
+  final List<NodeMacro> macros;
   final String id;
   final int revision;
   final String name;
@@ -25,6 +28,7 @@ class CustomNodeRevision {
         'revision': revision,
         'name': name,
         'asset_directory': assetDirectory,
+        if (macros.isNotEmpty) 'macros': macros.map((m) => m.toJson()).toList(),
         'document': document
       };
 
@@ -45,6 +49,7 @@ class CustomNodeRevision {
         id: json['library_id'] as String,
         revision: json['revision'] as int,
         name: json['name'] as String,
+        macros: readNodeMacros(json, document),
         documentJson: document.encode(),
         assetDirectory: json['asset_directory'] as String);
   }
@@ -73,7 +78,8 @@ class CustomNodeLibrary {
   List<CustomNodeRevision> latest() {
     final byId = <String, CustomNodeRevision>{};
     for (final item in revisions()) {
-      if (!byId.containsKey(item.id) || byId[item.id]!.revision < item.revision) {
+      if (!byId.containsKey(item.id) ||
+          byId[item.id]!.revision < item.revision) {
         byId[item.id] = item;
       }
     }
@@ -99,12 +105,15 @@ class CustomNodeLibrary {
           : a.name.compareTo(b.name));
   }
 
-  CustomNodeRevision save(PatchDocument document, String name, {String? id}) {
+  CustomNodeRevision save(PatchDocument document, String name,
+      {String? id, List<NodeMacro> macros = const []}) {
     final error = document.validate();
     if (error != null) throw FormatException(error);
     if (name.trim().isEmpty) {
       throw const FormatException('Give your node a name');
     }
+    readNodeMacros(
+        {'macros': macros.map((m) => m.toJson()).toList()}, document);
     final nodeId = id ?? 'node-${DateTime.now().microsecondsSinceEpoch}';
     if (!RegExp(r'^[a-zA-Z0-9_-]{1,80}$').hasMatch(nodeId)) {
       throw const FormatException('Invalid library identifier');
@@ -138,7 +147,8 @@ class CustomNodeLibrary {
           } else if (processor['type'] == 'nam' ||
               processor['type'] == 'cabinet') {
             final relative = processor['path'] as String;
-            if (relative.startsWith('/') || relative.split('/').contains('..')) {
+            if (relative.startsWith('/') ||
+                relative.split('/').contains('..')) {
               throw const FormatException('Asset path leaves its folder');
             }
             final base = Directory(root).resolveSymbolicLinksSync();
@@ -159,6 +169,7 @@ class CustomNodeLibrary {
           id: nodeId,
           revision: revision,
           name: name.trim(),
+          macros: macros,
           documentJson: jsonEncode(frozen),
           assetDirectory: assets.path);
       temporary.writeAsStringSync(jsonEncode(saved.toJson()), flush: true);
@@ -169,5 +180,200 @@ class CustomNodeLibrary {
       assets.deleteSync(recursive: true);
       rethrow;
     }
+  }
+}
+
+/// An exposed control points at the actual parameter in an instance's snapshot.
+/// Saving and rendering always use the same value that the inspector displays.
+class NodeMacro {
+  const NodeMacro(this.nodeId, this.parameter, this.label);
+  final int nodeId;
+  final String parameter;
+  final String label;
+  String get target => '$nodeId/$parameter';
+  Map<String, dynamic> toJson() =>
+      {'node_id': nodeId, 'parameter': parameter, 'label': label.trim()};
+}
+
+typedef _Control = ({
+  int id,
+  String type,
+  String parameter,
+  String label,
+  Map settings,
+  double min,
+  double max,
+  bool percent
+});
+Iterable<_Control> _macroTargets(PatchDocument doc) sync* {
+  for (final node in doc.nodes) {
+    final id = node['id'] as int;
+    final p = node['processor'] as Map;
+    final target =
+        (p['type'] == 'external' ? doc.processors['$id'] : p) as Map?;
+    if (target == null) continue;
+    final type = target['type'] as String;
+    final List<(String, String, double, double, bool)> specs = switch (type) {
+      'gain' => [('db', 'Gain (dB)', -80, 24, false)],
+      'edge_amp' => [('drive_db','Preamp drive (dB)',0,30,false),('tone','Tone',0,1,true),('touch','Touch compression',0,1,true),('master_db','Master (dB)',-36,6,false)],
+      'reverb' => [('decay_seconds', 'Decay (s)', .3, 12, false)],
+      'cabinet' => [('duration_seconds', 'Impulse length (s)', .02, 1, false)],
+      'fuzz' => [
+          ('drive_db', 'Drive (dB)', 0, 36, false),
+          ('bias', 'Bias', -1, 1, false),
+          ('tone', 'Tone', 0, 1, true),
+          ('mix', 'Mix', 0, 1, true),
+          ('output_db', 'Output (dB)', -36, 6, false)
+        ],
+      'overdrive' => [
+          ('drive_db', 'Drive (dB)', 0, 24, false),
+          ('tone', 'Tone', 0, 1, true),
+          ('mix', 'Mix', 0, 1, true),
+          ('output_db', 'Output (dB)', -24, 6, false)
+        ],
+      'tremolo' || 'chorus' || 'flanger' => [
+          (
+            'rate_hz',
+            'Rate (Hz)',
+            type == 'tremolo' ? .1 : .05,
+            type == 'chorus'
+                ? 8
+                : type == 'flanger'
+                    ? 5
+                    : 18,
+            false
+          ),
+          ('depth', 'Depth', 0, 1, true),
+          if (type != 'tremolo') ('mix', 'Mix', 0, 1, true),
+          if (type == 'flanger') ('feedback', 'Feedback', -.85, .85, true),
+        ],
+      'octaver' => [('mix', 'Octave mix', 0, 1, true)],
+      _ => [],
+    };
+    for (final s in specs) {
+      if (target[s.$1] is num) {
+        yield (
+          id: id,
+          type: type,
+          parameter: s.$1,
+          label: s.$2,
+          settings: target,
+          min: s.$3,
+          max: s.$4,
+          percent: s.$5
+        );
+      }
+    }
+  }
+}
+
+List<NodeMacro> compatibleMacros(
+    PatchDocument document, Iterable<NodeMacro> macros) {
+  final targets = {
+    for (final c in _macroTargets(document)) '${c.id}/${c.parameter}'
+  };
+  return macros.where((m) => targets.contains(m.target)).toList();
+}
+
+List<NodeMacro> readNodeMacros(Map wrapper, PatchDocument document) {
+  if (!wrapper.containsKey('macros')) return [];
+  final raw = wrapper['macros'];
+  if (raw is! List || raw.length > 4) {
+    throw const FormatException('Choose up to four exposed controls.');
+  }
+  final macros = <NodeMacro>[];
+  final used = <String>{};
+  for (final item in raw) {
+    if (item is! Map ||
+        item.length != 3 ||
+        item['node_id'] is! int ||
+        item['parameter'] is! String ||
+        item['label'] is! String) {
+      throw const FormatException('Invalid exposed control.');
+    }
+    final m = NodeMacro(
+        item['node_id'], item['parameter'], (item['label'] as String).trim());
+    if (m.label.isEmpty || m.label.length > 32 || !used.add(m.target)) {
+      throw const FormatException(
+          'Give each exposed control a name and a distinct target.');
+    }
+    macros.add(m);
+  }
+  if (compatibleMacros(document, macros).length != macros.length) {
+    throw const FormatException(
+        'An exposed control has no matching parameter.');
+  }
+  return macros;
+}
+
+typedef MacroNumberBuilder = Widget Function(
+    Map target, String key, String title, double min, double max,
+    {bool integer, bool percent});
+
+Iterable<Widget> macroSliders(Map native, MacroNumberBuilder number) sync* {
+  final child = PatchDocument()
+    ..data = native['document'] as Map<String, dynamic>;
+  final controls = {
+    for (final c in _macroTargets(child)) '${c.id}/${c.parameter}': c
+  };
+  for (final m in readNodeMacros(native, child)) {
+    final c = controls[m.target]!;
+    yield number(c.settings, c.parameter, m.label, c.min, c.max,
+        integer: false, percent: c.percent);
+  }
+}
+
+class MacroPicker extends StatelessWidget {
+  const MacroPicker(
+      {super.key,
+      required this.document,
+      required this.macros,
+      required this.onChanged});
+  final PatchDocument document;
+  final List<NodeMacro> macros;
+  final ValueChanged<List<NodeMacro>> onChanged;
+  @override
+  Widget build(BuildContext context) {
+    final targets = _macroTargets(document).toList();
+    if (targets.isEmpty) return const SizedBox.shrink();
+    final available = targets.where((c) =>
+        !macros.any((m) => m.nodeId == c.id && m.parameter == c.parameter));
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      for (final m in macros)
+        Row(key: ValueKey(m.target), children: [
+          Expanded(
+              child: TextFormField(
+                  initialValue: m.label,
+                  maxLength: 32,
+                  decoration: InputDecoration(
+                      labelText: 'Control name · ${m.nodeId} / ${m.parameter}',
+                      counterText: ''),
+                  onChanged: (label) => onChanged([
+                        for (final v in macros)
+                          v.target == m.target
+                              ? NodeMacro(v.nodeId, v.parameter, label)
+                              : v
+                      ]))),
+          IconButton(
+              tooltip: 'Remove exposed control',
+              icon: const Icon(Icons.close),
+              onPressed: () => onChanged(
+                  macros.where((v) => v.target != m.target).toList())),
+        ]),
+      if (macros.length < 4 && available.isNotEmpty)
+        DropdownButton<_Control>(
+            isExpanded: true,
+            hint: const Text('Expose a control'),
+            items: [
+              for (final c in available)
+                DropdownMenuItem(
+                    value: c, child: Text('${c.id} · ${c.type} · ${c.label}'))
+            ],
+            onChanged: (c) {
+              if (c != null) {
+                onChanged([...macros, NodeMacro(c.id, c.parameter, c.label)]);
+              }
+            }),
+    ]);
   }
 }

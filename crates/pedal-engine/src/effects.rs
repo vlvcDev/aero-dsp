@@ -895,3 +895,236 @@ mod tests {
         assert!((playback[0] - 0.25).abs() < 0.001);
     }
 }
+
+/// Prepared Patch Lab modulation node. Each channel has its own delay history;
+/// chorus/flanger use the same quadrature stereo phases as the pedal chain.
+pub struct ModulationNode {
+    kind: ModulationKind,
+    buffers: [Vec<f32>; 2],
+    write: usize,
+    phase: [f32; 2],
+    sample_rate: f32,
+    rate: f32,
+    depth: f32,
+    feedback: f32,
+    mix: f32,
+}
+#[derive(Clone, Copy)]
+pub enum ModulationKind {
+    Chorus,
+    Flanger,
+    Tremolo,
+}
+impl ModulationNode {
+    pub fn new(
+        rate: u32,
+        kind: ModulationKind,
+        hz: f32,
+        depth: f32,
+        feedback: f32,
+        mix: f32,
+    ) -> Result<Self, &'static str> {
+        let rate_range = match kind {
+            ModulationKind::Chorus => 0.05..=8.0,
+            ModulationKind::Flanger => 0.05..=5.0,
+            ModulationKind::Tremolo => 0.1..=18.0,
+        };
+        if !(8_000..=192_000).contains(&rate)
+            || !hz.is_finite()
+            || !rate_range.contains(&hz)
+            || !depth.is_finite()
+            || !(0.0..=1.0).contains(&depth)
+            || !feedback.is_finite()
+            || !(-0.85..=0.85).contains(&feedback)
+            || !mix.is_finite()
+            || !(0.0..=1.0).contains(&mix)
+        {
+            return Err("Invalid modulation configuration");
+        }
+        let len = match kind {
+            ModulationKind::Chorus => (rate as f32 * 0.04) as usize,
+            ModulationKind::Flanger => (rate as f32 * 0.012) as usize,
+            ModulationKind::Tremolo => 0,
+        };
+        let phase = if matches!(kind, ModulationKind::Tremolo) {
+            [0.0, 0.0]
+        } else {
+            [0.0, std::f32::consts::FRAC_PI_2]
+        };
+        Ok(Self {
+            kind,
+            buffers: [vec![0.0; len], vec![0.0; len]],
+            write: 0,
+            phase,
+            sample_rate: rate as f32,
+            rate: hz,
+            depth,
+            feedback,
+            mix,
+        })
+    }
+}
+impl crate::node_rig::StereoNode for ModulationNode {
+    fn latency_samples(&self) -> usize {
+        0
+    } // Effect delay is intentional, not compensation latency.
+    fn tick(&mut self, input: [f32; 2]) -> [f32; 2] {
+        let mut output = input;
+        for channel in 0..2 {
+            let lfo = (self.phase[channel].sin() + 1.0) * 0.5;
+            match self.kind {
+                ModulationKind::Tremolo => output[channel] *= 1.0 - self.depth + self.depth * lfo,
+                kind => {
+                    let (base, span) = match kind {
+                        ModulationKind::Chorus => (0.014, 0.009),
+                        _ => (0.0015, 0.0045),
+                    };
+                    let delay = self.sample_rate * (base + span * self.depth * lfo);
+                    let delayed = delayed_sample(&self.buffers[channel], self.write, delay);
+                    self.buffers[channel][self.write] = input[channel] + delayed * self.feedback;
+                    output[channel] = input[channel] * (1.0 - self.mix) + delayed * self.mix;
+                }
+            }
+            self.phase[channel] = (self.phase[channel] + TAU * self.rate / self.sample_rate) % TAU;
+        }
+        if !self.buffers[0].is_empty() {
+            self.write = (self.write + 1) % self.buffers[0].len();
+        }
+        output
+    }
+    fn reset(&mut self) {
+        for buffer in &mut self.buffers {
+            buffer.fill(0.0);
+        }
+        self.write = 0;
+        self.phase = if matches!(self.kind, ModulationKind::Tremolo) {
+            [0.0, 0.0]
+        } else {
+            [0.0, std::f32::consts::FRAC_PI_2]
+        };
+    }
+}
+
+/// Stereo octave-down pedal voices. The clean voice intentionally delays only
+/// its wet component; the pedal's dry path stays immediate, so latency is zero.
+pub struct OctaverNode {
+    channels: [crate::octaver::Octaver; 2],
+    clean_mode: bool,
+    mix: f32,
+}
+impl OctaverNode {
+    pub fn new(rate: u32, clean_mode: bool, mix: f32) -> Result<Self, &'static str> {
+        if !(8_000..=192_000).contains(&rate) || !mix.is_finite() || !(0.0..=1.0).contains(&mix) {
+            return Err("Invalid octaver configuration");
+        }
+        Ok(Self {
+            channels: [
+                crate::octaver::Octaver::new(rate),
+                crate::octaver::Octaver::new(rate),
+            ],
+            clean_mode,
+            mix,
+        })
+    }
+}
+impl crate::node_rig::StereoNode for OctaverNode {
+    fn latency_samples(&self) -> usize {
+        0
+    }
+    fn tick(&mut self, mut input: [f32; 2]) -> [f32; 2] {
+        for (channel, sample) in self.channels.iter_mut().zip(input.iter_mut()) {
+            channel.process(
+                std::slice::from_mut(sample),
+                true,
+                self.clean_mode,
+                self.mix,
+            );
+        }
+        input
+    }
+    fn reset(&mut self) {
+        for channel in &mut self.channels {
+            channel.reset();
+        }
+    }
+    fn process_block(&mut self, frames: &mut [[f32; 2]]) {
+        for chunk in frames.chunks_mut(128) {
+            let mut left = [0.0; 128];
+            let mut right = [0.0; 128];
+            for (i, frame) in chunk.iter().enumerate() {
+                left[i] = frame[0];
+                right[i] = frame[1];
+            }
+            self.channels[0].process(&mut left[..chunk.len()], true, self.clean_mode, self.mix);
+            self.channels[1].process(&mut right[..chunk.len()], true, self.clean_mode, self.mix);
+            for (i, frame) in chunk.iter_mut().enumerate() {
+                *frame = [left[i], right[i]];
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod patch_node_tests {
+    use super::*;
+    use crate::node_rig::StereoNode;
+
+    #[test]
+    fn modulation_is_audible_stereo_independent_and_resets() {
+        for kind in [
+            ModulationKind::Chorus,
+            ModulationKind::Flanger,
+            ModulationKind::Tremolo,
+        ] {
+            let mut node = ModulationNode::new(48_000, kind, 1.0, 0.8, 0.2, 0.7).unwrap();
+            let original: Vec<_> = (0..4000).map(|i| [((i as f32) * 0.1).sin(), 0.0]).collect();
+            let mut first = original.clone();
+            node.process_block(&mut first);
+            assert!(
+                first
+                    .iter()
+                    .zip(&original)
+                    .any(|(a, b)| (a[0] - b[0]).abs() > 0.01)
+            );
+            assert!(first.iter().all(|x| x[1] == 0.0));
+            assert_eq!(node.latency_samples(), 0);
+            node.reset();
+            let mut second = original;
+            for block in second.chunks_mut(17) {
+                node.process_block(block);
+            }
+            assert_eq!(first, second);
+        }
+        assert!(
+            ModulationNode::new(48_000, ModulationKind::Chorus, f32::NAN, 0.5, 0.0, 0.5).is_err()
+        );
+        assert!(ModulationNode::new(48_000, ModulationKind::Flanger, 1.0, 0.5, 0.86, 0.5).is_err());
+        assert!(ModulationNode::new(48_000, ModulationKind::Tremolo, 19.0, 0.5, 0.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn octaver_is_audible_stereo_independent_and_resets() {
+        for clean in [false, true] {
+            let mut node = OctaverNode::new(48_000, clean, 1.0).unwrap();
+            let original: Vec<_> = (0..24_000)
+                .map(|i| [((i as f32) * 0.04).sin() * 0.2, 0.0])
+                .collect();
+            let mut first = original.clone();
+            node.process_block(&mut first);
+            assert!(
+                first[12_000..]
+                    .iter()
+                    .zip(&original[12_000..])
+                    .any(|(a, b)| (a[0] - b[0]).abs() > 0.01)
+            );
+            assert!(first.iter().all(|x| x[1] == 0.0));
+            assert_eq!(node.latency_samples(), 0);
+            node.reset();
+            let mut second = original;
+            node.process_block(&mut second);
+            assert_eq!(first, second);
+        }
+        assert!(OctaverNode::new(48_000, false, f32::INFINITY).is_err());
+        assert!(OctaverNode::new(0, false, 0.5).is_err());
+    }
+}

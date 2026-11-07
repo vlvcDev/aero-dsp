@@ -135,6 +135,41 @@ fn preview_runs_through_real_control_socket_without_audio_hardware() {
             .all(|x| x.abs() < 0.001)
     );
     fuzz["processors"]["3"]["drive_db"] = serde_json::json!(100);
+    // Audition one portable rig made entirely from the creative processors.
+    // This exercises the same descriptor keys emitted by the editor.
+    let mut creative = fuzz.clone();
+    let processors = [
+        serde_json::json!({"type":"overdrive","drive_db":9,"tone":0.5,"mix":1,"output_db":-6}),
+        serde_json::json!({"type":"octaver","clean_mode":false,"mix":0.45}),
+        serde_json::json!({"type":"chorus","rate_hz":0.8,"depth":0.5,"mix":0.35}),
+        serde_json::json!({"type":"flanger","rate_hz":0.3,"depth":0.55,"feedback":0.25,"mix":0.4}),
+        serde_json::json!({"type":"tremolo","rate_hz":4,"depth":0.55}),
+    ];
+    let mut source_id = 1;
+    for (index, processor) in processors.into_iter().enumerate() {
+        let id = index + 3;
+        if index != 0 {
+            creative["graph"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!(
+                {"id":id,"inputs":[source_id],"processor":{"type":"external"}}));
+        }
+        creative["processors"][id.to_string()] = processor;
+        source_id = id;
+    }
+    creative["graph"]["nodes"][2]["inputs"] = serde_json::json!([source_id]);
+    let response = request(
+        "render_patch",
+        serde_json::json!({"document":creative,"directory":root}),
+    );
+    assert_eq!(response["type"], "patch", "{response}");
+    let rendered = pedal_engine::audio_file::AudioFile::load(std::path::Path::new(
+        response["payload"]["path"].as_str().unwrap(),
+    ))
+    .unwrap();
+    assert!(rendered.samples.iter().all(|x| x.is_finite()));
+    assert!(rendered.samples.iter().any(|x| x.abs() > 0.001));
     assert_eq!(
         request(
             "render_patch",

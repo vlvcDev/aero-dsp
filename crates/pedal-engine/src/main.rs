@@ -293,8 +293,16 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
         } else if let Some(request) = special_request
             && request.message_type == "get_meters"
         {
-            let mut response = meters_response(request.id, &context.telemetry, &context.tuner_telemetry);
-            response.payload["patch_active"] = serde_json::json!(context.patch.lock().ok().and_then(|p| p.as_ref().map(|c| c.status().0)).unwrap_or(false));
+            let mut response =
+                meters_response(request.id, &context.telemetry, &context.tuner_telemetry);
+            response.payload["patch_active"] = serde_json::json!(
+                context
+                    .patch
+                    .lock()
+                    .ok()
+                    .and_then(|p| p.as_ref().map(|c| c.status().0))
+                    .unwrap_or(false)
+            );
             response
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
             .ok()
@@ -597,10 +605,22 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
             .ok()
             .filter(|request| request.api == API_VERSION)
-            && matches!(request.message_type.as_str(), "patch_status" | "apply_patch" | "deactivate_patch" | "render_patch")
+            && matches!(
+                request.message_type.as_str(),
+                "patch_status"
+                    | "apply_patch"
+                    | "deactivate_patch"
+                    | "render_patch"
+                    | "render_patch_comparison"
+            )
         {
             match handle_patch_request(&request, &context) {
-                Ok(payload) => Response { api: API_VERSION, id: request.id, message_type: "patch", payload },
+                Ok(payload) => Response {
+                    api: API_VERSION,
+                    id: request.id,
+                    message_type: "patch",
+                    payload,
+                },
                 Err(error) => control_error(request.id, "patch_failed", &error),
             }
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
@@ -723,8 +743,14 @@ fn audio_is_enabled() -> bool {
     env::var("PEDAL_AUDIO_ENABLED").map_or(true, |value| value != "0")
 }
 
-fn handle_patch_request(request: &Request, context: &ControlContext) -> Result<serde_json::Value, String> {
-    use pedal_engine::{audio_file::{AudioFile, resample, write_float_wav}, node_document::RigDocument};
+fn handle_patch_request(
+    request: &Request,
+    context: &ControlContext,
+) -> Result<serde_json::Value, String> {
+    use pedal_engine::{
+        audio_file::{AudioFile, resample, write_float_wav},
+        node_document::RigDocument,
+    };
     if request.message_type == "patch_status" {
         let guard = context.patch.lock().map_err(|e| e.to_string())?;
         return Ok(match guard.as_ref() {
@@ -732,44 +758,154 @@ fn handle_patch_request(request: &Request, context: &ControlContext) -> Result<s
                 let (active, faulted, switching) = control.status();
                 serde_json::json!({"available":true,"active":active,"faulted":faulted,"switching":switching,"sample_rate":control.sample_rate,"latency_samples":control.latency_samples(),"bypassed":context.bypass_flags.all.load(Ordering::Relaxed)})
             }
-            None => serde_json::json!({"available":false,"active":false,"faulted":false,"switching":false}),
+            None => {
+                serde_json::json!({"available":false,"active":false,"faulted":false,"switching":false})
+            }
         });
     }
     if request.message_type == "deactivate_patch" {
         let guard = context.patch.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().ok_or("Live audio is unavailable")?.submit(None)?;
+        guard
+            .as_ref()
+            .ok_or("Live audio is unavailable")?
+            .submit(None)?;
         return Ok(serde_json::json!({"queued":true}));
     }
-    let value = request.payload.get("document").ok_or("Missing rig document")?;
-    if value.to_string().len() > 1_048_576 { return Err("Rig document exceeds 1 MiB".into()); }
+    if request.message_type == "render_patch_comparison" {
+        let parse = |name: &str| -> Result<(RigDocument, PathBuf), String> {
+            let item = request
+                .payload
+                .get(name)
+                .ok_or("Missing comparison snapshot")?;
+            let value = item.get("document").ok_or("Missing rig document")?;
+            if value.to_string().len() > 1_048_576 {
+                return Err("Rig document exceeds 1 MiB".into());
+            }
+            let document =
+                serde_json::from_value(value.clone()).map_err(|e| format!("Invalid rig: {e}"))?;
+            let directory = PathBuf::from(
+                item.get("directory")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing asset folder")?,
+            );
+            if !directory.is_absolute() || !directory.is_dir() {
+                return Err("Asset folder must be an existing absolute path".into());
+            }
+            Ok((document, directory))
+        };
+        let (a, a_dir) = parse("a")?;
+        let (b, b_dir) = parse("b")?;
+        let source = match request
+            .payload
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or("built_in")
+        {
+            "built_in" => context.test_audio_path.clone(),
+            "file" => PathBuf::from(
+                request
+                    .payload
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Choose a WAV file")?,
+            ),
+            "latest_clean" => PathBuf::from(
+                pedal_engine::riff_vault::list(&context.riff_directory)?
+                    .first()
+                    .ok_or("No saved clean take available")?
+                    .clean_path
+                    .clone(),
+            ),
+            _ => return Err("Unknown comparison source".into()),
+        };
+        let _guard = context.preview_lock.lock().map_err(|e| e.to_string())?;
+        return pedal_engine::patch_comparison::render(
+            &a,
+            &a_dir,
+            &b,
+            &b_dir,
+            &source,
+            &context.preview_path,
+        );
+    }
+    let value = request
+        .payload
+        .get("document")
+        .ok_or("Missing rig document")?;
+    if value.to_string().len() > 1_048_576 {
+        return Err("Rig document exceeds 1 MiB".into());
+    }
     let document: RigDocument = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-    let directory = request.payload.get("directory").and_then(|v| v.as_str()).ok_or("Choose the folder containing your patch assets")?;
+    let directory = request
+        .payload
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .ok_or("Choose the folder containing your patch assets")?;
     let directory = Path::new(directory);
-    if !directory.is_absolute() || !directory.is_dir() { return Err("Asset folder must be an existing absolute path".into()); }
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err("Asset folder must be an existing absolute path".into());
+    }
     if request.message_type == "apply_patch" {
         let prepared = document.prepare(directory)?;
         let guard = context.patch.lock().map_err(|e| e.to_string())?;
         let control = guard.as_ref().ok_or("Live audio is unavailable")?;
-        if document.sample_rate != control.sample_rate { return Err(format!("Patch is {} Hz; your audio device is {} Hz", document.sample_rate, control.sample_rate)); }
+        if document.sample_rate != control.sample_rate {
+            return Err(format!(
+                "Patch is {} Hz; your audio device is {} Hz",
+                document.sample_rate, control.sample_rate
+            ));
+        }
         control.submit(Some(prepared))?;
         return Ok(serde_json::json!({"queued":true}));
     }
     let _guard = context.preview_lock.lock().map_err(|e| e.to_string())?;
-    let source_path = request.payload.get("path").and_then(|v| v.as_str()).map(Path::new).unwrap_or(&context.test_audio_path);
-    if fs::metadata(source_path).map_err(|e| format!("Cannot open preview WAV: {e}"))?.len() > 256 * 1024 * 1024 { return Err("Preview WAV exceeds 256 MiB".into()); }
+    let source_path = request
+        .payload
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(Path::new)
+        .unwrap_or(&context.test_audio_path);
+    if fs::metadata(source_path)
+        .map_err(|e| format!("Cannot open preview WAV: {e}"))?
+        .len()
+        > 256 * 1024 * 1024
+    {
+        return Err("Preview WAV exceeds 256 MiB".into());
+    }
     let mut source = AudioFile::load(source_path)?;
-    if !(1..=2).contains(&source.channels) { return Err("Preview needs a mono or stereo WAV".into()); }
+    if !(1..=2).contains(&source.channels) {
+        return Err("Preview needs a mono or stereo WAV".into());
+    }
     // A bounded audition, with three seconds for effects to decay.
-    source.samples.truncate(source.sample_rate as usize * source.channels * 30);
-    source.samples = resample(&source.samples, source.channels, source.sample_rate, document.sample_rate)?;
+    source
+        .samples
+        .truncate(source.sample_rate as usize * source.channels * 30);
+    source.samples = resample(
+        &source.samples,
+        source.channels,
+        source.sample_rate,
+        document.sample_rate,
+    )?;
     source.sample_rate = document.sample_rate;
     let mut output = document.render(directory, &source, 3.0)?;
-    let peak = output.iter().flatten().fold(0.0f32, |peak, x| peak.max(x.abs()));
+    let peak = output
+        .iter()
+        .flatten()
+        .fold(0.0f32, |peak, x| peak.max(x.abs()));
     let attenuation = if peak > 0.89 { 0.89 / peak } else { 1.0 };
-    for sample in output.iter_mut().flatten() { *sample *= attenuation; }
+    for sample in output.iter_mut().flatten() {
+        *sample *= attenuation;
+    }
     let path = context.preview_path.with_extension("patch.wav");
-    write_float_wav(&path, 2, document.sample_rate, output.iter().flatten().copied())?;
-    Ok(serde_json::json!({"path":path,"duration_seconds":output.len() as f32 / document.sample_rate as f32,"attenuation_db":20.0 * attenuation.log10()}))
+    write_float_wav(
+        &path,
+        2,
+        document.sample_rate,
+        output.iter().flatten().copied(),
+    )?;
+    Ok(
+        serde_json::json!({"path":path,"duration_seconds":output.len() as f32 / document.sample_rate as f32,"attenuation_db":20.0 * attenuation.log10()}),
+    )
 }
 
 struct AudioWorkerContext {
@@ -939,7 +1075,9 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
         Arc::clone(&telemetry),
     );
     let (chain, patch_control) = pedal_engine::node_live::PatchRoute::new(
-        chain, negotiated.sample_rate, Arc::clone(&bypass_flags.all),
+        chain,
+        negotiated.sample_rate,
+        Arc::clone(&bypass_flags.all),
     );
     *context.patch.lock().expect("patch control") = Some(patch_control);
     let chain = TunerTapProcessor::new(

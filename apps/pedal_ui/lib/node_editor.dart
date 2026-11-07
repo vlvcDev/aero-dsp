@@ -137,7 +137,19 @@ class PatchDocument {
             return 'Node $id needs native processor settings.';
           }
           final kind = native['type'];
-          if (!['nam', 'cabinet', 'reverb', 'custom', 'fuzz'].contains(kind)) {
+          if (![
+            'nam',
+            'cabinet',
+            'reverb',
+            'custom',
+            'fuzz',
+            'overdrive',
+            'edge_amp',
+            'chorus',
+            'flanger',
+            'tremolo',
+            'octaver'
+          ].contains(kind)) {
             return 'Unsupported native processor.';
           }
           keys(native, {
@@ -148,18 +160,33 @@ class PatchDocument {
               'library_id',
               'revision',
               'asset_directory',
+              'macros',
               'document'
             ],
             if (kind == 'nam') 'input',
             if (kind == 'cabinet') 'duration_seconds',
             if (kind == 'reverb') 'decay_seconds',
-            if (kind == 'fuzz') ...[
+            if (kind == 'fuzz' || kind == 'overdrive') ...[
               'drive_db',
-              'bias',
+              if (kind == 'fuzz') 'bias',
               'tone',
               'mix',
               'output_db'
-            ]
+            ],
+            if (kind == 'edge_amp') ...[
+              'drive_db',
+              'tone',
+              'touch',
+              'master_db'
+            ],
+            if (kind == 'chorus' || kind == 'flanger' || kind == 'tremolo') ...[
+              'rate_hz',
+              'depth'
+            ],
+            if (kind == 'chorus' || kind == 'flanger' || kind == 'octaver')
+              'mix',
+            if (kind == 'flanger') 'feedback',
+            if (kind == 'octaver') 'clean_mode',
           });
           if (kind == 'fuzz') {
             for (final entry in {
@@ -178,6 +205,50 @@ class PatchDocument {
               }
             }
           }
+          final effectRanges = <String, Map<String, List<double>>>{
+            'edge_amp': {
+              'drive_db': [0, 30],
+              'tone': [0, 1],
+              'touch': [0, 1],
+              'master_db': [-36, 6]
+            },
+            'chorus': {
+              'rate_hz': [.05, 8],
+              'depth': [0, 1],
+              'mix': [0, 1]
+            },
+            'flanger': {
+              'rate_hz': [.05, 5],
+              'depth': [0, 1],
+              'feedback': [-.85, .85],
+              'mix': [0, 1]
+            },
+            'tremolo': {
+              'rate_hz': [.1, 18],
+              'depth': [0, 1]
+            },
+            'octaver': {
+              'mix': [0, 1]
+            },
+            'overdrive': {
+              'drive_db': [0, 24],
+              'tone': [0, 1],
+              'mix': [0, 1],
+              'output_db': [-24, 6]
+            },
+          };
+          for (final entry in (effectRanges[kind] ?? {}).entries) {
+            final value = native[entry.key];
+            if (value is! num ||
+                !value.isFinite ||
+                value < entry.value[0] ||
+                value > entry.value[1]) {
+              return '$kind ${entry.key} is outside its supported range.';
+            }
+          }
+          if (kind == 'octaver' && native['clean_mode'] is! bool) {
+            return 'Select an octaver mode.';
+          }
           if (kind == 'custom') {
             if (native['name'] is! String ||
                 (native['name'] as String).trim().isEmpty ||
@@ -195,6 +266,7 @@ class PatchDocument {
             final error = child.validate(
                 depth: depth + 1, budget: budget, expectedRate: rate);
             if (error != null) return error;
+            readNodeMacros(native, child);
           }
           if (kind == 'reverb' || kind == 'cabinet') {
             final v =
@@ -288,6 +360,13 @@ class PatchEditor extends StatefulWidget {
 class _PatchEditorState extends State<PatchEditor> {
   late final CustomNodeLibrary library =
       widget.library ?? CustomNodeLibrary.defaultLibrary();
+  final _toolbarScroll = ScrollController();
+  @override
+  void dispose() {
+    _toolbarScroll.dispose();
+    super.dispose();
+  }
+
   bool _canvasMode = true;
   int? _selected;
   final _undo = <String>[];
@@ -295,6 +374,7 @@ class _PatchEditorState extends State<PatchEditor> {
   PatchDocument get doc => widget.document;
   String snapshot() => jsonEncode({
         'document': doc.data,
+        'asset_directory': doc.assetDirectory,
         'positions': {
           for (final entry in doc.positions.entries)
             '${entry.key}': [entry.value.dx, entry.value.dy]
@@ -328,6 +408,7 @@ class _PatchEditorState extends State<PatchEditor> {
         to.add(snapshot());
         final saved = jsonDecode(from.removeLast()) as Map<String, dynamic>;
         doc.data = saved['document'] as Map<String, dynamic>;
+        doc.assetDirectory = saved['asset_directory'] as String;
         doc.positions.clear();
         for (final entry
             in (saved['positions'] as Map<String, dynamic>).entries) {
@@ -343,7 +424,18 @@ class _PatchEditorState extends State<PatchEditor> {
   void add(String type) => edit(() {
         final id =
             doc.nodes.fold<int>(0, (v, n) => math.max(v, n['id'] as int)) + 1;
-        final external = ['nam', 'cabinet', 'reverb', 'fuzz'].contains(type);
+        final external = [
+          'nam',
+          'cabinet',
+          'reverb',
+          'fuzz',
+          'overdrive',
+          'edge_amp',
+          'chorus',
+          'flanger',
+          'tremolo',
+          'octaver'
+        ].contains(type);
         doc.nodes.add({
           'id': id,
           'inputs': <int>[],
@@ -364,6 +456,27 @@ class _PatchEditorState extends State<PatchEditor> {
               'mix': 1.0,
               'output_db': -12.0,
             },
+            if (type == 'overdrive') ...{
+              'drive_db': 9.0,
+              'tone': .5,
+              'mix': 1.0,
+              'output_db': -6.0
+            },
+            if (type == 'edge_amp') ...{
+              'drive_db': 12.0,
+              'tone': .55,
+              'touch': .55,
+              'master_db': -6.0
+            },
+            if (type == 'chorus') ...{'rate_hz': .8, 'depth': .5, 'mix': .35},
+            if (type == 'flanger') ...{
+              'rate_hz': .3,
+              'depth': .55,
+              'feedback': .25,
+              'mix': .4
+            },
+            if (type == 'tremolo') ...{'rate_hz': 4.0, 'depth': .55},
+            if (type == 'octaver') ...{'mix': .45, 'clean_mode': false},
             if (type == 'nam') 'input': 'average',
             if (type == 'cabinet') 'duration_seconds': .2,
             if (type == 'reverb') 'decay_seconds': 2.5,
@@ -375,6 +488,7 @@ class _PatchEditorState extends State<PatchEditor> {
       .showSnackBar(SnackBar(content: Text(value)));
 
   Future<void> saveCustom() async {
+    var macros = <NodeMacro>[];
     final name = TextEditingController();
     String? existing;
     String? error;
@@ -390,31 +504,50 @@ class _PatchEditorState extends State<PatchEditor> {
         builder: (context) => StatefulBuilder(
             builder: (context, refresh) => AlertDialog(
                   title: const Text('Save as Custom Node'),
-                  content: Column(mainAxisSize: MainAxisSize.min, children: [
-                    TextField(
-                        controller: name,
-                        decoration: InputDecoration(
-                            labelText: 'Name', errorText: error)),
-                    DropdownButton<String>(
-                        value: existing ?? '',
-                        isExpanded: true,
-                        items: [
-                          const DropdownMenuItem(
-                              value: '', child: Text('Create new node')),
-                          for (final item in latest)
-                            DropdownMenuItem(
-                                value: item.id,
-                                child: Text('New revision of ${item.name}')),
-                        ],
-                        onChanged: (v) => refresh(() {
-                              existing = v == '' ? null : v;
-                              if (existing != null) {
-                                name.text = latest
-                                    .firstWhere((r) => r.id == existing)
-                                    .name;
-                              }
-                            })),
-                  ]),
+                  content: SizedBox(
+                      width: 480,
+                      child: SingleChildScrollView(
+                          child:
+                              Column(mainAxisSize: MainAxisSize.min, children: [
+                        TextField(
+                            controller: name,
+                            decoration: InputDecoration(
+                                labelText: 'Name', errorText: error)),
+                        DropdownButton<String>(
+                            value: existing ?? '',
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem(
+                                  value: '', child: Text('Create new node')),
+                              for (final item in latest)
+                                DropdownMenuItem(
+                                    value: item.id,
+                                    child:
+                                        Text('New revision of ${item.name}')),
+                            ],
+                            onChanged: (v) => refresh(() {
+                                  existing = v == '' ? null : v;
+                                  macros = existing == null
+                                      ? []
+                                      : compatibleMacros(
+                                          doc,
+                                          latest
+                                              .firstWhere(
+                                                  (r) => r.id == existing)
+                                              .macros);
+                                  if (existing != null) {
+                                    name.text = latest
+                                        .firstWhere((r) => r.id == existing)
+                                        .name;
+                                  }
+                                })),
+                        MacroPicker(
+                            key: ValueKey(existing),
+                            document: doc,
+                            macros: macros,
+                            onChanged: (value) =>
+                                refresh(() => macros = value)),
+                      ]))),
                   actions: [
                     TextButton(
                         onPressed: () => Navigator.pop(context),
@@ -422,7 +555,8 @@ class _PatchEditorState extends State<PatchEditor> {
                     FilledButton(
                         onPressed: () {
                           try {
-                            library.save(doc, name.text, id: existing);
+                            library.save(doc, name.text,
+                                id: existing, macros: macros);
                             Navigator.pop(context);
                             message('Custom node saved.');
                           } catch (e) {
@@ -433,6 +567,37 @@ class _PatchEditorState extends State<PatchEditor> {
                   ],
                 )));
     WidgetsBinding.instance.addPostFrameCallback((_) => name.dispose());
+  }
+
+  Future<void> openWorkbench() async {
+    final choice = await showAeroControlBay<ToneWorkbenchResult>(context,
+        title: 'Tone Workbench',
+        icon: Icons.compare_arrows,
+        child: ToneWorkbench(
+            document: doc, client: widget.client!, showHeader: false));
+    if (!mounted || choice == null) return;
+    edit(() {
+      doc.data = choice.document;
+      doc.assetDirectory = choice.assetDirectory;
+      doc.positions.clear();
+      _selected = null;
+    });
+  }
+
+  Future<void> loadStarter(String file) async {
+    try {
+      final preset = PatchDocument()
+        ..importJson(await rootBundle.loadString('assets/patches/$file.json'));
+      if (!mounted) return;
+      preset.data['sample_rate'] = doc.data['sample_rate'];
+      edit(() {
+        doc.data = preset.data;
+        doc.positions.clear();
+        _selected = null;
+      });
+    } catch (e) {
+      if (mounted) message('Could not load starter rig: $e');
+    }
   }
 
   Future<void> browseCustom() async {
@@ -520,15 +685,25 @@ class _PatchEditorState extends State<PatchEditor> {
                 ]))));
     if (committed != true || !mounted) return;
     final previous = native['document'];
+    final oldMacros = native['macros'];
+    final retained = compatibleMacros(
+            child,
+            readNodeMacros(native,
+                PatchDocument()..data = previous as Map<String, dynamic>))
+        .map((m) => m.toJson())
+        .toList();
+    if (oldMacros != null) native['macros'] = retained;
     native['document'] = child.data;
     final error = doc.validate();
     native['document'] = previous;
+    if (oldMacros != null) native['macros'] = oldMacros;
     if (error != null) {
       message(error);
       return;
     }
     edit(() {
       native['document'] = jsonDecode(jsonEncode(child.data));
+      if (oldMacros != null) native['macros'] = retained;
       native['asset_directory'] = child.assetDirectory;
     });
   }
@@ -706,8 +881,57 @@ class _PatchEditorState extends State<PatchEditor> {
                 number(native, 'mix', 'Mix · wet', 0, 1, percent: true),
                 number(native, 'output_db', 'Output · dB', -36, 6),
               ],
+              if (native?['type'] == 'overdrive') ...[
+                number(native!, 'drive_db', 'Drive · dB', 0, 24),
+                number(native, 'tone', 'Tone · darker to brighter', 0, 1,
+                    percent: true),
+                number(native, 'mix', 'Mix · wet', 0, 1, percent: true),
+                number(native, 'output_db', 'Output · dB', -24, 6),
+              ],
+              if (native?['type'] == 'edge_amp') ...[
+                number(native!, 'drive_db', 'Preamp drive · dB', 0, 30),
+                number(native, 'tone', 'Tone', 0, 1, percent: true),
+                number(native, 'touch', 'Touch compression', 0, 1,
+                    percent: true),
+                number(native, 'master_db', 'Master · dB', -36, 6),
+              ],
+              if (native != null &&
+                  ['chorus', 'flanger', 'tremolo']
+                      .contains(native['type'])) ...[
+                number(
+                    native,
+                    'rate_hz',
+                    'Rate · Hz',
+                    native['type'] == 'tremolo' ? .1 : .05,
+                    native['type'] == 'chorus'
+                        ? 8
+                        : native['type'] == 'flanger'
+                            ? 5
+                            : 18),
+                number(native, 'depth', 'Depth', 0, 1, percent: true),
+                if (native['type'] == 'flanger')
+                  number(native, 'feedback', 'Feedback', -.85, .85,
+                      percent: true),
+              ],
+              if (native != null &&
+                  ['chorus', 'flanger', 'octaver'].contains(native['type']))
+                number(
+                    native,
+                    'mix',
+                    native['type'] == 'octaver' ? 'Octave mix' : 'Mix · wet',
+                    0,
+                    1,
+                    percent: true),
+              if (native?['type'] == 'octaver')
+                SwitchListTile(
+                  title: const Text('Clean mode'),
+                  value: native!['clean_mode'] as bool,
+                  onChanged: (value) =>
+                      edit(() => native['clean_mode'] = value),
+                ),
               if (native?['type'] == 'custom') ...[
                 Text('Revision ${native!['revision']}'),
+                ...macroSliders(native, number),
                 TextButton(
                     onPressed: () => editEmbedded(id as int),
                     child: const Text('Inspect / edit custom node')),
@@ -747,118 +971,168 @@ class _PatchEditorState extends State<PatchEditor> {
   @override
   Widget build(BuildContext context) {
     final error = doc.validate();
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(
-              widget.client == null
-                  ? 'OFFLINE PATCH LAB — export JSON to keep your draft.'
-                  : 'Apply to guitar to hear this draft. Edits take effect when reapplied. Export JSON to keep your work after closing the app.',
-              style: const TextStyle(color: LostChrome.ice))),
-      Wrap(
-          spacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            if (widget.client != null)
-              TextButton.icon(
-                icon: const Icon(Icons.play_circle_outline),
-                label: const Text('Guitar / Preview'),
-                onPressed: () => showAeroControlBay<void>(context,
-                    title: 'PATCH AUDIO',
-                    icon: Icons.graphic_eq,
-                    child: SingleChildScrollView(
-                        child: PatchAudioControls(
-                            document: doc, client: widget.client!))),
-              ),
-            PopupMenuButton<String>(
-                tooltip: 'Add node',
-                onSelected: add,
-                itemBuilder: (_) => [
-                      for (final type in [
-                        'gain',
-                        'mixer',
-                        'delay',
-                        'nam',
-                        'cabinet',
-                        'reverb',
-                        'fuzz'
-                      ])
-                        PopupMenuItem(
-                            value: type, child: Text(type.toUpperCase()))
-                    ],
-                child: const Padding(
-                    padding: EdgeInsets.all(12), child: Text('+ ADD NODE'))),
-            TextButton(
-                onPressed: error == null ? saveCustom : null,
-                child: const Text('Save as Custom Node')),
-            TextButton(onPressed: browseCustom, child: const Text('My Nodes')),
-            IconButton(
-                tooltip: 'Undo',
-                onPressed: _undo.isEmpty ? null : () => history(_undo, _redo),
-                icon: const Icon(Icons.undo)),
-            IconButton(
-                tooltip: 'Redo',
-                onPressed: _redo.isEmpty ? null : () => history(_redo, _undo),
-                icon: const Icon(Icons.redo)),
-            TextButton(
-                onPressed: () => jsonDialog(true),
-                child: const Text('Import JSON')),
-            TextButton(
-                onPressed: error == null ? () => jsonDialog(false) : null,
-                child: const Text('Export JSON')),
-            Text('${doc.data['sample_rate']} Hz'),
-            IconButton(
-                tooltip:
-                    _canvasMode ? 'Show connection cards' : 'Show node canvas',
-                onPressed: () => setState(() => _canvasMode = !_canvasMode),
-                icon: Icon(_canvasMode
-                    ? Icons.view_agenda_outlined
-                    : Icons.account_tree_outlined)),
-          ]),
-      Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(error ?? 'Routing valid • ready for offline rendering',
-              style: TextStyle(
-                  color: error == null ? LostChrome.lime : LostChrome.pearl))),
-      Expanded(
-          child: _canvasMode
-              ? LayoutBuilder(builder: (context, constraints) {
-                  final selected =
-                      doc.nodes.where((n) => n['id'] == _selected).firstOrNull;
-                  final canvas = PatchCanvas(
-                    document: doc,
-                    selected: _selected,
-                    label: label,
-                    onSelect: (id) => setState(() => _selected = id),
-                    onConnect: connect,
-                    onMoveStart: () => edit(() {}),
-                  );
-                  if (selected == null) return canvas;
-                  final inspector = SingleChildScrollView(
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      TextButton.icon(
-                          onPressed: () => setState(() => _selected = null),
-                          icon: const Icon(Icons.close),
-                          label: const Text('Close controls')),
-                      nodeCard(selected as Map),
-                    ]),
-                  );
-                  if (constraints.maxWidth >= 800) {
-                    return Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(child: canvas),
-                          SizedBox(width: 300, child: inspector)
-                        ]);
-                  }
-                  // On short/touch displays, controls replace the canvas until closed.
-                  return Center(child: inspector);
-                })
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(12),
-                  child: Wrap(spacing: 16, runSpacing: 16, children: [
-                    for (final node in doc.nodes) nodeCard(node as Map)
-                  ]))),
-    ]);
+    return LayoutBuilder(builder: (context, constraints) {
+      final compact = constraints.maxHeight < 350;
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (!compact)
+          Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text(
+                  widget.client == null
+                      ? 'OFFLINE PATCH LAB — export JSON to keep your draft.'
+                      : 'Apply to guitar to hear this draft. Edits take effect when reapplied. Export JSON to keep your work after closing the app.',
+                  style: const TextStyle(color: LostChrome.ice))),
+        Scrollbar(
+            controller: _toolbarScroll,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+                controller: _toolbarScroll,
+                scrollDirection: Axis.horizontal,
+                child: Row(children: [
+                  PopupMenuButton<String>(
+                      tooltip: 'Add node',
+                      onSelected: (value) =>
+                          value == 'my_nodes' ? browseCustom() : add(value),
+                      itemBuilder: (_) => [
+                            for (final category in <String, List<String>>{
+                              'Mixing': ['gain', 'mixer'],
+                              'Drive': ['overdrive', 'fuzz'],
+                              'Modulation': ['chorus', 'flanger', 'tremolo'],
+                              'Pitch': ['octaver'],
+                              'Amp & cabinet': ['edge_amp', 'nam', 'cabinet'],
+                              'Space': ['reverb', 'delay'],
+                              'Library': ['my_nodes'],
+                            }.entries) ...[
+                              PopupMenuItem<String>(
+                                  enabled: false, child: Text(category.key)),
+                              for (final type in category.value)
+                                PopupMenuItem(
+                                    value: type,
+                                    child: Text(type == 'my_nodes'
+                                        ? 'My Nodes'
+                                        : type
+                                            .replaceAll('_', ' ')
+                                            .toUpperCase())),
+                            ],
+                          ],
+                      child: const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text('+ ADD NODE'))),
+                  IconButton(
+                      tooltip: 'Undo',
+                      onPressed:
+                          _undo.isEmpty ? null : () => history(_undo, _redo),
+                      icon: const Icon(Icons.undo)),
+                  IconButton(
+                      tooltip: 'Redo',
+                      onPressed:
+                          _redo.isEmpty ? null : () => history(_redo, _undo),
+                      icon: const Icon(Icons.redo)),
+                  IconButton(
+                      tooltip: _canvasMode
+                          ? 'Show connection cards'
+                          : 'Show node canvas',
+                      onPressed: () =>
+                          setState(() => _canvasMode = !_canvasMode),
+                      icon: Icon(_canvasMode
+                          ? Icons.view_agenda_outlined
+                          : Icons.account_tree_outlined)),
+                  if (widget.client != null)
+                    TextButton.icon(
+                        onPressed: openWorkbench,
+                        icon: const Icon(Icons.compare_arrows),
+                        label: const Text('Compare rigs')),
+                  if (widget.client != null)
+                    TextButton.icon(
+                      icon: const Icon(Icons.play_circle_outline),
+                      label: const Text('Guitar / Preview'),
+                      onPressed: () => showAeroControlBay<void>(context,
+                          title: 'PATCH AUDIO',
+                          icon: Icons.graphic_eq,
+                          child: SingleChildScrollView(
+                              child: PatchAudioControls(
+                                  document: doc, client: widget.client!))),
+                    ),
+                  TextButton(
+                      onPressed: error == null ? saveCustom : null,
+                      child: const Text('Save as Custom Node')),
+                  TextButton(
+                      onPressed: browseCustom, child: const Text('My Nodes')),
+                  PopupMenuButton<String>(
+                      tooltip: 'Load starter rig',
+                      onSelected: loadStarter,
+                      itemBuilder: (_) => const [
+                            PopupMenuItem(
+                                value: 'glass_arpeggios',
+                                child: Text(
+                                    'Glass Arpeggios · clean chorus and room')),
+                            PopupMenuItem(
+                                value: 'split_drive',
+                                child: Text('Split Drive · parallel crunch')),
+                            PopupMenuItem(
+                                value: 'octave_motion',
+                                child:
+                                    Text('Octave Motion · fuzz and tremolo')),
+                          ],
+                      icon: const Icon(Icons.library_music_outlined)),
+                  TextButton(
+                      onPressed: () => jsonDialog(true),
+                      child: const Text('Import JSON')),
+                  TextButton(
+                      onPressed: error == null ? () => jsonDialog(false) : null,
+                      child: const Text('Export JSON')),
+                  Text('${doc.data['sample_rate']} Hz'),
+                ]))),
+        Padding(
+            padding: EdgeInsets.symmetric(
+                horizontal: 12, vertical: compact ? 2 : 12),
+            child: Text(error ?? 'Routing valid • ready for offline rendering',
+                maxLines: compact ? 1 : null,
+                overflow: compact ? TextOverflow.ellipsis : null,
+                style: TextStyle(
+                    color:
+                        error == null ? LostChrome.lime : LostChrome.pearl))),
+        Expanded(
+            child: _canvasMode
+                ? LayoutBuilder(builder: (context, constraints) {
+                    final selected = doc.nodes
+                        .where((n) => n['id'] == _selected)
+                        .firstOrNull;
+                    final canvas = PatchCanvas(
+                      document: doc,
+                      selected: _selected,
+                      label: label,
+                      onSelect: (id) => setState(() => _selected = id),
+                      onConnect: connect,
+                      onMoveStart: () => edit(() {}),
+                    );
+                    if (selected == null) return canvas;
+                    final inspector = SingleChildScrollView(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        TextButton.icon(
+                            onPressed: () => setState(() => _selected = null),
+                            icon: const Icon(Icons.close),
+                            label: const Text('Close controls')),
+                        nodeCard(selected as Map),
+                      ]),
+                    );
+                    if (constraints.maxWidth >= 800) {
+                      return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(child: canvas),
+                            SizedBox(width: 300, child: inspector)
+                          ]);
+                    }
+                    // On short/touch displays, controls replace the canvas until closed.
+                    return Center(child: inspector);
+                  })
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(12),
+                    child: Wrap(spacing: 16, runSpacing: 16, children: [
+                      for (final node in doc.nodes) nodeCard(node as Map)
+                    ]))),
+      ]);
+    });
   }
 }

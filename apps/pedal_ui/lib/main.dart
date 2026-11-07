@@ -16,6 +16,7 @@ part 'phrase_tab.dart';
 part 'node_editor.dart';
 part 'node_canvas.dart';
 part 'node_audio.dart';
+part 'tone_workbench.dart';
 part 'node_library.dart';
 
 const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');

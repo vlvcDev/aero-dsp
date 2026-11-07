@@ -39,6 +39,17 @@ impl Octaver {
         }
     }
 
+    /// Clear analysis history and voice ramps without allocating.
+    pub fn reset(&mut self) {
+        self.clean.reset();
+        self.warmup = 0;
+        self.clean_running = false;
+        self.previous = 0.0;
+        self.polarity = 1.0;
+        self.analog_gain = 0.0;
+        self.clean_gain = 0.0;
+    }
+
     pub fn process(&mut self, samples: &mut [f32], enabled: bool, clean_mode: bool, mix: f32) {
         let want_clean = enabled && clean_mode && mix > 0.0;
         if want_clean && !self.clean_running {

@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "sample_rate": 48000,
+  "graph": {
+    "version": 1,
+    "nodes": [
+      {
+        "id": 1,
+        "inputs": [],
+        "processor": {
+          "type": "input"
+        }
+      },
+      {
+        "id": 2,
+        "inputs": [
+          1
+        ],
+        "processor": {
+          "type": "external"
+        }
+      },
+      {
+        "id": 3,
+        "inputs": [
+          2
+        ],
+        "processor": {
+          "type": "external"
+        }
+      },
+      {
+        "id": 4,
+        "inputs": [
+          1
+        ],
+        "processor": {
+          "type": "gain",
+          "db": -15
+        }
+      },
+      {
+        "id": 5,
+        "inputs": [
+          3,
+          4
+        ],
+        "processor": {
+          "type": "mixer"
+        }
+      },
+      {
+        "id": 6,
+        "inputs": [
+          5
+        ],
+        "processor": {
+          "type": "output"
+        }
+      }
+    ]
+  },
+  "processors": {
+    "2": {
+      "type": "overdrive",
+      "drive_db": 13,
+      "tone": 0.55,
+      "mix": 0.84,
+      "output_db": -8
+    },
+    "3": {
+      "type": "edge_amp",
+      "drive_db": 10,
+      "tone": 0.47,
+      "touch": 0.52,
+      "master_db": -7
+    }
+  }
+}
