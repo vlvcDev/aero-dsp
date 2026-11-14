@@ -61,6 +61,7 @@ fn dry_alignment_live_and_render_agree_and_reduce_blend_cancellation() {
             64,
             nam_bridge::NamQuality::Full,
             true,
+            1,
         )
         .unwrap();
         assert_eq!(pre.alignment().unwrap().applied_delay(), 37);
@@ -124,8 +125,28 @@ fn nam_eq_matches_between_live_graph_and_render_with_real_models() {
         state.pedal_eq.pre = pre;
         state.amp_eq.pre = !pre;
         let mut live = rig::build(
-            AmpProcessor::Nam(nam_bridge::NamModel::load(&model, 48000.0, 64).unwrap()),
-            AmpProcessor::Nam(nam_bridge::NamModel::load(&model, 48000.0, 64).unwrap()),
+            AmpProcessor::Nam(
+                pedal_engine::nam_oversampling::OversampledNam::load(
+                    &model,
+                    48000.0,
+                    64,
+                    nam_bridge::NamQuality::Full,
+                    false,
+                    1,
+                )
+                .unwrap(),
+            ),
+            AmpProcessor::Nam(
+                pedal_engine::nam_oversampling::OversampledNam::load(
+                    &model,
+                    48000.0,
+                    64,
+                    nam_bridge::NamQuality::Full,
+                    false,
+                    1,
+                )
+                .unwrap(),
+            ),
             None,
             RigControls::from_state(&state),
             48000,

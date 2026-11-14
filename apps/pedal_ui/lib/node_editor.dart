@@ -1,7 +1,8 @@
 part of 'main.dart';
 
 /// Editable offline document. Layout is deliberately not part of the DSP schema.
-class PatchDocument {
+class PatchDocument extends ChangeNotifier {
+  void changed() => notifyListeners();
   String assetDirectory = Directory.current.absolute.path;
   String previewPath = '';
   final positions = <int, Offset>{};
@@ -148,7 +149,12 @@ class PatchDocument {
             'chorus',
             'flanger',
             'tremolo',
-            'octaver'
+            'octaver',
+            'transpose',
+            'envelope_filter',
+            'ring_mod',
+            'slicer',
+            'bitcrusher'
           ].contains(kind)) {
             return 'Unsupported native processor.';
           }
@@ -187,6 +193,17 @@ class PatchDocument {
               'mix',
             if (kind == 'flanger') 'feedback',
             if (kind == 'octaver') 'clean_mode',
+            if (kind == 'transpose') ...['semitones', 'quality'],
+            if (kind == 'envelope_filter') ...[
+              'sensitivity',
+              'base_hz',
+              'resonance',
+              'decay_ms',
+              'mix'
+            ],
+            if (kind == 'ring_mod') ...['frequency_hz', 'mix'],
+            if (kind == 'slicer') ...['bpm', 'division', 'pattern', 'depth'],
+            if (kind == 'bitcrusher') ...['bits', 'rate_hz', 'mix'],
           });
           if (kind == 'fuzz') {
             for (final entry in {
@@ -206,6 +223,29 @@ class PatchDocument {
             }
           }
           final effectRanges = <String, Map<String, List<double>>>{
+            'transpose': {
+              'semitones': [-12, 12]
+            },
+            'envelope_filter': {
+              'sensitivity': [0, 1],
+              'base_hz': [80, 2000],
+              'resonance': [.5, 8],
+              'decay_ms': [20, 1000],
+              'mix': [0, 1]
+            },
+            'ring_mod': {
+              'frequency_hz': [1, 4000],
+              'mix': [0, 1]
+            },
+            'slicer': {
+              'bpm': [30, 300],
+              'depth': [0, 1]
+            },
+            'bitcrusher': {
+              'bits': [4, 16],
+              'rate_hz': [1000, 48000],
+              'mix': [0, 1]
+            },
             'edge_amp': {
               'drive_db': [0, 30],
               'tone': [0, 1],
@@ -245,6 +285,21 @@ class PatchDocument {
                 value > entry.value[1]) {
               return '$kind ${entry.key} is outside its supported range.';
             }
+          }
+          if (kind == 'transpose' &&
+              (native['semitones'] is! int ||
+                  !['fast', 'smooth'].contains(native['quality']))) {
+            return 'Choose whole semitones and a transpose quality.';
+          }
+          if (kind == 'bitcrusher' && native['bits'] is! int) {
+            return 'Bit depth must be a whole number.';
+          }
+          if (kind == 'slicer' &&
+              (native['division'] is! int ||
+                  ![1, 2, 4].contains(native['division']) ||
+                  !['pulse', 'offbeat', 'gallop']
+                      .contains(native['pattern']))) {
+            return 'Choose a valid slicer division and pattern.';
           }
           if (kind == 'octaver' && native['clean_mode'] is! bool) {
             return 'Select an octaver mode.';
@@ -361,8 +416,12 @@ class _PatchEditorState extends State<PatchEditor> {
   late final CustomNodeLibrary library =
       widget.library ?? CustomNodeLibrary.defaultLibrary();
   final _toolbarScroll = ScrollController();
+  late final _live = widget.client == null
+      ? null
+      : PatchLiveController(widget.document, widget.client!);
   @override
   void dispose() {
+    _live?.dispose();
     _toolbarScroll.dispose();
     super.dispose();
   }
@@ -401,6 +460,7 @@ class _PatchEditorState extends State<PatchEditor> {
       if (_undo.length > 50) _undo.removeAt(0);
       _redo.clear();
       action();
+      doc.changed();
     });
   }
 
@@ -410,6 +470,7 @@ class _PatchEditorState extends State<PatchEditor> {
         doc.data = saved['document'] as Map<String, dynamic>;
         doc.assetDirectory = saved['asset_directory'] as String;
         doc.positions.clear();
+        doc.changed();
         for (final entry
             in (saved['positions'] as Map<String, dynamic>).entries) {
           doc.positions[int.parse(entry.key)] = Offset(
@@ -417,9 +478,49 @@ class _PatchEditorState extends State<PatchEditor> {
               (entry.value[1] as num).toDouble());
         }
       });
-  String label(Map n) =>
-      '${n['id']} · ${n['processor']['type'] == 'external' ? (doc.processors['${n['id']}']['type'] == 'custom' ? doc.processors['${n['id']}']['name'] : doc.processors['${n['id']}']['type']) : n['processor']['type']}'
-          .toUpperCase();
+  String label(Map n) {
+    final processor = n['processor'] as Map;
+    final native = processor['type'] == 'external'
+        ? doc.processors['${n['id']}'] as Map
+        : null;
+    final kind = (native ?? processor)['type'] as String;
+    final name = kind == 'custom'
+        ? native!['name'] as String
+        : switch (kind) {
+            'ring_mod' => 'Ring modulator',
+            'slicer' => 'Rhythmic slicer',
+            _ => kind.replaceAll('_', ' '),
+          };
+    return "${n['id']} · $name".toUpperCase();
+  }
+
+  String transposeHint(Map native) {
+    final shift = native['semitones'] as int;
+    final rate = doc.data['sample_rate'] as int;
+    final base = native['quality'] == 'fast' ? 2048 : 4096;
+    var window = 512;
+    final target = rate * base ~/ 48000;
+    while (window < target) {
+      window *= 2;
+    }
+    final latency = shift == 0 ? 0.0 : window * 1000 / rate;
+    const notes = [
+      'E',
+      'F',
+      'F♯',
+      'G',
+      'G♯',
+      'A',
+      'B♭',
+      'B',
+      'C',
+      'C♯',
+      'D',
+      'E♭'
+    ];
+    final tuning = notes[(shift % 12 + 12) % 12];
+    return 'Shifts the whole tuning; with standard tuning, low E becomes $tuning. Place before drive or NAM. Zero is exact dry. Estimated latency: ${latency.toStringAsFixed(1)} ms at $rate Hz; live status is authoritative.';
+  }
 
   void add(String type) => edit(() {
         final id =
@@ -434,7 +535,12 @@ class _PatchEditorState extends State<PatchEditor> {
           'chorus',
           'flanger',
           'tremolo',
-          'octaver'
+          'octaver',
+          'transpose',
+          'envelope_filter',
+          'ring_mod',
+          'slicer',
+          'bitcrusher'
         ].contains(type);
         doc.nodes.add({
           'id': id,
@@ -477,6 +583,26 @@ class _PatchEditorState extends State<PatchEditor> {
             },
             if (type == 'tremolo') ...{'rate_hz': 4.0, 'depth': .55},
             if (type == 'octaver') ...{'mix': .45, 'clean_mode': false},
+            if (type == 'transpose') ...{'semitones': -2, 'quality': 'fast'},
+            if (type == 'envelope_filter') ...{
+              'sensitivity': .5,
+              'base_hz': 300.0,
+              'resonance': 2.0,
+              'decay_ms': 200.0,
+              'mix': 1.0
+            },
+            if (type == 'ring_mod') ...{'frequency_hz': 80.0, 'mix': .5},
+            if (type == 'slicer') ...{
+              'bpm': 120.0,
+              'division': 2,
+              'pattern': 'pulse',
+              'depth': 1.0
+            },
+            if (type == 'bitcrusher') ...{
+              'bits': 8,
+              'rate_hz': 12000.0,
+              'mix': .5
+            },
             if (type == 'nam') 'input': 'average',
             if (type == 'cabinet') 'duration_seconds': .2,
             if (type == 'reverb') 'decay_seconds': 2.5,
@@ -804,8 +930,10 @@ class _PatchEditorState extends State<PatchEditor> {
             if (_undo.length > 50) _undo.removeAt(0);
             _redo.clear();
           },
-          onChanged: (v) =>
-              setState(() => target[key] = integer ? v.round() : v)),
+          onChanged: (v) => setState(() {
+                target[key] = integer ? v.round() : v;
+                doc.changed();
+              })),
     ]);
   }
 
@@ -929,6 +1057,58 @@ class _PatchEditorState extends State<PatchEditor> {
                   onChanged: (value) =>
                       edit(() => native['clean_mode'] = value),
                 ),
+              if (native?['type'] == 'transpose') ...[
+                number(native!, 'semitones', 'Shift · semitones', -12, 12,
+                    integer: true),
+                DropdownButton<String>(
+                    value: native['quality'] as String,
+                    items: const [
+                      DropdownMenuItem(value: 'fast', child: Text('Fast')),
+                      DropdownMenuItem(value: 'smooth', child: Text('Smooth'))
+                    ],
+                    onChanged: (v) => edit(() => native['quality'] = v)),
+                Text(transposeHint(native)),
+              ],
+              if (native?['type'] == 'envelope_filter') ...[
+                number(native!, 'sensitivity', 'Sensitivity', 0, 1,
+                    percent: true),
+                number(native, 'base_hz', 'Base frequency · Hz', 80, 2000),
+                number(native, 'resonance', 'Resonance', .5, 8),
+                number(native, 'decay_ms', 'Decay · ms', 20, 1000),
+                number(native, 'mix', 'Mix · wet', 0, 1, percent: true),
+              ],
+              if (native?['type'] == 'ring_mod') ...[
+                number(native!, 'frequency_hz', 'Frequency · Hz', 1, 4000),
+                number(native, 'mix', 'Mix · wet', 0, 1, percent: true)
+              ],
+              if (native?['type'] == 'slicer') ...[
+                number(native!, 'bpm', 'Tempo · BPM', 30, 300),
+                DropdownButton<int>(
+                    value: native['division'] as int,
+                    items: const [
+                      DropdownMenuItem(value: 1, child: Text('Quarter notes')),
+                      DropdownMenuItem(value: 2, child: Text('Eighth notes')),
+                      DropdownMenuItem(value: 4, child: Text('Sixteenth notes'))
+                    ],
+                    onChanged: (v) => edit(() => native['division'] = v)),
+                DropdownButton<String>(
+                    value: native['pattern'] as String,
+                    items: const [
+                      DropdownMenuItem(value: 'pulse', child: Text('Pulse')),
+                      DropdownMenuItem(
+                          value: 'offbeat', child: Text('Offbeat')),
+                      DropdownMenuItem(value: 'gallop', child: Text('Gallop'))
+                    ],
+                    onChanged: (v) => edit(() => native['pattern'] = v)),
+                number(native, 'depth', 'Depth', 0, 1, percent: true),
+                const Text('Free-running; not synchronized to transport.'),
+              ],
+              if (native?['type'] == 'bitcrusher') ...[
+                number(native!, 'bits', 'Bit depth · bits', 4, 16,
+                    integer: true),
+                number(native, 'rate_hz', 'Sample rate · Hz', 1000, 48000),
+                number(native, 'mix', 'Mix · wet', 0, 1, percent: true)
+              ],
               if (native?['type'] == 'custom') ...[
                 Text('Revision ${native!['revision']}'),
                 ...macroSliders(native, number),
@@ -997,8 +1177,18 @@ class _PatchEditorState extends State<PatchEditor> {
                             for (final category in <String, List<String>>{
                               'Mixing': ['gain', 'mixer'],
                               'Drive': ['overdrive', 'fuzz'],
-                              'Modulation': ['chorus', 'flanger', 'tremolo'],
-                              'Pitch': ['octaver'],
+                              'Modulation': [
+                                'chorus',
+                                'flanger',
+                                'tremolo',
+                                'ring_mod',
+                                'slicer'
+                              ],
+                              'Filter & texture': [
+                                'envelope_filter',
+                                'bitcrusher'
+                              ],
+                              'Pitch': ['transpose', 'octaver'],
                               'Amp & cabinet': ['edge_amp', 'nam', 'cabinet'],
                               'Space': ['reverb', 'delay'],
                               'Library': ['my_nodes'],
@@ -1010,9 +1200,13 @@ class _PatchEditorState extends State<PatchEditor> {
                                     value: type,
                                     child: Text(type == 'my_nodes'
                                         ? 'My Nodes'
-                                        : type
-                                            .replaceAll('_', ' ')
-                                            .toUpperCase())),
+                                        : type == 'slicer'
+                                            ? 'RHYTHMIC SLICER'
+                                            : type == 'ring_mod'
+                                                ? 'RING MODULATOR'
+                                                : type
+                                                    .replaceAll('_', ' ')
+                                                    .toUpperCase())),
                             ],
                           ],
                       child: const Padding(
@@ -1037,6 +1231,10 @@ class _PatchEditorState extends State<PatchEditor> {
                       icon: Icon(_canvasMode
                           ? Icons.view_agenda_outlined
                           : Icons.account_tree_outlined)),
+                  if (_live != null)
+                    ListenableBuilder(
+                        listenable: _live,
+                        builder: (context, _) => Text(_live.label)),
                   if (widget.client != null)
                     TextButton.icon(
                         onPressed: openWorkbench,
@@ -1051,7 +1249,9 @@ class _PatchEditorState extends State<PatchEditor> {
                           icon: Icons.graphic_eq,
                           child: SingleChildScrollView(
                               child: PatchAudioControls(
-                                  document: doc, client: widget.client!))),
+                                  document: doc,
+                                  client: widget.client!,
+                                  live: _live!))),
                     ),
                   TextButton(
                       onPressed: error == null ? saveCustom : null,

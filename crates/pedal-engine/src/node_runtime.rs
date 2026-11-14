@@ -16,15 +16,28 @@ pub enum MonoSource {
 }
 
 pub struct NamNode {
-    model: nam_bridge::NamModel,
+    model: crate::nam_oversampling::OversampledNam,
     source: MonoSource,
     failed: Arc<AtomicBool>,
 }
 impl NamNode {
     /// Native-rate only until fractional resampler latency is represented.
-    pub fn load(path: &std::path::Path, rate: u32, source: MonoSource) -> Result<Self, String> {
-        let model =
-            nam_bridge::NamModel::load(path, rate as f64, 128).map_err(|e| e.to_string())?;
+    /// `oversampling` phase-interleaves native-rate instances (1, 2, 4 or 8).
+    pub fn load(
+        path: &std::path::Path,
+        rate: u32,
+        source: MonoSource,
+        oversampling: u8,
+    ) -> Result<Self, String> {
+        let model = crate::nam_oversampling::OversampledNam::load(
+            path,
+            rate as f64,
+            128,
+            nam_bridge::NamQuality::Full,
+            false,
+            oversampling,
+        )
+        .map_err(|e| e.to_string())?;
         if model.expected_sample_rate() != rate as f64 {
             return Err("Node NAM requires its declared native sample rate".into());
         }
@@ -40,6 +53,8 @@ impl NamNode {
 }
 impl StereoNode for NamNode {
     // No adapter buffering at native rate. This is not capture-phase alignment.
+    // Oversampling adds only the half-band filters' few-sample minimum-phase
+    // group delay, reported as 0 like Tone3000's oversampler.
     fn latency_samples(&self) -> usize {
         0
     }
@@ -262,7 +277,7 @@ mod tests {
     fn nam_native_block_adapter_and_explicit_downmix() {
         let path = std::env::temp_dir().join(format!("aero-node-test-{}.nam", std::process::id()));
         std::fs::write(&path, r#"{"version":"0.5.0","architecture":"Linear","sample_rate":48000,"config":{"receptive_field":1,"bias":false},"weights":[0.5]}"#).unwrap();
-        let result = NamNode::load(&path, 48_000, MonoSource::Average);
+        let result = NamNode::load(&path, 48_000, MonoSource::Average, 1);
         std::fs::remove_file(&path).unwrap();
         let mut node = result.unwrap();
         let mut frames = [[0.2, 0.6]; 513];

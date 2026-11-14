@@ -14,6 +14,8 @@ from pedal_catalog.tone3000 import (  # noqa: E402
     PkceSession,
     Tone3000Client,
     Tone3000Error,
+    UrllibTransport,
+    USER_AGENT,
     Tokens,
     _SafeRedirectHandler,
     build_select_authorize_url,
@@ -36,6 +38,25 @@ def json_response(payload: dict, status: int = 200) -> HttpResponse:
 
 
 class Tone3000Tests(unittest.TestCase):
+    def test_browse_builds_query_and_works_signed_out(self) -> None:
+        transport = FakeTransport([json_response({"data": []})])
+        client = Tone3000Client("key", transport=transport)
+        client.browse_tones(query="plexi", gears="amp", sort="downloads-all-time", format="nam",
+                            tags=("high-gain", "lead"), verified=True, page=2, page_size=12)
+        request = transport.requests[0]
+        self.assertFalse(request.has_header("Authorization"))
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.full_url).query)
+        self.assertEqual(query["gears"], ["amp"])
+        self.assertEqual(query["sort"], ["downloads-all-time"])
+        self.assertEqual(query["architecture"], ["2"])
+        self.assertEqual(query["tags"], ["high-gain_lead"])
+        self.assertEqual(query["page"], ["2"])
+        transport = FakeTransport([json_response({"data": []})])
+        Tone3000Client("key", transport=transport).browse_tones(sort="best-match", format="ir")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(transport.requests[0].full_url).query)
+        self.assertNotIn("sort", query)  # best-match needs a query
+        self.assertNotIn("architecture", query)
+
     def test_pkce_uses_s256_and_select_flow_is_a2_nam_only(self) -> None:
         chunks = iter((bytes(range(32)), bytes(range(16))))
         session = create_pkce_session(lambda _: next(chunks))
@@ -154,7 +175,7 @@ class Tone3000Tests(unittest.TestCase):
     def test_cross_origin_redirect_strips_authorization(self) -> None:
         original = urllib.request.Request(
             "https://www.tone3000.com/api/v1/models/9/download",
-            headers={"Authorization": "Bearer secret"},
+            headers={"Authorization": "Bearer secret", "User-Agent": "AERO-DSP/0.1.0"},
         )
         redirected = _SafeRedirectHandler().redirect_request(
             original,
@@ -167,6 +188,53 @@ class Tone3000Tests(unittest.TestCase):
 
         self.assertIsNotNone(redirected)
         self.assertIsNone(redirected.get_header("Authorization"))
+        self.assertEqual(redirected.get_header("User-agent"), "AERO-DSP/0.1.0")
+
+    def test_transport_supplies_user_agent_and_preserves_explicit_override(self) -> None:
+        class Response:
+            status = 200
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        class Opener:
+            def __init__(self):
+                self.requests = []
+
+            def open(self, request, timeout):
+                self.requests.append(request)
+                return Response()
+
+        transport = UrllibTransport()
+        opener = Opener()
+        transport._opener = opener
+        transport.send(urllib.request.Request("https://www.tone3000.com/api/v1/models"))
+        transport.send(urllib.request.Request(
+            "https://www.tone3000.com/api/v1/models/9/download",
+            headers={"User-Agent": "Custom client/1"},
+        ))
+        self.assertEqual(opener.requests[0].get_header("User-agent"), USER_AGENT)
+        self.assertEqual(opener.requests[1].get_header("User-agent"), "Custom client/1")
+
+    def test_cloudflare_1010_download_error_is_identified(self) -> None:
+        transport = FakeTransport([HttpResponse(403, b"error code: 1010\n\n", {})])
+        client = Tone3000Client(
+            "t3k_pub_test", tokens=Tokens("access", "refresh", 10_000),
+            transport=transport, clock=lambda: 1_000,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(Tone3000Error, "Cloudflare 1010"):
+                client.download_model(
+                    "https://www.tone3000.com/api/v1/models/9/download",
+                    Path(directory) / "model.nam",
+                )
 
     def test_download_is_authenticated_hashed_and_atomic(self) -> None:
         content = b"test nam model"

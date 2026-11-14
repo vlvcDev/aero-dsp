@@ -43,6 +43,28 @@ impl OverdriveNode {
 }
 
 impl StereoNode for OverdriveNode {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        match parameter {
+            "drive_db" if (0.0..=24.0).contains(&value) => {
+                self.clipper.set_parameter("drive_db", value)
+            }
+            "tone" if (0.0..=1.0).contains(&value) => {
+                self.clipper.set_parameter("tone", 0.28 + 0.68 * value)
+            }
+            "mix" if (0.0..=1.0).contains(&value) => {
+                self.mix = value;
+                true
+            }
+            "output_db" if (-24.0..=6.0).contains(&value) => {
+                self.output = 10.0_f32.powf(value / 20.0);
+                true
+            }
+            _ => false,
+        }
+    }
     fn latency_samples(&self) -> usize {
         self.clipper.latency_samples()
     }

@@ -7,31 +7,43 @@ pub mod audio;
 pub mod audio_file;
 pub mod cabinet;
 pub mod calibration;
+pub mod capture_info;
+pub mod compressor;
 pub mod convolution;
+pub mod creative_effects;
+pub mod dehiss;
 mod dry_alignment;
 pub mod dsp;
 pub mod edge_amp;
 pub mod effects;
 pub mod fuzz;
-mod gate;
+pub mod gate;
+pub mod live_parameters;
 pub mod metronome;
 pub mod nam_eq;
+pub mod nam_oversampling;
 pub mod node_document;
 pub mod node_live;
 pub mod node_rig;
 pub mod node_runtime;
 pub mod octaver;
 pub mod overdrive;
+pub mod oversampling;
 pub mod patch_comparison;
 pub mod presets;
 pub mod preview;
 pub mod quality;
+pub mod realtime;
 pub mod reverb;
 pub mod riff_vault;
 pub mod rig;
+pub mod rt_pool;
+pub mod squelch;
 pub mod state;
+pub mod svf;
 pub mod timeline;
 pub mod tone_eq;
+pub mod transpose;
 pub mod tuner;
 
 pub const API_VERSION: u8 = 1;
@@ -64,6 +76,10 @@ pub struct EngineState {
     pub pedal_alignment: Option<nam_bridge::alignment::AlignmentEstimate>,
     pub pedal_eq: nam_eq::NamEqSettings,
     pub amp_eq: nam_eq::NamEqSettings,
+    #[serde(default)]
+    pub pedal_normalize_enabled: bool,
+    #[serde(default)]
+    pub amp_normalize_enabled: bool,
     pub calibration_enabled: bool,
     pub input_reference_dbu: f32,
     pub input_reference_set: bool,
@@ -74,6 +90,10 @@ pub struct EngineState {
     /// Device preferences: 0 Lite, 1 Full; render additionally accepts 2 Same as live.
     pub nam_quality: u8,
     pub render_nam_quality: u8,
+    /// Live NAM oversampling factor: 1 (off), 2, 4 or 8. CPU scales with it.
+    pub nam_oversampling: u8,
+    /// Render override: 0 Same as live, otherwise 1, 2, 4 or 8.
+    pub render_nam_oversampling: u8,
     pub bypassed: bool,
     pub preset: String,
     pub preset_id: Option<String>,
@@ -88,6 +108,8 @@ pub struct EngineState {
     pub amp_bass_db: f32,
     pub amp_mid_db: f32,
     pub amp_treble_db: f32,
+    /// Pre-amp TIGHT high-pass corner (Hz); 0 = off.
+    pub amp_tight_hz: f32,
     pub amp_volume_db: f32,
     pub cabinet_enabled: bool,
     pub cabinet_ir: Option<String>,
@@ -95,13 +117,30 @@ pub struct EngineState {
     pub cabinet_low_cut_hz: f32,
     pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
+    /// Device setting: zero the clean input at the interface noise floor.
+    pub squelch_enabled: bool,
+    pub squelch_threshold_db: f32,
+    /// High-band downward expander after the amp/cab (see `dehiss`).
+    pub dehiss_enabled: bool,
+    pub dehiss_threshold_db: f32,
+    pub dehiss_frequency_hz: f32,
+    pub dehiss_range_db: f32,
     pub gate_threshold_db: f32,
+    /// How far below the threshold a ringing note may fall before the gate closes.
+    pub gate_hysteresis_db: f32,
     pub gate_hold_ms: f32,
     pub gate_release_ms: f32,
     pub gate_range_db: f32,
     pub compressor_enabled: bool,
     pub compressor_threshold_db: f32,
     pub compressor_ratio: f32,
+    pub compressor_attack_ms: f32,
+    pub compressor_release_ms: f32,
+    /// Manual makeup (LEVEL), added to the automatic makeup when enabled.
+    pub compressor_level_db: f32,
+    pub compressor_auto_makeup: bool,
+    /// Parallel blend: 1 = fully compressed, 0 = dry.
+    pub compressor_mix: f32,
     pub eq_enabled: bool,
     pub eq_visible: bool,
     pub eq_low_db: f32,
@@ -124,6 +163,7 @@ pub struct EngineState {
     pub tremolo_depth: f32,
     pub octaver_enabled: bool,
     pub octaver_visible: bool,
+    pub dehiss_visible: bool,
     pub octaver_mix: f32,
     pub octaver_clean: bool,
     pub delay_enabled: bool,
@@ -153,6 +193,8 @@ impl Default for EngineState {
             pedal_alignment: None,
             pedal_eq: nam_eq::NamEqSettings::default(),
             amp_eq: nam_eq::NamEqSettings::default(),
+            pedal_normalize_enabled: true,
+            amp_normalize_enabled: true,
             calibration_enabled: false,
             input_reference_dbu: 0.0,
             input_reference_set: false,
@@ -162,6 +204,8 @@ impl Default for EngineState {
             render_quality_profile: 3,
             nam_quality: 1,
             render_nam_quality: 2,
+            nam_oversampling: 1,
+            render_nam_oversampling: 0,
             bypassed: false,
             preset: "Default".to_owned(),
             preset_id: None,
@@ -176,20 +220,33 @@ impl Default for EngineState {
             amp_bass_db: 0.0,
             amp_mid_db: 0.0,
             amp_treble_db: 0.0,
+            amp_tight_hz: 0.0,
             amp_volume_db: 0.0,
             cabinet_enabled: false,
             cabinet_ir: None,
             cabinet_gain_db: 0.0,
-            cabinet_low_cut_hz: 80.0,
-            cabinet_high_cut_hz: 8_000.0,
+            cabinet_low_cut_hz: 0.0,
+            cabinet_high_cut_hz: 0.0,
             gate_enabled: false,
+            squelch_enabled: true,
+            squelch_threshold_db: crate::squelch::DEFAULT_THRESHOLD_DB,
+            dehiss_enabled: false,
+            dehiss_threshold_db: -70.0,
+            dehiss_frequency_hz: 3_000.0,
+            dehiss_range_db: 24.0,
             gate_threshold_db: -80.0,
+            gate_hysteresis_db: 12.0,
             gate_hold_ms: 20.0,
             gate_release_ms: 50.0,
             gate_range_db: 80.0,
             compressor_enabled: false,
             compressor_threshold_db: -18.0,
             compressor_ratio: 3.0,
+            compressor_attack_ms: 10.0,
+            compressor_release_ms: 120.0,
+            compressor_level_db: 0.0,
+            compressor_auto_makeup: true,
+            compressor_mix: 1.0,
             eq_enabled: false,
             eq_visible: false,
             eq_low_db: 0.0,
@@ -212,6 +269,7 @@ impl Default for EngineState {
             tremolo_depth: 0.55,
             octaver_enabled: false,
             octaver_visible: false,
+            dehiss_visible: false,
             octaver_mix: 0.45,
             octaver_clean: false,
             delay_enabled: false,
@@ -273,6 +331,7 @@ impl EngineState {
             "cabinet_high_cut_hz": self.cabinet_high_cut_hz,
             "gate_enabled": self.gate_enabled,
             "gate_threshold_db": self.gate_threshold_db,
+            "gate_hysteresis_db": self.gate_hysteresis_db,
             "gate_hold_ms": self.gate_hold_ms,
             "gate_release_ms": self.gate_release_ms,
             "gate_range_db": self.gate_range_db,
@@ -323,7 +382,36 @@ impl EngineState {
             "sample_rate": self.sample_rate,
             "buffer_frames": self.buffer_frames,
         });
+        snapshot["pedal_normalize_enabled"] = json!(self.pedal_normalize_enabled);
+        snapshot["amp_normalize_enabled"] = json!(self.amp_normalize_enabled);
         snapshot["pedal_align_enabled"] = json!(self.pedal_align_enabled);
+        snapshot["amp_tight_hz"] = json!(self.amp_tight_hz);
+        // A capture that already contains a speaker cab plus a cab IR filters
+        // the sound twice (harsh, boxy, smeared); the UI offers to turn the IR off.
+        snapshot["pre_includes_cab"] = json!(
+            self.pre_model
+                .as_deref()
+                .is_some_and(crate::capture_info::includes_cab_cached)
+        );
+        snapshot["amp_includes_cab"] = json!(
+            self.model
+                .as_deref()
+                .is_some_and(crate::capture_info::includes_cab_cached)
+        );
+        snapshot["compressor_attack_ms"] = json!(self.compressor_attack_ms);
+        snapshot["compressor_release_ms"] = json!(self.compressor_release_ms);
+        snapshot["compressor_level_db"] = json!(self.compressor_level_db);
+        snapshot["compressor_auto_makeup"] = json!(self.compressor_auto_makeup);
+        snapshot["compressor_mix"] = json!(self.compressor_mix);
+        snapshot["squelch_enabled"] = json!(self.squelch_enabled);
+        snapshot["squelch_threshold_db"] = json!(self.squelch_threshold_db);
+        snapshot["dehiss_enabled"] = json!(self.dehiss_enabled);
+        snapshot["dehiss_visible"] = json!(self.dehiss_visible);
+        snapshot["dehiss_threshold_db"] = json!(self.dehiss_threshold_db);
+        snapshot["dehiss_frequency_hz"] = json!(self.dehiss_frequency_hz);
+        snapshot["dehiss_range_db"] = json!(self.dehiss_range_db);
+        snapshot["nam_oversampling"] = json!(self.nam_oversampling);
+        snapshot["render_nam_oversampling"] = json!(self.render_nam_oversampling);
         snapshot["pedal_alignment"] = json!(self.pedal_alignment);
         snapshot
     }

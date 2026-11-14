@@ -50,6 +50,28 @@ impl EdgeAmp {
 }
 
 impl StereoNode for EdgeAmp {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        match parameter {
+            "drive_db" if (0.0..=30.0).contains(&value) => {
+                self.compensation = 10.0_f32.powf(-0.25 * value / 20.0);
+                self.stage.set_parameter("drive_db", value)
+            }
+            "tone" if (0.0..=1.0).contains(&value) => {
+                self.stage.set_parameter("tone", 0.45 + 0.55 * value)
+            }
+            "touch" if (0.0..=1.0).contains(&value) => {
+                self.touch = value;
+                true
+            }
+            "master_db" if (-36.0..=6.0).contains(&value) => {
+                self.stage.set_parameter("output_db", value)
+            }
+            _ => false,
+        }
+    }
     fn latency_samples(&self) -> usize {
         self.stage.latency_samples()
     }

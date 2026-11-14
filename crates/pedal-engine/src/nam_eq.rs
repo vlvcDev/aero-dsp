@@ -252,12 +252,29 @@ impl Filter {
     }
 }
 
+/// TONE3000 loudness reference, independent of physical input calibration.
+fn normalization_gain(metadata: Option<nam_bridge::ModelMetadata>, enabled: bool) -> f32 {
+    if !enabled {
+        return 1.0;
+    }
+    let Some(loudness) = metadata
+        .and_then(|m| m.loudness_db)
+        .filter(|v| v.is_finite() && (-100.0..=0.0).contains(v))
+    else {
+        return 1.0;
+    };
+    10.0_f32.powf(((-18.0 - loudness) as f32).clamp(-24.0, 24.0) / 20.0)
+}
+
 pub struct NamEqProcessor<P> {
     inner: P,
     parameters: Arc<NamEqParameters>,
     before: [Filter; 6],
     after: [Filter; 6],
     ramp: u32,
+    normalization: Option<(Arc<crate::calibration::CalibrationParameters>, bool)>,
+    normalization_gain: Option<f32>,
+    normalization_smoothing: f32,
 }
 impl<P> NamEqProcessor<P> {
     pub fn new(inner: P, parameters: Arc<NamEqParameters>, rate: u32) -> Self {
@@ -268,7 +285,18 @@ impl<P> NamEqProcessor<P> {
             before: if pre { bank } else { [UNITY; 6] }.map(Filter::new),
             after: if pre { [UNITY; 6] } else { bank }.map(Filter::new),
             ramp: (rate / 100).max(1),
+            normalization: None,
+            normalization_gain: None,
+            normalization_smoothing: 1.0 - (-1.0 / (0.01 * rate.max(1) as f32)).exp(),
         }
+    }
+    pub fn with_normalization(
+        mut self,
+        parameters: Arc<crate::calibration::CalibrationParameters>,
+        pedal: bool,
+    ) -> Self {
+        self.normalization = Some((parameters, pedal));
+        self
     }
     fn process_bank(bank: &mut [Filter; 6], samples: &mut [f32]) {
         for f in bank {
@@ -304,6 +332,19 @@ impl<P: MonoProcessor> MonoProcessor for NamEqProcessor<P> {
         }
         Self::process_bank(&mut self.before, samples);
         self.inner.process(samples);
+        if let Some((parameters, pedal)) = &self.normalization {
+            let metadata = self.inner.model_metadata();
+            let target = normalization_gain(metadata, parameters.normalize_enabled(*pedal));
+            // An empty slot must never inherit the previous model’s gain.
+            if metadata.is_none() {
+                self.normalization_gain = Some(1.0);
+            }
+            let gain = self.normalization_gain.get_or_insert(target);
+            for sample in samples.iter_mut() {
+                *gain += (target - *gain) * self.normalization_smoothing;
+                *sample *= *gain;
+            }
+        }
         Self::process_bank(&mut self.after, samples);
     }
 }
@@ -546,5 +587,195 @@ mod tests {
         assert_eq!(old.amp_eq, NamEqSettings::default());
         s.set_control("reset", 1.0).unwrap();
         assert_eq!(s, NamEqSettings::default());
+    }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::*;
+    use crate::{
+        EngineState,
+        calibration::{CalibratedChain, CalibrationParameters},
+        dsp::{BypassProcessor, PedalControlProcessor, PedalParameters},
+    };
+    use std::sync::atomic::AtomicBool;
+
+    fn metadata(
+        loudness: Option<f64>,
+        input: Option<f64>,
+        output: Option<f64>,
+    ) -> nam_bridge::ModelMetadata {
+        nam_bridge::ModelMetadata {
+            loudness_db: loudness,
+            input_level_dbu: input,
+            output_level_dbu: output,
+            expected_sample_rate: 48000.0,
+        }
+    }
+    struct Model(Option<nam_bridge::ModelMetadata>);
+    impl MonoProcessor for Model {
+        fn model_metadata(&self) -> Option<nam_bridge::ModelMetadata> {
+            self.0
+        }
+        fn process(&mut self, _: &mut [f32]) {}
+    }
+    fn eq(
+        model: Model,
+        parameters: Arc<CalibrationParameters>,
+        pedal: bool,
+    ) -> NamEqProcessor<Model> {
+        NamEqProcessor::new(
+            model,
+            Arc::new(NamEqParameters::new(&NamEqSettings::default(), 48000)),
+            48000,
+        )
+        .with_normalization(parameters, pedal)
+    }
+    #[test]
+    fn loudness_bounds_and_invalid_values_are_safe() {
+        let m = |v| Some(metadata(v, None, None));
+        assert_eq!(normalization_gain(None, true), 1.0);
+        for v in [
+            None,
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(-101.0),
+            Some(0.1),
+        ] {
+            assert_eq!(normalization_gain(m(v), true), 1.0);
+        }
+        assert_eq!(normalization_gain(m(Some(-30.0)), false), 1.0);
+        assert!(
+            (normalization_gain(m(Some(-30.0)), true) - 10.0_f32.powf(12.0 / 20.0)).abs() < 1e-6
+        );
+        assert!(
+            (normalization_gain(m(Some(-100.0)), true) - 10.0_f32.powf(24.0 / 20.0)).abs() < 1e-6
+        );
+        assert!(
+            (normalization_gain(m(Some(0.0)), true) - 10.0_f32.powf(-18.0 / 20.0)).abs() < 1e-6
+        );
+    }
+    #[test]
+    fn wet_only_and_bypassed_drive_do_not_change_dry() {
+        let state = EngineState::default();
+        let shared = Arc::new(CalibrationParameters::new(&state));
+        let model = eq(Model(Some(metadata(Some(-30.0), None, None))), shared, true);
+        let controls = Arc::new(PedalParameters::new(0.0, 0.5, 0.0));
+        let pedal = PedalControlProcessor::new(model, controls, 128, 48000);
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut pedal = BypassProcessor::new(pedal, flag.clone(), 48000);
+        let mut samples = [1.0; 128];
+        pedal.process(&mut samples);
+        assert!((samples[127] - (0.5 + 0.5 * 10.0_f32.powf(12.0 / 20.0))).abs() < 1e-5);
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..10 {
+            samples.fill(1.0);
+            pedal.process(&mut samples);
+        }
+        assert_eq!(samples[127], 1.0);
+    }
+    #[test]
+    fn calibrated_handoff_suppresses_drive_and_releases_when_disabled() {
+        let mut state = EngineState {
+            calibration_enabled: true,
+            input_reference_set: true,
+            ..Default::default()
+        };
+        let shared = Arc::new(CalibrationParameters::new(&state));
+        let pre = eq(
+            Model(Some(metadata(Some(-30.0), Some(0.0), Some(0.0)))),
+            shared.clone(),
+            true,
+        );
+        let amp = eq(
+            Model(Some(metadata(None, Some(0.0), None))),
+            shared.clone(),
+            false,
+        );
+        let mut chain = CalibratedChain::new(pre, amp, shared.clone(), 48000);
+        let mut samples = [1.0; 128];
+        chain.process(&mut samples);
+        assert!((samples[127] - 1.0).abs() < 1e-6);
+        state.calibration_enabled = false;
+        shared.update(&state);
+        for _ in 0..40 {
+            samples.fill(1.0);
+            chain.process(&mut samples);
+        }
+        assert!((samples[127] - 10.0_f32.powf(12.0 / 20.0)).abs() < 0.001);
+    }
+    #[test]
+    fn switched_model_uses_new_metadata_and_empty_slot_returns_to_unity() {
+        use crate::dsp::{SwapMailbox, SwappableProcessor};
+        let shared = Arc::new(CalibrationParameters::new(&EngineState::default()));
+        let mailbox = Arc::new(SwapMailbox::default());
+        let model = SwappableProcessor::new(
+            Model(Some(metadata(Some(-30.0), None, None))),
+            mailbox.clone(),
+            48000,
+        );
+        let mut wrapper = NamEqProcessor::new(
+            model,
+            Arc::new(NamEqParameters::new(&NamEqSettings::default(), 48000)),
+            48000,
+        )
+        .with_normalization(shared, true);
+        let mut samples = [1.0; 128];
+        wrapper.process(&mut samples);
+        assert!((samples[127] - 10.0_f32.powf(12.0 / 20.0)).abs() < 1e-5);
+        mailbox.stage(Model(Some(metadata(Some(-18.0), None, None))));
+        for _ in 0..60 {
+            samples.fill(1.0);
+            wrapper.process(&mut samples);
+        }
+        assert!((samples[127] - 1.0).abs() < 0.001);
+        mailbox.stage(Model(None));
+        for _ in 0..20 {
+            samples.fill(1.0);
+            wrapper.process(&mut samples);
+        }
+        assert!((samples[127] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn invalid_handoff_metadata_keeps_normalization_and_avoids_invalid_calibration() {
+        for invalid in [f64::NAN, f64::INFINITY, -60.01, 60.01] {
+            let state = EngineState {
+                calibration_enabled: true,
+                input_reference_set: true,
+                ..Default::default()
+            };
+            let shared = Arc::new(CalibrationParameters::new(&state));
+            let pre = eq(
+                Model(Some(metadata(Some(-30.0), Some(0.0), Some(invalid)))),
+                shared.clone(),
+                true,
+            );
+            let amp = eq(
+                Model(Some(metadata(None, Some(0.0), None))),
+                shared.clone(),
+                false,
+            );
+            let mut chain = CalibratedChain::new(pre, amp, shared, 48000);
+            let mut samples = [1.0; 128];
+            chain.process(&mut samples);
+            assert!((samples[0] - 10.0_f32.powf(12.0 / 20.0)).abs() < 1e-5);
+        }
+    }
+    #[test]
+    fn old_state_and_preset_opt_out_and_new_ones_round_trip() {
+        let old: EngineState = serde_json::from_str("{}").unwrap();
+        assert!(!old.pedal_normalize_enabled && !old.amp_normalize_enabled);
+        let old: crate::presets::PresetRig = serde_json::from_str("{}").unwrap();
+        assert!(!old.pedal_normalize_enabled && !old.amp_normalize_enabled);
+        let state = EngineState::default();
+        assert!(state.pedal_normalize_enabled && state.amp_normalize_enabled);
+        let saved = crate::presets::PresetRig::from_state(&state);
+        let loaded: crate::presets::PresetRig =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let mut restored = EngineState::default();
+        restored.pedal_normalize_enabled = false;
+        restored.amp_normalize_enabled = false;
+        loaded.apply_to(&mut restored);
+        assert!(restored.pedal_normalize_enabled && restored.amp_normalize_enabled);
     }
 }

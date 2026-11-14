@@ -67,6 +67,11 @@ pub trait StereoNode: Send {
     fn latency_samples(&self) -> usize;
     fn tick(&mut self, input: Frame) -> Frame;
     fn reset(&mut self);
+    /// Prepared, finite numeric controls only. Preserve DSP history and latency;
+    /// implementations must not allocate, load assets, or reset on a knob change.
+    fn set_parameter(&mut self, _parameter: &str, _value: f32) -> bool {
+        false
+    }
     /// Override for efficient native processing. At most 128 frames per call.
     fn process_block(&mut self, frames: &mut [Frame]) {
         for frame in frames {
@@ -97,6 +102,14 @@ impl ReverbNode {
     }
 }
 impl StereoNode for ReverbNode {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if parameter != "decay_seconds" || !value.is_finite() || !(0.3..=12.0).contains(&value) {
+            return false;
+        }
+        self.left.set_decay(value);
+        self.right.set_decay(value);
+        true
+    }
     fn latency_samples(&self) -> usize {
         0
     }

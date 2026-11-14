@@ -21,7 +21,28 @@ pub struct RigDocument {
     pub sample_rate: u32,
     pub graph: Graph,
     /// Entries only for External nodes. Paths are relative to the document.
+    #[serde(deserialize_with = "deserialize_processors")]
     pub processors: BTreeMap<u32, NativeProcessor>,
+}
+
+// Internally tagged Custom descriptors deserialize their embedded document via
+// Serde's buffered content. That path doesn't apply JSON's numeric map-key
+// coercion, so explicitly decode keys instead of failing on nested processors.
+fn deserialize_processors<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<u32, NativeProcessor>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries = BTreeMap::<String, NativeProcessor>::deserialize(deserializer)?;
+    let mut processors = BTreeMap::new();
+    for (key, value) in entries {
+        let id = key.parse::<u32>().map_err(serde::de::Error::custom)?;
+        if processors.insert(id, value).is_some() {
+            return Err(serde::de::Error::custom("Duplicate processor node ID"));
+        }
+    }
+    Ok(processors)
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -33,6 +54,12 @@ pub enum NativeProcessor {
     Nam {
         path: String,
         input: MonoSource,
+        /// 1 (off), 2, 4 or 8; see `nam_oversampling`. Omitted means 1.
+        #[serde(
+            default = "unity_oversampling",
+            skip_serializing_if = "is_unity_oversampling"
+        )]
+        oversampling: u8,
     },
     Reverb {
         decay_seconds: f32,
@@ -59,8 +86,34 @@ pub enum NativeProcessor {
         rate_hz: f32,
         depth: f32,
     },
+    Transpose {
+        semitones: i32,
+        quality: String,
+    },
     Octaver {
         clean_mode: bool,
+        mix: f32,
+    },
+    EnvelopeFilter {
+        sensitivity: f32,
+        base_hz: f32,
+        resonance: f32,
+        decay_ms: f32,
+        mix: f32,
+    },
+    RingMod {
+        frequency_hz: f32,
+        mix: f32,
+    },
+    Slicer {
+        bpm: f32,
+        division: u32,
+        pattern: String,
+        depth: f32,
+    },
+    Bitcrusher {
+        bits: u32,
+        rate_hz: f32,
         mix: f32,
     },
     EdgeAmp {
@@ -130,6 +183,13 @@ impl Budget {
     }
 }
 
+fn unity_oversampling() -> u8 {
+    1
+}
+fn is_unity_oversampling(factor: &u8) -> bool {
+    *factor == 1
+}
+
 fn resolve_asset(directory: &Path, path: &str) -> Result<std::path::PathBuf, String> {
     let relative = Path::new(path);
     if relative.as_os_str().is_empty()
@@ -152,6 +212,10 @@ fn resolve_asset(directory: &Path, path: &str) -> Result<std::path::PathBuf, Str
 pub struct PreparedRig {
     pub graph: PreparedGraph,
     faults: Vec<Arc<AtomicBool>>,
+    pub(crate) controls: crate::live_parameters::LiveControls,
+    pub(crate) structure: serde_json::Value,
+    pub(crate) directory: std::path::PathBuf,
+    pub(crate) revision: u64,
 }
 impl PreparedRig {
     pub fn faulted(&self) -> bool {
@@ -159,6 +223,25 @@ impl PreparedRig {
     }
 }
 impl RigDocument {
+    /// Compare a draft to its active graph without loading assets or rebuilding DSP.
+    /// All supported live values are validated before any target is published.
+    pub(crate) fn live_snapshot(
+        &self,
+        controls: &crate::live_parameters::LiveControls,
+    ) -> Result<(serde_json::Value, Vec<f32>), String> {
+        let mut structure = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let mut values = Vec::with_capacity(controls.len());
+        for (pointer, control) in controls {
+            let field = structure
+                .pointer_mut(pointer)
+                .ok_or("Rig structure changed; use Apply to guitar")?;
+            let value = field.as_f64().ok_or("Live controls must be numeric")? as f32;
+            control.validate(value)?;
+            values.push(value);
+            *field = serde_json::Value::Null;
+        }
+        Ok((structure, values))
+    }
     pub fn prepare(&self, directory: &Path) -> Result<PreparedRig, String> {
         let mut budget = Budget::default();
         self.validate_nested(self.sample_rate, 0, &mut budget)?;
@@ -223,6 +306,7 @@ impl RigDocument {
         self.graph.prepare_at_rate(stubs, self.sample_rate)?;
         let mut bindings: Vec<(u32, Box<dyn StereoNode>)> = Vec::new();
         let mut faults = Vec::new();
+        let mut controls = crate::live_parameters::LiveControls::new();
         for (id, descriptor) in &self.processors {
             let node: Box<dyn StereoNode> = match descriptor {
                 NativeProcessor::Cabinet {
@@ -237,10 +321,14 @@ impl RigDocument {
                         *duration_seconds,
                     )?)
                 }
-                NativeProcessor::Nam { path, input } => {
+                NativeProcessor::Nam {
+                    path,
+                    input,
+                    oversampling,
+                } => {
                     let asset = resolve_asset(directory, path)
                         .map_err(|e| format!("NAM node {id}: {e}"))?;
-                    let model = NamNode::load(&asset, self.sample_rate, *input)
+                    let model = NamNode::load(&asset, self.sample_rate, *input, *oversampling)
                         .map_err(|e| format!("NAM node {id}: {e}"))?;
                     faults.push(model.fault_flag());
                     Box::new(model)
@@ -300,9 +388,54 @@ impl RigDocument {
                         0.0,
                     )?)
                 }
+                NativeProcessor::Transpose { semitones, quality } => Box::new(
+                    crate::transpose::TransposeNode::new(self.sample_rate, *semitones, quality)
+                        .map_err(|e| format!("Transpose node {id}: {e}"))?,
+                ),
                 NativeProcessor::Octaver { clean_mode, mix } => Box::new(
                     crate::effects::OctaverNode::new(self.sample_rate, *clean_mode, *mix)?,
                 ),
+                NativeProcessor::EnvelopeFilter {
+                    sensitivity,
+                    base_hz,
+                    resonance,
+                    decay_ms,
+                    mix,
+                } => Box::new(crate::creative_effects::EnvelopeFilterNode::new(
+                    self.sample_rate,
+                    *sensitivity,
+                    *base_hz,
+                    *resonance,
+                    *decay_ms,
+                    *mix,
+                )?),
+                NativeProcessor::RingMod { frequency_hz, mix } => {
+                    Box::new(crate::creative_effects::RingModNode::new(
+                        self.sample_rate,
+                        *frequency_hz,
+                        *mix,
+                    )?)
+                }
+                NativeProcessor::Slicer {
+                    bpm,
+                    division,
+                    pattern,
+                    depth,
+                } => Box::new(crate::creative_effects::SlicerNode::new(
+                    self.sample_rate,
+                    *bpm,
+                    *division,
+                    pattern,
+                    *depth,
+                )?),
+                NativeProcessor::Bitcrusher { bits, rate_hz, mix } => {
+                    Box::new(crate::creative_effects::BitcrusherNode::new(
+                        self.sample_rate,
+                        *bits,
+                        *rate_hz,
+                        *mix,
+                    )?)
+                }
                 NativeProcessor::EdgeAmp {
                     drive_db,
                     tone,
@@ -336,9 +469,22 @@ impl RigDocument {
                         .prepare_nested(Path::new(asset_directory), budget)
                         .map_err(|e| format!("Custom node {id}: {e}"))?;
                     faults.extend(nested.faults);
+                    for (path, control) in nested.controls {
+                        controls.insert(format!("/processors/{id}/document{path}"), control);
+                    }
                     Box::new(CustomNode(nested.graph))
                 }
             };
+            let descriptor = serde_json::to_value(descriptor).map_err(|e| e.to_string())?;
+            let (node, parameters) = crate::live_parameters::wrap(
+                node,
+                self.sample_rate,
+                descriptor["type"].as_str().unwrap_or(""),
+                &descriptor,
+            )?;
+            for (parameter, control) in parameters {
+                controls.insert(format!("/processors/{id}/{parameter}"), control);
+            }
             bindings.push((*id, node));
         }
         // The graph compiler also allocates merge compensation delays. Account for
@@ -370,9 +516,23 @@ impl RigDocument {
                 .unwrap_or(0);
             arrivals.insert(node.id, arrival.checked_add(own).ok_or("Latency overflow")?);
         }
+        let graph = self.graph.prepare_at_rate(bindings, self.sample_rate)?;
+        for (index, node) in self.graph.nodes.iter().enumerate() {
+            if let Some(gain) = graph.gain_control(node.id) {
+                controls.insert(
+                    format!("/graph/nodes/{index}/processor/db"),
+                    crate::live_parameters::ParameterControl::gain(gain),
+                );
+            }
+        }
+        let (structure, _) = self.live_snapshot(&controls)?;
         Ok(PreparedRig {
-            graph: self.graph.prepare_at_rate(bindings, self.sample_rate)?,
+            graph,
             faults,
+            controls,
+            structure,
+            directory: directory.to_path_buf(),
+            revision: 0,
         })
     }
 
@@ -453,6 +613,7 @@ mod tests {
             NativeProcessor::Nam {
                 path: "../private.nam".into(),
                 input: MonoSource::Left,
+                oversampling: 1,
             },
         );
         assert!(d.prepare(Path::new(".")).is_err());

@@ -135,7 +135,8 @@ cargo run -p pedal-engine --bin node_render -- \
 ```
 
 The example mixes dry and reverb branches. A NAM processor entry for an External
-node is `{"type":"nam","path":"models/my-capture.nam","input":"average"}`.
+node is `{"type":"nam","path":"models/my-capture.nam","input":"average"}`. An optional `"oversampling": 2` (1, 2, 4 or 8; default 1, omitted when 1)
+oversamples that node the same way as the live rig's `nam_oversampling`.
 The processor key must match the graph node ID. Input choices are left/right/average;
 the NAM must declare the document's native rate. Keep models beneath the rig's
 directory. Missing or invalid assets fail rather than silently becoming bypasses.
@@ -206,7 +207,14 @@ Single-input processors replace their existing connection; mixers add a branch.
 Use Controls to inspect settings and remove connections with the existing chips.
 The toolbar can switch back to the connection-card view.
 
-Fit Patch and zoom buttons help navigate larger rigs. At wide sizes the selected
+Fit Patch arranges nodes in signal-flow order, puts parallel branches on separate
+rows, wraps long chains after six columns, and centers the whole layout. The
+arrangement is one undoable change and leaves audio connections untouched.
+Cable routes bend around intervening nodes, keeping direct dry paths visible
+alongside effect branches. Fit includes the cable bends as well as node tiles.
+Obstructed cables prioritize the fewest bends before distance, with straight
+intermediate routing points removed before rounding the corners.
+Zoom buttons help navigate larger rigs. At wide sizes the selected
 node's controls sit beside the canvas; on narrow screens they temporarily replace
 the canvas until closed. Undo/redo includes node moves. Node positions remain
 in memory separately from the strict DSP JSON and are not exported. Audio is
@@ -311,3 +319,74 @@ performance. The engine matches stereo RMS after processing over frames where
 source peak exceeds -60 dBFS, and applies shared attenuation for peak headroom.
 This preserves input gain and clipping character. Recall to draft returns the
 chosen rig and its asset directory for further editing, saving, or live use.
+
+## Transpose and creative effects
+
+Patch Lab now includes Transpose, Envelope Filter, Ring Modulator, Rhythmic
+Slicer and Bitcrusher, including parameter validation, inspector controls,
+integer-safe custom-node macros, saving/importing and live/preview processing.
+See [the usage and limitations guide](patch-lab-creative-effects.md).
+
+Transpose is an original RustFFT phase vocoder. Short-window Signalsmith
+pitch shifting was evaluated first but did not pass simultaneous-note pitch
+checks. The native implementation keeps independent input-bin phase accumulators
+when output bins collide. Seven active tests check low chord tuning, stereo
+phase/gain, arbitrary block partitioning, reset, Nyquist rejection and window
+normalization/latency. It remains a first implementation: transient smearing and
+partial-level changes need listening evaluation. At 48 kHz Fast adds 2048 samples
+(42.7 ms), Smooth 4096 (85.3 ms); zero semitones is an exact undelayed bypass.
+
+The live route now reserves half a second of dry history off-thread and accepts
+graphs up to that algorithmic latency ceiling. Parallel branches and global
+bypass use the prepared graph's delay. Studio wet-take compensation remains
+separate. Slicer runs on its own BPM clock; transport/MIDI synchronization is
+not implemented.
+
+Integration testing also fixed nested custom-node JSON parsing: processor IDs
+are explicitly decoded from string keys, including inside tagged descriptors.
+Actual control-socket previews now cover each new effect inside a custom node.
+
+Validation on 2026-11-07: 137 engine library tests passed (one pre-existing
+manual test ignored), saved/nested effect graph tests, renderer and preview/
+comparison socket tests passed. Fourteen focused Flutter tests passed; analysis
+has one pre-existing deprecation notice in tone_workbench.dart. The bundled
+guitar clip rendered through all five effects (both transpose modes) with finite,
+non-silent stereo output. These checks did not involve listening or Pi hardware.
+
+A local release microbenchmark at 48 kHz/64 frames measured all five nodes in
+series at 28.3 microseconds mean and 104.5 microseconds p99 per 1333.3-microsecond
+audio block. This measures processing cost, not monitoring delay or a guaranteed
+real-time deadline. The reproducible harness is
+`cargo test -p pedal-engine --release --test creative_patch profile_effects_in_64_frame_blocks -- --ignored --nocapture`.
+
+## Live controls and Rig → State terminology
+
+Rig → State is the agreed naming for future grouped switchable sounds. This
+slice implements live numeric controls; multiple States, shortcuts/footswitches,
+and dropping disconnected nodes onto cables are separate upcoming work.
+
+After Apply, the editor owns the active rig's unique revision. Supported slider
+changes are sent at a bounded rate with one update in flight and the latest
+pending values retained. Undo/redo and nested custom-node macros use the same
+path. Activation responses survive closing the audio panel, and late responses
+cannot reclaim a newer rig's controls. The toolbar distinguishes live controls,
+unapplied structure, and failed updates.
+
+`update_patch` accepts the revision, complete draft document, and asset folder.
+The engine validates all live values and compares the remaining structure before
+publishing numeric targets. It rejects stale revisions, changed assets/wiring,
+and preparation-only controls without replacing or resetting the active graph.
+Live handles use atomic targets; DSP smoothing is 20 ms (existing Gain nodes use
+10 ms). FFT/model/file preparation and control locks stay off the audio thread.
+Ordinary changes preserve reverb tails, filter history, and oscillator phase.
+
+Coverage includes smooth audible gain updates, retained reverb tails, nested
+updates, all-or-nothing validation, stale revisions, continuous UI dragging,
+changes during activation, custom macros with undo, and closing the panel while
+Apply is pending. Hardware listening is still needed to judge the feel of the
+controls with a real performance.
+
+Validation: 143 engine library tests passed (one existing manual test ignored),
+plus saved/nested graph, renderer and control-socket integration tests. Nineteen
+focused Flutter tests passed. Static analysis has no new warnings; the existing
+tone_workbench.dart deprecation notice remains.

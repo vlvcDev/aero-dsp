@@ -24,3 +24,14 @@ V0 treats the Scarlett 2i2 as a standard duplex USB Audio Class device. No gener
 An alternative interface is compatible when ALSA exposes one duplex PCM endpoint that accepts two capture channels, two playback channels, signed 32-bit interleaved samples, and 48 kHz. The engine tries 64-frame periods first and 128 frames second. Unsupported vendor mixer features do not prevent basic audio operation.
 
 The probe attempts to hardware-link the ALSA capture and playback streams. Direct hardware devices commonly support this; PipeWire and some ALSA plugins do not. Lack of stream-link support is reported but is not fatal—the diagnostic can operate the two streams independently.
+
+## Realtime scheduling
+
+The audio thread requests SCHED_FIFO priority 70 (`PEDAL_RT_PRIORITY`, 1-99;
+0 disables) and the DSP workers run one step below it, so normal system work
+cannot delay an audio period. The systemd unit's `LimitRTPRIO=95` grants this.
+When running by hand, the engine logs once if the request is refused and keeps
+normal priority; grant it with an rtprio entry for one of your groups in
+`/etc/security/limits.d` (for example `@audio - rtprio 95`, then log in again).
+The `meters` message reports the obtained priorities
+(`audio_realtime_priority`, `dsp_worker_realtime_priority`).

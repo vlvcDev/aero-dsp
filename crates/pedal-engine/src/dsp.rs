@@ -23,8 +23,16 @@ pub trait MonoProcessor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimiterStage {
+    Rig,
+    Output,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TelemetrySnapshot {
+    pub rig_limiter_reduction_db: f32,
+    pub output_limiter_reduction_db: f32,
     pub input_peak: f32,
     pub output_peak: f32,
     pub clipped: bool,
@@ -35,6 +43,8 @@ pub struct TelemetrySnapshot {
 }
 
 pub struct RealtimeTelemetry {
+    rig_limiter_gain_bits: AtomicU32,
+    output_limiter_gain_bits: AtomicU32,
     input_peak_bits: AtomicU32,
     output_peak_bits: AtomicU32,
     clipped: AtomicBool,
@@ -49,6 +59,8 @@ pub struct RealtimeTelemetry {
 impl Default for RealtimeTelemetry {
     fn default() -> Self {
         Self {
+            rig_limiter_gain_bits: AtomicU32::new(1.0_f32.to_bits()),
+            output_limiter_gain_bits: AtomicU32::new(1.0_f32.to_bits()),
             input_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
             output_peak_bits: AtomicU32::new(0.0_f32.to_bits()),
             clipped: AtomicBool::new(false),
@@ -73,6 +85,19 @@ impl RealtimeTelemetry {
                 Err(actual) => current = actual,
             }
         }
+    }
+
+    /// Record the minimum applied gain for one processing block.
+    pub fn record_limiter_gain(&self, stage: LimiterStage, gain: f32) {
+        if !gain.is_finite() || !(0.0..=1.0).contains(&gain) {
+            return;
+        }
+        let target = match stage {
+            LimiterStage::Rig => &self.rig_limiter_gain_bits,
+            LimiterStage::Output => &self.output_limiter_gain_bits,
+        };
+        // Positive finite floats have the same ordering as their bit patterns.
+        target.fetch_min(gain.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn record_levels(&self, input_peak: f32, output_peak: f32, clipped: bool) {
@@ -116,7 +141,17 @@ impl RealtimeTelemetry {
     }
 
     pub fn snapshot(&self) -> TelemetrySnapshot {
+        let reduction_db = |gain: &AtomicU32| {
+            let gain = f32::from_bits(gain.swap(1.0_f32.to_bits(), Ordering::Relaxed));
+            if gain >= 1.0 {
+                0.0
+            } else {
+                -20.0 * gain.max(f32::MIN_POSITIVE).log10()
+            }
+        };
         TelemetrySnapshot {
+            rig_limiter_reduction_db: reduction_db(&self.rig_limiter_gain_bits),
+            output_limiter_reduction_db: reduction_db(&self.output_limiter_gain_bits),
             input_peak: f32::from_bits(
                 self.input_peak_bits
                     .swap(0.0_f32.to_bits(), Ordering::Relaxed),
@@ -134,6 +169,39 @@ impl RealtimeTelemetry {
     }
 }
 
+/// Corner of the post-rig DC blocker. Low enough to leave a 7-string's B1
+/// (61.7 Hz) and a bass's E1 (41.2 Hz) untouched in level and phase, matching
+/// Tone3000's 5 Hz output high-pass.
+pub const DC_BLOCKER_HZ: f32 = 5.0;
+
+/// Pole of the first-order DC blocker `y = c * (y[-1] + x - x[-1])`.
+pub fn dc_blocker_coefficient(sample_rate: u32) -> f32 {
+    (-2.0 * std::f32::consts::PI * DC_BLOCKER_HZ / sample_rate as f32).exp()
+}
+
+/// Flush denormal floats to zero on the calling thread (FTZ + DAZ on x86_64,
+/// FPCR.FZ on aarch64). Decaying filter, reverb and NAM states otherwise fall
+/// into denormals while the gate is closed and cause CPU spikes and xruns.
+/// Call once at the start of the realtime audio thread; no-op elsewhere.
+pub fn flush_denormals_to_zero() {
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: only sets the FTZ (bit 15) and DAZ (bit 6) flags of this thread's MXCSR.
+    unsafe {
+        let mut csr: u32 = 0;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
+        csr |= (1 << 15) | (1 << 6);
+        std::arch::asm!("ldmxcsr [{}]", in(reg) &csr, options(nostack, preserves_flags));
+    }
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: only sets the FZ (bit 24) flag of this thread's FPCR.
+    unsafe {
+        let mut fpcr: u64;
+        std::arch::asm!("mrs {}, fpcr", out(reg) fpcr, options(nomem, nostack, preserves_flags));
+        fpcr |= 1 << 24;
+        std::arch::asm!("msr fpcr, {}", in(reg) fpcr, options(nomem, nostack, preserves_flags));
+    }
+}
+
 pub struct SafetyProcessor<P> {
     stereo_history: [[f32; 2]; 2],
     processor: P,
@@ -141,6 +209,7 @@ pub struct SafetyProcessor<P> {
     high_pass_coefficient: f32,
     previous_input: f32,
     previous_output: f32,
+    limiter_stage: LimiterStage,
     limiter_ceiling: f32,
     limiter_gain: f32,
     limiter_release: f32,
@@ -153,6 +222,7 @@ impl<P> SafetyProcessor<P> {
         let mut output = Self::new(processor, telemetry, sample_rate);
         output.high_pass_coefficient = 1.0;
         output.limiter_ceiling = 1.0;
+        output.limiter_stage = LimiterStage::Output;
         output
     }
     pub fn new(processor: P, telemetry: Arc<RealtimeTelemetry>, sample_rate: u32) -> Self {
@@ -160,9 +230,10 @@ impl<P> SafetyProcessor<P> {
             stereo_history: [[0.0; 2]; 2],
             processor,
             telemetry,
-            high_pass_coefficient: (-2.0 * std::f32::consts::PI * 30.0 / sample_rate as f32).exp(),
+            high_pass_coefficient: dc_blocker_coefficient(sample_rate),
             previous_input: 0.0,
             previous_output: 0.0,
+            limiter_stage: LimiterStage::Rig,
             limiter_ceiling: 10.0_f32.powf(-1.0 / 20.0),
             limiter_gain: 1.0,
             limiter_release: (-1.0 / (0.080 * sample_rate as f32)).exp(),
@@ -186,6 +257,7 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
         }
         self.processor.process_stereo(samples, output);
         let mut output_peak = 0.0_f32;
+        let mut minimum_gain = 1.0_f32;
         for frame in output {
             for (channel, sample) in frame.iter_mut().enumerate() {
                 if !sample.is_finite() {
@@ -196,8 +268,8 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
                 let input = *sample;
                 if self.high_pass_coefficient != 1.0 {
                     *sample = self.high_pass_coefficient
-                        * (self.stereo_history[channel][1] + input
-                            - self.stereo_history[channel][0]);
+                        * (self.stereo_history[channel][1]
+                            + (input - self.stereo_history[channel][0]));
                 }
                 if !sample.is_finite() {
                     *sample = 0.0;
@@ -214,12 +286,17 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
             } else {
                 target + self.limiter_release * (self.limiter_gain - target)
             };
+            minimum_gain = minimum_gain.min(self.limiter_gain);
             clipped |= target < 1.0;
             for sample in frame {
-                *sample *= self.limiter_gain;
+                // Same final clamp as the mono path: rounding must never exceed the ceiling.
+                *sample = (*sample * self.limiter_gain)
+                    .clamp(-self.limiter_ceiling, self.limiter_ceiling);
                 output_peak = output_peak.max(sample.abs());
             }
         }
+        self.telemetry
+            .record_limiter_gain(self.limiter_stage, minimum_gain);
         self.telemetry
             .record_levels(input_peak, output_peak, clipped);
     }
@@ -238,6 +315,7 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
         self.processor.process(samples);
 
         let mut output_peak = 0.0_f32;
+        let mut minimum_gain = 1.0_f32;
         for sample in samples {
             if !sample.is_finite() {
                 *sample = 0.0;
@@ -253,7 +331,9 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
             let output = if self.high_pass_coefficient == 1.0 {
                 input
             } else {
-                self.high_pass_coefficient * (self.previous_output + input - self.previous_input)
+                // Difference first: summing a large offset into y[-1] would
+                // quantize it to the offset's precision and stall the decay.
+                self.high_pass_coefficient * (self.previous_output + (input - self.previous_input))
             };
             if !output.is_finite() {
                 self.previous_input = 0.0;
@@ -273,11 +353,14 @@ impl<P: MonoProcessor> MonoProcessor for SafetyProcessor<P> {
             } else {
                 target + self.limiter_release * (self.limiter_gain - target)
             };
+            minimum_gain = minimum_gain.min(self.limiter_gain);
             clipped |= self.limiter_gain < 0.9999;
             *sample =
                 (output * self.limiter_gain).clamp(-self.limiter_ceiling, self.limiter_ceiling);
             output_peak = output_peak.max(sample.abs());
         }
+        self.telemetry
+            .record_limiter_gain(self.limiter_stage, minimum_gain);
         self.telemetry
             .record_levels(input_peak, output_peak, clipped);
     }
@@ -309,6 +392,18 @@ impl MonoProcessor for nam_bridge::NamModel {
     }
 }
 
+/// Fade time for model/patch swaps and bypass. 5 ms fades tick audibly on a
+/// sustained note; Tone3000 uses 25 ms.
+pub const TRANSITION_SECONDS: f32 = 0.02;
+
+/// Smoothstep: maps a linear 0..1 ramp to an S-curve with zero slope at both
+/// ends, so a fade has no slope discontinuity (part of what makes a short
+/// linear fade click). Exact at 0 and 1, so settled states are untouched.
+#[inline]
+pub fn smooth_ramp(x: f32) -> f32 {
+    x * x * (3.0 - 2.0 * x)
+}
+
 pub struct BypassProcessor<P> {
     processor: P,
     bypassed: Arc<AtomicBool>,
@@ -325,7 +420,7 @@ impl<P> BypassProcessor<P> {
             } else {
                 1.0
             },
-            step: 1.0 / (0.010 * sample_rate.max(1) as f32),
+            step: 1.0 / (TRANSITION_SECONDS * sample_rate.max(1) as f32),
             bypassed,
         }
     }
@@ -350,8 +445,9 @@ impl<P: MonoProcessor> MonoProcessor for BypassProcessor<P> {
             self.processor.process_stereo(input, out);
             for (frame, dry) in out.iter_mut().zip(dry) {
                 self.wet += (target - self.wet).clamp(-self.step, self.step);
+                let wet = smooth_ramp(self.wet);
                 for channel in frame {
-                    *channel = dry + self.wet * (*channel - dry);
+                    *channel = dry + wet * (*channel - dry);
                 }
             }
         }
@@ -378,7 +474,7 @@ impl<P: MonoProcessor> MonoProcessor for BypassProcessor<P> {
             self.processor.process(samples);
             for (wet, dry) in samples.iter_mut().zip(dry) {
                 self.wet += (target - self.wet).clamp(-self.step, self.step);
-                *wet = dry + self.wet * (*wet - dry);
+                *wet = dry + smooth_ramp(self.wet) * (*wet - dry);
             }
         }
     }
@@ -530,6 +626,8 @@ pub struct AmpParameters {
     mid_gain: AtomicParameter,
     treble_gain: AtomicParameter,
     volume_gain: AtomicParameter,
+    /// Pre-amp TIGHT high-pass corner in Hz; 0 = off.
+    tight_hz: AtomicParameter,
 }
 
 impl AmpParameters {
@@ -539,7 +637,18 @@ impl AmpParameters {
             mid_gain: AtomicParameter::new(db_to_gain(mid_db)),
             treble_gain: AtomicParameter::new(db_to_gain(treble_db)),
             volume_gain: AtomicParameter::new(db_to_gain(volume_db)),
+            tight_hz: AtomicParameter::new(0.0),
         }
+    }
+
+    pub fn with_tight(self, tight_hz: f32) -> Self {
+        self.set_tight(tight_hz);
+        self
+    }
+
+    pub fn set_tight(&self, tight_hz: f32) {
+        self.tight_hz
+            .store(if tight_hz.is_finite() { tight_hz } else { 0.0 });
     }
 
     pub fn update(&self, bass_db: f32, mid_db: f32, treble_db: f32, volume_db: f32) {
@@ -550,12 +659,26 @@ impl AmpParameters {
     }
 }
 
+/// TIGHT range. Classic "tight boost" corners sit around 100-200 Hz.
+pub const TIGHT_MIN_HZ: f32 = 20.0;
+pub const TIGHT_MAX_HZ: f32 = 300.0;
+const TIGHT_GLIDE_SECONDS: f32 = 0.02;
+
 pub struct AmpControlProcessor<P> {
     processor: P,
     parameters: Arc<AmpParameters>,
     eq: crate::tone_eq::ToneEq,
     volume_gain: f32,
     smoothing: f32,
+    /// 12 dB/oct high-pass on the amp model's INPUT. Cutting lows before the
+    /// gain stage (what a tight boost or pedal low cut does in front of a
+    /// real high-gain amp) keeps palm mutes from blooming into mud; cutting
+    /// the same lows after the amp cannot undo that compression.
+    tight: crate::svf::Svf,
+    tight_frequency: f32,
+    /// 0..1 crossfade so switching TIGHT on/off is click-free.
+    tight_mix: f32,
+    sample_rate: f32,
 }
 impl<P> AmpControlProcessor<P> {
     pub fn new(processor: P, parameters: Arc<AmpParameters>, sample_rate: u32) -> Self {
@@ -566,12 +689,44 @@ impl<P> AmpControlProcessor<P> {
         ]
         .map(|g| 20.0 * g.max(1e-6).log10());
         let volume_gain = parameters.volume_gain.load();
+        let tight_hz = parameters.tight_hz.load();
+        let tight_on = tight_hz > 0.0;
         Self {
             processor,
             parameters,
             eq: crate::tone_eq::ToneEq::new(sample_rate, gains),
             volume_gain,
             smoothing: 1.0 - (-1.0 / (0.010 * sample_rate as f32)).exp(),
+            tight: crate::svf::Svf::default(),
+            tight_frequency: if tight_on {
+                tight_hz.clamp(TIGHT_MIN_HZ, TIGHT_MAX_HZ)
+            } else {
+                100.0
+            },
+            tight_mix: if tight_on { 1.0 } else { 0.0 },
+            sample_rate: sample_rate as f32,
+        }
+    }
+
+    fn apply_tight(&mut self, samples: &mut [f32]) {
+        let tight_hz = self.parameters.tight_hz.load();
+        let target_mix = if tight_hz > 0.0 { 1.0 } else { 0.0 };
+        if target_mix == 0.0 && self.tight_mix == 0.0 {
+            self.tight = crate::svf::Svf::default();
+            return;
+        }
+        if tight_hz > 0.0 {
+            let glide =
+                1.0 - (-(samples.len() as f32) / (TIGHT_GLIDE_SECONDS * self.sample_rate)).exp();
+            let target = tight_hz.clamp(TIGHT_MIN_HZ, TIGHT_MAX_HZ);
+            self.tight_frequency += (target - self.tight_frequency) * glide;
+        }
+        let coefficients = crate::svf::SvfCoefficients::new(self.tight_frequency, self.sample_rate);
+        let step = 1.0 / (TRANSITION_SECONDS * self.sample_rate);
+        for sample in samples {
+            let (_, high_passed) = self.tight.tick(*sample, coefficients);
+            self.tight_mix += (target_mix - self.tight_mix).clamp(-step, step);
+            *sample += (high_passed - *sample) * smooth_ramp(self.tight_mix);
         }
     }
 }
@@ -580,6 +735,7 @@ impl<P: MonoProcessor> MonoProcessor for AmpControlProcessor<P> {
         self.processor.model_metadata()
     }
     fn process(&mut self, samples: &mut [f32]) {
+        self.apply_tight(samples);
         self.processor.process(samples);
         self.eq.set_gains(
             [
@@ -599,7 +755,7 @@ impl<P: MonoProcessor> MonoProcessor for AmpControlProcessor<P> {
 
 pub enum AmpProcessor {
     Clean,
-    Nam(nam_bridge::NamModel),
+    Nam(crate::nam_oversampling::OversampledNam),
 }
 
 impl MonoProcessor for AmpProcessor {
@@ -643,8 +799,15 @@ impl<A: MonoProcessor, B: MonoProcessor> MonoProcessor for SerialProcessor<A, B>
 
 struct SwapSlot<P> {
     pending: Option<P>,
-    retired: Option<P>,
+    /// Replaced values awaiting the control thread. Preallocated so the
+    /// audio thread can retire without allocating, and never drops from it.
+    retired: Vec<P>,
 }
+
+/// Retired values held between control-thread stages. Each stage clears the
+/// list and every audio-side swap consumes one staged value, so at most two
+/// are ever waiting (a crossfade finishing just after the next stage).
+const RETIRED_CAPACITY: usize = 4;
 
 pub struct SwapMailbox<P> {
     slot: Mutex<SwapSlot<P>>,
@@ -655,7 +818,7 @@ impl<P> Default for SwapMailbox<P> {
         Self {
             slot: Mutex::new(SwapSlot {
                 pending: None,
-                retired: None,
+                retired: Vec::with_capacity(RETIRED_CAPACITY),
             }),
         }
     }
@@ -667,10 +830,16 @@ impl<P> SwapMailbox<P> {
             .try_lock()
             .is_ok_and(|slot| slot.pending.is_some())
     }
+    /// Non-blocking: whether a staged value exists and satisfies `predicate`.
+    pub fn pending_matches(&self, predicate: impl FnOnce(&P) -> bool) -> bool {
+        self.slot
+            .try_lock()
+            .is_ok_and(|slot| slot.pending.as_ref().is_some_and(predicate))
+    }
     pub fn stage(&self, prepared: P) {
         let mut slot = self.slot.lock().expect("processor swap mailbox poisoned");
         // Both values are dropped here, on the control/loader thread.
-        slot.retired.take();
+        slot.retired.clear();
         slot.pending = Some(prepared);
     }
 
@@ -680,7 +849,7 @@ impl<P> SwapMailbox<P> {
             .lock()
             .expect("swap mailbox poisoned")
             .retired
-            .take()
+            .pop()
     }
 
     /// Non-blocking handoff for a processor that owns its own active state.
@@ -689,13 +858,42 @@ impl<P> SwapMailbox<P> {
     pub fn swap_pending(&self, active: &mut P) -> bool {
         match self.slot.try_lock() {
             Ok(mut slot) => {
+                if slot.retired.len() == RETIRED_CAPACITY {
+                    return false; // never reallocate on the audio thread
+                }
                 let Some(prepared) = slot.pending.take() else {
                     return false;
                 };
-                slot.retired = Some(std::mem::replace(active, prepared));
+                let old = std::mem::replace(active, prepared);
+                slot.retired.push(old);
                 true
             }
             Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => false,
+        }
+    }
+
+    /// Non-blocking: takes the staged value if it satisfies `predicate`,
+    /// leaving retirement of the value it replaces to the caller (e.g. after
+    /// a crossfade, via [`Self::retire`]).
+    pub fn take_pending_if(&self, predicate: impl FnOnce(&P) -> bool) -> Option<P> {
+        let mut slot = self.slot.try_lock().ok()?;
+        if slot.pending.as_ref().is_some_and(predicate) {
+            slot.pending.take()
+        } else {
+            None
+        }
+    }
+
+    /// Non-blocking, allocation-free hand-back of a replaced value for the
+    /// control thread to drop. Returns it if the mailbox is busy or full;
+    /// the caller keeps it and retries later.
+    pub fn retire(&self, value: P) -> Result<(), P> {
+        match self.slot.try_lock() {
+            Ok(mut slot) if slot.retired.len() < RETIRED_CAPACITY => {
+                slot.retired.push(value);
+                Ok(())
+            }
+            _ => Err(value),
         }
     }
 }
@@ -714,7 +912,7 @@ impl<P> SwappableProcessor<P> {
             active,
             mailbox,
             gain: 1.0,
-            step: 1.0 / (0.005 * sample_rate.max(1) as f32),
+            step: 1.0 / (TRANSITION_SECONDS * sample_rate.max(1) as f32),
             swapping: false,
         }
     }
@@ -736,7 +934,7 @@ impl<P: MonoProcessor> MonoProcessor for SwappableProcessor<P> {
         let target = if self.swapping { 0.0 } else { 1.0 };
         for sample in samples {
             self.gain += (target - self.gain).clamp(-self.step, self.step);
-            *sample *= self.gain;
+            *sample *= smooth_ramp(self.gain);
         }
     }
 }
@@ -789,6 +987,93 @@ pub fn process_interleaved_i32<P: MonoProcessor + ?Sized>(
 
 #[cfg(test)]
 mod tests {
+    /// Stand-in amp model that records the RMS of the signal it receives.
+    struct InputProbe(Arc<std::sync::Mutex<Vec<f32>>>);
+    impl MonoProcessor for InputProbe {
+        fn process(&mut self, samples: &mut [f32]) {
+            self.0.lock().unwrap().extend_from_slice(samples);
+        }
+    }
+
+    fn tight_amp(
+        tight_hz: f32,
+    ) -> (
+        AmpControlProcessor<InputProbe>,
+        Arc<std::sync::Mutex<Vec<f32>>>,
+        Arc<AmpParameters>,
+    ) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let parameters = Arc::new(AmpParameters::new(0.0, 0.0, 0.0, 0.0).with_tight(tight_hz));
+        let amp = AmpControlProcessor::new(
+            InputProbe(Arc::clone(&seen)),
+            Arc::clone(&parameters),
+            48_000,
+        );
+        (amp, seen, parameters)
+    }
+
+    fn model_input_gain_db(tight_hz: f32, frequency: f32) -> f32 {
+        let (mut amp, seen, _) = tight_amp(tight_hz);
+        let input: Vec<f32> = (0..24_000)
+            .map(|n| (std::f32::consts::TAU * frequency * n as f32 / 48_000.0).sin())
+            .collect();
+        for block in input.chunks(128) {
+            amp.process(&mut block.to_vec());
+        }
+        let seen = seen.lock().unwrap();
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        20.0 * (rms(&seen[12_000..]) / rms(&input[12_000..])).log10()
+    }
+
+    #[test]
+    fn tight_high_passes_the_amp_models_input_at_12_db_per_octave() {
+        // One octave below a 150 Hz corner: -12.3 dB, before the model.
+        assert!((model_input_gain_db(150.0, 75.0) + 12.3).abs() < 0.3);
+        assert!((model_input_gain_db(150.0, 150.0) + 3.0).abs() < 0.2);
+        assert!(model_input_gain_db(150.0, 1_000.0).abs() < 0.1);
+        // Off is exactly transparent.
+        let (mut amp, seen, _) = tight_amp(0.0);
+        let mut block: Vec<f32> = (0..256).map(|n| (n as f32 * 0.01).sin()).collect();
+        let original = block.clone();
+        amp.process(&mut block);
+        assert_eq!(*seen.lock().unwrap(), original);
+    }
+
+    #[test]
+    fn switching_and_sweeping_tight_is_click_free() {
+        let (mut amp, seen, parameters) = tight_amp(0.0);
+        let tone = |n: usize| 0.5 * (std::f32::consts::TAU * 220.0 * n as f32 / 48_000.0).sin();
+        for block in 0..600 {
+            if block % 25 == 0 {
+                parameters.set_tight([0.0, 300.0, 20.0, 150.0][(block / 25) % 4]);
+            }
+            let mut samples: Vec<f32> = (0..64).map(|i| tone(block * 64 + i)).collect();
+            amp.process(&mut samples);
+        }
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().all(|x| x.is_finite()));
+        let worst = seen
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        // A 220 Hz sine at 0.5 moves at most ~0.0144 per sample.
+        assert!(worst < 0.03, "{worst}");
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn denormal_flush_applies_to_the_calling_thread_only() {
+        let tiny = || std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.25);
+        let flushed = std::thread::spawn(move || {
+            super::flush_denormals_to_zero();
+            tiny()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(flushed, 0.0);
+        assert!(std::thread::spawn(tiny).join().unwrap().is_subnormal());
+    }
+
     use super::*;
     #[test]
     fn stereo_output_routing_and_limiter_preserve_the_channel_ratio() {
@@ -907,8 +1192,9 @@ mod tests {
         let mut second = [0.25];
         processor.process(&mut second);
         assert!(second[0] < 0.5 && second[0] > 0.49);
-        processor.process(&mut [0.25; 256]);
-        processor.process(&mut [0.25; 256]);
+        // 20 ms out, swap, 20 ms in: 1920 samples at 48 kHz.
+        processor.process(&mut [0.25; 1024]);
+        processor.process(&mut [0.25; 1024]);
         second[0] = 0.25;
         processor.process(&mut second);
         assert_eq!(second, [0.75]);
@@ -1057,7 +1343,8 @@ mod tests {
         assert_eq!(snapshot.input_peak, 0.5);
         assert!(snapshot.clipped);
 
-        let mut dc = [0.25; 4096];
+        // 0.5 s: a 5 Hz corner settles more slowly than the old 30 Hz one.
+        let mut dc = [0.25; 24_000];
         let mut dc_processor = SafetyProcessor::new(Passthrough, telemetry, 48_000);
         dc_processor.process(&mut dc);
         assert!(dc.last().expect("sample").abs() < 0.0001);
@@ -1094,6 +1381,50 @@ mod tests {
         assert!(audio[0] <= 0.892);
         assert!(audio[1].abs() < 0.24);
         assert!(audio[2].abs() < 0.24);
+    }
+
+    #[test]
+    fn limiter_telemetry_tracks_interval_peak_and_stages() {
+        let telemetry = RealtimeTelemetry::default();
+        telemetry.record_limiter_gain(LimiterStage::Rig, 0.5);
+        telemetry.record_limiter_gain(LimiterStage::Rig, 0.8);
+        telemetry.record_limiter_gain(LimiterStage::Output, 0.25);
+        for bad in [f32::NAN, f32::INFINITY, -1.0, 2.0] {
+            telemetry.record_limiter_gain(LimiterStage::Rig, bad);
+        }
+        let first = telemetry.snapshot();
+        assert!((first.rig_limiter_reduction_db - 6.0206).abs() < 0.001);
+        assert!((first.output_limiter_reduction_db - 12.0412).abs() < 0.001);
+        let next = telemetry.snapshot();
+        assert_eq!(next.rig_limiter_reduction_db, 0.0);
+        assert_eq!(next.output_limiter_reduction_db, 0.0);
+    }
+
+    #[test]
+    fn limiter_telemetry_reports_release_and_stereo_linked_gain() {
+        let telemetry = Arc::new(RealtimeTelemetry::default());
+        let mut mono = SafetyProcessor::monitor(Passthrough, Arc::clone(&telemetry), 48_000);
+        mono.process(&mut [2.0]);
+        let first = telemetry.snapshot();
+        assert!((first.output_limiter_reduction_db - 6.0206).abs() < 0.001);
+        assert_eq!(first.rig_limiter_reduction_db, 0.0);
+        mono.process(&mut [0.0; 16]);
+        let release = telemetry.snapshot().output_limiter_reduction_db;
+        assert!(release > 0.0 && release < first.output_limiter_reduction_db);
+
+        struct Stereo;
+        impl MonoProcessor for Stereo {
+            fn process(&mut self, _: &mut [f32]) {}
+            fn process_stereo(&mut self, _: &mut [f32], output: &mut [[f32; 2]]) {
+                output[0] = [2.0, 0.5];
+            }
+        }
+        let mut stereo = SafetyProcessor::monitor(Stereo, Arc::clone(&telemetry), 48_000);
+        let mut output = [[0.0; 2]];
+        stereo.process_stereo(&mut [0.0], &mut output);
+        assert!((output[0][0] - 1.0).abs() < 0.0001);
+        assert!((output[0][1] - 0.25).abs() < 0.0001);
+        assert!((telemetry.snapshot().output_limiter_reduction_db - 6.0206).abs() < 0.001);
     }
 
     #[test]

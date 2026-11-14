@@ -1,5 +1,14 @@
 //! RBJ low shelf, peaking mid, and high shelf; 10 ms coefficient smoothing.
 //! Formula reference: https://www.w3.org/TR/audio-eq-cookbook/
+//!
+//! Voicing follows the reference NeuralAmpModelerPlugin tone stack (as
+//! Tone3000 does), so dB settings carry over from NAM/Tone3000: bass shelf at
+//! 150 Hz, mid bell at 425 Hz, treble shelf at 1.8 kHz. The mid bell widens
+//! when boosting (Q 0.7) and narrows when cutting (Q 1.5) so pushed mids
+//! don't turn honky; at 0 dB both are exactly flat, so the switch is seamless.
+const FREQUENCIES: [f64; 3] = [150.0, 425.0, 1_800.0];
+const MID_Q_BOOST: f64 = 0.7;
+const MID_Q_CUT: f64 = 1.5;
 const UNITY: [f64; 5] = [1.0, 0.0, 0.0, 0.0, 0.0];
 struct Biquad {
     coefficients: [f64; 5],
@@ -61,7 +70,7 @@ impl ToneEq {
                 continue;
             }
             let a = 10.0_f64.powf(db / 40.0);
-            let frequency = [120.0_f64, 750.0, 3500.0][i].min(self.rate * 0.4);
+            let frequency = FREQUENCIES[i].min(self.rate * 0.4);
             let w = std::f64::consts::TAU * frequency / self.rate;
             let c = w.cos();
             let alpha = w.sin() / 2.0_f64.sqrt();
@@ -78,7 +87,8 @@ impl ToneEq {
                     (a + 1.0) + (a - 1.0) * c + beta,
                 ),
                 1 => {
-                    let alpha = w.sin() / (2.0 * 0.8);
+                    let q = if db > 0.0 { MID_Q_BOOST } else { MID_Q_CUT };
+                    let alpha = w.sin() / (2.0 * q);
                     (
                         [
                             1.0 + alpha * a,
@@ -133,7 +143,8 @@ mod tests {
     fn controls_have_expected_shelf_and_peak_responses() {
         assert!((response([6.0, 0.0, 0.0], 20.0) - 6.0).abs() < 0.1);
         assert!(response([6.0, 0.0, 0.0], 5000.0).abs() < 0.1);
-        assert!((response([0.0, 6.0, 0.0], 750.0) - 6.0).abs() < 0.02);
+        assert!((response([0.0, 6.0, 0.0], 425.0) - 6.0).abs() < 0.02);
+        assert!((response([0.0, -6.0, 0.0], 425.0) + 6.0).abs() < 0.02);
         assert!((response([0.0, 0.0, -6.0], 18_000.0) + 6.0).abs() < 0.1);
     }
     #[test]
@@ -152,5 +163,16 @@ mod tests {
             }
             assert!(eq.tick((i as f32 * 0.1).sin() * 0.01).is_finite());
         }
+    }
+    #[test]
+    fn voicing_matches_the_nam_tone_stack() {
+        // Shelves reach half their gain at the corner frequency.
+        assert!((response([6.0, 0.0, 0.0], 150.0) - 3.0).abs() < 0.1);
+        assert!((response([0.0, 0.0, 6.0], 1_800.0) - 3.0).abs() < 0.1);
+        // The mid bell is wider when boosting than when cutting: one octave
+        // above 425 Hz a +6 dB boost keeps more of its gain than a -6 dB cut.
+        let boost = response([0.0, 6.0, 0.0], 850.0);
+        let cut = -response([0.0, -6.0, 0.0], 850.0);
+        assert!(boost > 2.0 && cut < 1.5, "boost {boost} cut {cut}");
     }
 }

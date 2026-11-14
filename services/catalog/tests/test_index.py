@@ -1,13 +1,53 @@
+import os
 import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 CATALOG_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CATALOG_ROOT))
 
-from pedal_catalog.index import list_models, scan_models, upsert_model, write_capture_metadata  # noqa: E402
+from pedal_catalog.index import list_models, measure_captures_async, scan_models, upsert_model, write_capture_metadata  # noqa: E402
+
+
+FAKE_CLI = """#!/usr/bin/env python3
+import json, sys
+for path in sys.argv[1:]:
+    print(json.dumps(dict(gain_db=12.5, gear_type='amp', includes_cab=True, path=path)))
+"""
+
+
+class CaptureInfoTests(unittest.TestCase):
+    def test_measurements_are_cached_by_sha256_and_listed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cli = root / 'fake-cli'
+            cli.write_text(FAKE_CLI)
+            cli.chmod(0o755)
+            models = root / 'models'
+            models.mkdir()
+            (models / 'a.nam').write_bytes(b'same')
+            (models / 'b.nam').write_bytes(b'same')
+            db = root / 'catalog.db'
+            scan_models(models, db)
+            self.assertIsNone(list_models(db)[0].gain_db)
+            with mock.patch.dict(os.environ, {'PEDAL_CAPTURE_INFO_BIN': str(cli)}):
+                measure_captures_async(db).join()
+            with sqlite3.connect(db) as connection:
+                self.assertEqual(connection.execute('SELECT COUNT(*) FROM capture_info').fetchone(), (1,))
+            self.assertEqual([(m.gain_db, m.includes_cab) for m in list_models(db)], [(12.5, True)] * 2)
+
+    def test_missing_cli_leaves_fields_null(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'a.nam').write_bytes(b'model')
+            db = root / 'catalog.db'
+            scan_models(root, db)
+            with mock.patch('pedal_catalog.index.capture_info_bin', return_value=None):
+                self.assertIsNone(measure_captures_async(db))
+            self.assertEqual([(m.gain_db, m.includes_cab) for m in list_models(db)], [(None, None)])
 
 
 class CatalogIndexTests(unittest.TestCase):
@@ -108,3 +148,29 @@ class CatalogIndexTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LibraryTests(unittest.TestCase):
+    def test_kind_filter_recent_sort_favorite_and_legacy_migration(self):
+        from pedal_catalog.index import set_favorite, touch_model
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'models').mkdir()
+            (root / 'irs').mkdir()
+            (root / 'models' / 'a.nam').write_bytes(b'a')
+            (root / 'models' / 'b.nam').write_bytes(b'b')
+            (root / 'irs' / 'cab.wav').write_bytes(b'wav')
+            db = root / 'catalog.db'
+            with sqlite3.connect(db) as connection:  # database from before last_used existed
+                connection.execute('CREATE TABLE models (sha256 TEXT NOT NULL, name TEXT NOT NULL, path TEXT PRIMARY KEY,'
+                                   ' size_bytes INTEGER NOT NULL, modified_ns INTEGER NOT NULL,'
+                                   " source TEXT NOT NULL DEFAULT 'local', favorite INTEGER NOT NULL DEFAULT 0)")
+            scan_models(root / 'models', db)
+            self.assertEqual([(m.name, m.kind) for m in list_models(db, kind='ir')], [('cab', 'ir')])
+            self.assertEqual([m.name for m in list_models(db)], ['a', 'b'])
+            self.assertTrue(touch_model(db, str(root / 'models' / 'b.nam')))
+            self.assertEqual([m.name for m in list_models(db, sort='recent')], ['b', 'a'])
+            self.assertIsNotNone(list_models(db, sort='recent')[0].last_used)
+            self.assertTrue(set_favorite(db, str(root / 'models' / 'b.nam'), True))
+            self.assertTrue(list_models(db)[0].favorite)
+            self.assertFalse(touch_model(db, str(root / 'missing.nam')))

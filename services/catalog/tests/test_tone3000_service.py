@@ -69,7 +69,70 @@ class FakeClient:
         return {"data": []}
 
 
+class BrowserClient(FakeClient):
+    """A client whose tone, models and device grant mimic the live API."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.format = "nam"
+        self.downloads = 0
+
+    def get_tone(self, tone_id):
+        return {"id": int(tone_id), "title": "Clean Combo", "gear": "amp", "format": self.format}
+
+    def download_model(self, url, destination, *, expected_sha256=None):
+        self.downloads += 1
+        return super().download_model(url, destination, expected_sha256=expected_sha256)
+
+    def request_device_authorization(self):
+        return {"device_code": "dev", "user_code": "ABCD-1234", "verification_uri": "https://t3k/device",
+                "expires_in": 600, "interval": 1}
+
+    def poll_device_token(self, device_code):
+        self.tokens = Tokens("device-access", "device-refresh", 9999)
+        return self.tokens
+
+
 class Tone3000ServiceTests(unittest.TestCase):
+    def test_tone_card_maps_search_result_with_local_path(self) -> None:
+        item = {"id": 7, "title": "Plexi", "gear": "amp", "format": "nam", "images": ["https://img/1.png"],
+                "downloads_count": 42, "published_at": "2026-01-02", "a2_models_count": 0, "is_favorite": True,
+                "user": {"display_name": "Ada", "avatar_url": "https://img/a.png", "is_verified": True}}
+        card = Tone3000Service.tone_card(item, {"7": "/models/plexi.nam"})
+        self.assertEqual(card, {
+            "id": "7", "title": "Plexi", "gear": "amp", "format": "nam", "image_url": "https://img/1.png",
+            "downloads": 42, "creator": {"name": "Ada", "avatar_url": "https://img/a.png", "verified": True},
+            "created_at": "2026-01-02", "has_a2": False, "favorited": True, "local_path": "/models/plexi.nam"})
+
+    def test_load_downloads_once_and_indexes_irs(self) -> None:
+        from pedal_catalog.index import list_models, upsert_model
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = BrowserClient()
+            service = Tone3000Service('key', 'http://pedal.local/callback', root / 'tokens.json', client=client)
+            models = root / 'models'
+            path, kind = service.load('7', None, models)
+            again, _ = service.load('7', '9', models)
+            self.assertEqual((kind, again, client.downloads), ('nam', path, 1))
+            self.assertEqual(service.tone_models('7', models)[0]['local_path'], str(path))
+            client.format = 'ir'
+            ir, kind = service.load('7', None, models)
+            self.assertEqual((kind, ir.parent), ('ir', root / 'irs'))
+            upsert_model(ir, root / 'db')
+            self.assertEqual([m.kind for m in list_models(root / 'db', kind='ir')], ['ir'])
+
+    def test_device_auth_polls_and_stores_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / 'tokens.json'
+            service = Tone3000Service('key', 'http://pedal.local/callback', token_file,
+                                      client=BrowserClient(), sleep=lambda _: None)
+            grant = service.begin_device_auth()
+            service._device_thread.join(5)
+            self.assertEqual(grant['user_code'], 'ABCD-1234')
+            self.assertIsNone(grant['verification_uri_complete'])
+            self.assertEqual(json.loads(token_file.read_text())['access_token'], 'device-access')
+            self.assertFalse(service.status()['device_auth_pending'])
+
     def test_capture_listing_includes_all_pages(self):
         class PagedClient(FakeClient):
             def list_models(self, tone_id, *, architecture=2, page=1):

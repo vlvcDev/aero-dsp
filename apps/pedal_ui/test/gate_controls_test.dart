@@ -8,6 +8,7 @@ void main() {
         EngineSnapshot.fromJson({}).effectControls(EffectKind.gate);
     expect(controls, {
       'gate_threshold_db': -80.0,
+      'gate_hysteresis_db': 12.0,
       'gate_hold_ms': 20.0,
       'gate_release_ms': 50.0,
       'gate_range_db': 80.0,
@@ -36,12 +37,13 @@ void main() {
       await tester.tap(find.text('NATURAL SUSTAIN'));
       await tester.pumpAndSettle();
       expect(changes, {
+        'gate_hysteresis_db': 18.0,
         'gate_hold_ms': 60.0,
         'gate_release_ms': 150.0,
         'gate_range_db': 80.0,
       });
       expect(changes.containsKey('gate_threshold_db'), isFalse);
-      // The horizontal bank keeps all four full-size sliders accessible.
+      // The horizontal bank keeps all five full-size sliders accessible.
       // Swipe the bank's label area, not a vertical slider's gesture target.
       await tester.drag(find.text('HOLD'), const Offset(-300, 0));
       await tester.pumpAndSettle();

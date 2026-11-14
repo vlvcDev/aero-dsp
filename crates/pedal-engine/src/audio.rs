@@ -189,6 +189,8 @@ mod alsa_backend {
         duration_limit: Option<Duration>,
         telemetry: Option<&RealtimeTelemetry>,
     ) -> Result<StreamStats, String> {
+        crate::dsp::flush_denormals_to_zero();
+        crate::realtime::promote_audio_thread();
         let (capture, playback, negotiated) = open(config)?;
         if config.guitar_input_channel >= config.capture_channels as usize {
             return Err(format!(

@@ -109,14 +109,6 @@ fn loads_and_processes_the_reference_lstm() {
 }
 
 #[test]
-fn rejects_blocks_larger_than_the_prepared_maximum() {
-    let mut model = NamModel::load(example("lstm.nam"), 48_000.0, 64).expect("load LSTM model");
-    let mut audio = [0.0_f32; 65];
-
-    assert!(model.process(&mut audio).is_err());
-}
-
-#[test]
 fn rejects_a_model_sample_rate_mismatch() {
     let result = NamModel::load(example("lstm.nam"), 44_100.0, 64);
 
@@ -144,4 +136,23 @@ fn exposes_optional_calibration_without_inventing_missing_values() {
     assert_eq!(m.metadata().output_level_dbu, None);
     assert_eq!(m.metadata().loudness_db, None);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn oversized_blocks_are_sliced_sample_exactly_instead_of_faulting() {
+    for name in ["lstm.nam", "A2.nam"] {
+        let mut sliced = NamModel::load(example(name), 48_000.0, 64).unwrap();
+        let mut reference = NamModel::load(example(name), 48_000.0, 64).unwrap();
+        let input: Vec<f32> = (0..1000).map(|i| (i as f32 * 0.03).sin() * 0.1).collect();
+        let mut a = input.clone();
+        let mut b = input.clone();
+        sliced.process(&mut a).unwrap();
+        assert!(!sliced.is_faulted());
+        for chunk in b.chunks_mut(64) {
+            reference.process(chunk).unwrap();
+        }
+        assert_eq!(a, b, "{name}");
+        let mut c = input;
+        assert!(sliced.process_realtime(&mut c), "{name}");
+    }
 }

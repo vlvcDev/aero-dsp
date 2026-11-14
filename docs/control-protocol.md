@@ -113,21 +113,42 @@ The supported controls and ranges are:
 
 | Control | Range | DSP position |
 |---|---:|---|
-| `pedal_drive_db` | 0 to +24 dB | Before the pedal NAM |
+| `pedal_drive_db` | -24 to +24 dB | Before the pedal NAM |
 | `pedal_mix` | 0.0 to 1.0 | Pedal dry/wet blend |
-| `pedal_level_db` | -24 to +12 dB | After the pedal blend |
+| `pedal_level_db` | -24 to +24 dB | After the pedal blend |
 | `amp_bass_db` | -12 to +12 dB | After the amp NAM |
 | `amp_mid_db` | -12 to +12 dB | After the amp NAM |
 | `amp_treble_db` | -12 to +12 dB | After the amp NAM |
-| `amp_volume_db` | -24 to +12 dB | After the amp tone stack |
-| `gate_threshold_db` | -80 to -10 dB | Noise gate threshold |
+| `amp_tight_hz` | 0 (OFF), or 20 to 300 Hz | TIGHT: 12 dB/oct high-pass on the amp NAM's input, after the calibrated hand-off. Trims lows before the gain stage so high-gain palm mutes stay tight (100–150 Hz is a classic tight-boost corner). Saved with the preset; glides and crossfades click-free; default OFF |
+| `amp_volume_db` | -24 to +24 dB | After the amp tone stack |
+| `pedal_normalize_enabled` | 0 off, 1 on | Metadata-based Drive wet-output normalization; calibrated handoff takes priority |
+| `amp_normalize_enabled` | 0 off, 1 on | Metadata-based Head output normalization |
+| `cabinet_gain_db` | -24 to +12 dB | Cabinet output trim; default 0 dB |
+| `cabinet_low_cut_hz` | 0 (OFF), or 20 to 500 Hz | Optional post-convolution 12 dB/oct Butterworth low cut (80–100 Hz tightens high gain); knob changes glide over ~20 ms; default OFF |
+| `cabinet_high_cut_hz` | 0 (OFF), or 1000 to 20000 Hz | Optional post-convolution 12 dB/oct Butterworth high cut; knob changes glide over ~20 ms; default OFF |
+| `gate_threshold_db` | -120 to -10 dB | Noise gate open threshold, measured on the clean input. Goes down to -120 dB because high-gain captures make notes fading through -90 dB clean still loud |
+| `squelch_enabled` | 0 off, 1 on | Device setting: feeds the models exact zeros while the clean input sits at the interface noise floor (NAM is deterministic, so zero in is silence out). Applies to the rig and Patch Lab; DI takes and bypass stay raw. Default on |
+| `squelch_threshold_db` | -130 to -60 dB | Device setting: squelch open threshold on the clean input (closes 3 dB lower after a 50 ms hold). Set with noise-floor LEARN; default -105 |
+| `gate_hysteresis_db` | 0 to 30 dB | Once open, the gate stays open until the clean input falls this far below the threshold; default 12 dB (was a fixed 6 dB). Raise it so sustained notes and pinch harmonics ring out under a high threshold |
 | `nam_quality` | 0 Lite, 1 Full | Live NAM tier preference; prepares both slots before a faded swap |
 | `render_nam_quality` | 0 Lite, 1 Full, 2 Same as live | Offline NAM tier override; does not alter the live rig |
+| `nam_oversampling` | 1 (off), 2, 4, 8 | Live NAM oversampling: phase-interleaved native-rate instances behind a half-band oversampler (Tone3000 design). Cuts high-gain aliasing; total NAM CPU scales with the factor, but phases run in parallel on the DSP worker pool (one worker per spare core, max 7; set `PEDAL_DSP_WORKERS=0` to run serially), so audio-thread time per block stays close to 1x. LSTM captures stay at 1x. Prepares both slots before a faded swap; default 1 |
+| `render_nam_oversampling` | 0 Same as live, 1, 2, 4, 8 | Offline render/preview override; does not alter the live rig; default 0 |
 | `gate_hold_ms` | 0 to 500 ms | Consecutive time below the closing threshold before release |
 | `gate_release_ms` | 5 to 1000 ms | Gate gain-release time constant |
 | `gate_range_db` | 0 to 90 dB | Maximum closed-gate attenuation; 0 leaves unity gain |
+| `dehiss_threshold_db` | -100 to -30 dB | DEHISS: high-band level below which the band above `dehiss_frequency_hz` is reduced (2 dB per dB below). Set with LEARN; default -70 |
+| `dehiss_frequency_hz` | 1500 to 8000 Hz | DEHISS crossover: only content above it is reduced, so decaying notes keep their body; default 3000 |
+| `dehiss_range_db` | 0 to 40 dB | DEHISS maximum high-band reduction; default 24 |
 | `compressor_threshold_db` | -48 to 0 dB | Compressor threshold |
 | `compressor_ratio` | 1 to 20 | Compressor ratio |
+| `compressor_attack_ms` | 0.5 to 50 ms | Gain-reduction attack: 10-30 ms lets the pick transient through (articulate); ~1 ms flattens it (sustain). Default 10 |
+| `compressor_release_ms` | 30 to 500 ms | Gain-reduction release; default 120 |
+| `compressor_mix` | 0 to 1 | Parallel blend with the dry input (zero latency, no comb filtering); default 1 |
+| `compressor_level_db` | -12 to +24 dB | Manual makeup, added to automatic makeup; default 0 |
+| `compressor_auto_makeup` | 0 off, 1 on | Adds back the reduction a -12 dBFS pick would get, so engaging the compressor does not change how hard the amp is driven; default on |
+
+The compressor's detector ignores content below ~100 Hz (12 dB/oct) so low strings do not over-trigger it; the audio path stays full-range. `meters` reports `compressor_reduction_db`, the peak gain reduction since the previous meter request.
 | `eq_low_db`, `eq_mid_db`, `eq_high_db` | -12 to +12 dB | Post-amp three-band EQ |
 | `chorus_rate_hz` | 0.05 to 8 Hz | Chorus LFO speed |
 | `chorus_depth`, `chorus_mix` | 0.0 to 1.0 | Chorus depth and blend |
@@ -180,10 +201,23 @@ The library is atomically persisted to `/var/lib/pedal/presets.json`. Deleting t
 ```
 
 ```json
-{"api":1,"id":"ui-7","type":"meters","payload":{"input_db":-18.4,"output_db":-20.1,"clipped":false,"cpu_percent":3.2,"xruns":0,"tuner_hz":82.4,"tuner_confidence":0.93}}
+{"api":1,"id":"ui-7","type":"meters","payload":{"input_db":-18.4,"output_db":-20.1,"clipped":false,"rig_limiter_reduction_db":0.0,"output_limiter_reduction_db":0.0,"cpu_percent":3.2,"xruns":0,"tuner_hz":82.4,"tuner_confidence":0.93}}
 ```
 
-Meters are display telemetry, not authoritative state. The Flutter client polls at 10 Hz, below the 20 Hz budget. Peaks and the clip flag cover the interval since the previous meter request; `xruns` is cumulative for the current engine process. `tuner_hz` and `tuner_confidence` are zero while the tuner is disabled or has no stable clean-input pitch. Clients must tolerate missing snapshots and reconnect normally.
+Meters are display telemetry, not authoritative state. The Flutter client polls at 10 Hz, below the 20 Hz budget. Peaks and the clip flag cover the interval since the previous meter request; `xruns` is cumulative for the current engine process. `audio_realtime_priority` is the audio thread's SCHED_FIFO priority and `dsp_worker_realtime_priority` the DSP workers' (one step below it); 0 means normal, non-realtime scheduling. `tuner_hz` and `tuner_confidence` are zero while the tuner is disabled or has no stable clean-input pitch. Clients must tolerate missing snapshots and reconnect normally.
+
+`rig_limiter_reduction_db` and `output_limiter_reduction_db` report positive
+attenuation in dB: zero means no reduction, 6 means approximately half amplitude.
+Each is the greatest actual gain reduction since the preceding meter request,
+including the limiter's release, rather than an input/output peak difference.
+The rig stage protects the pedalboard at −1 dBFS; the output stage protects the
+final monitor mix at 0 dBFS, including timeline playback and metronome. These are
+independent interval peaks and must not be added to estimate total reduction.
+Patch Lab replaces the pedalboard route, so its audio reaches the output stage
+but not the pedalboard's rig limiter; the UI marks RIG inactive when `patch_active`
+is true. No processed blocks in an interval produces zero reduction. Older
+engines omit these fields; clients display unavailable rather than assuming
+zero, and clear the readings when audio is stopped or disconnected.
 
 ## Render a hardware-free preview
 
@@ -201,3 +235,43 @@ For processed playback, the engine renders offline through a newly prepared copy
 
 This is a development and auditioning aid, not a replacement for live interface testing. The Flutter Linux client plays the returned file through `pw-play`, falling back to `aplay`, and can stop the player without interrupting the engine.
 The client allows up to two minutes for an offline render so unoptimized development builds and dual-NAM rigs can complete without a false timeout.
+
+## Dehiss
+
+DEHISS is an optional pedal (add it with `set_pedal_visible` and
+`"pedal":"dehiss"`; switch it with `set_effect_bypass` and `"effect":"dehiss"`): a
+downward expander on the amp/cab output's high band only, applied before the
+gate and any modulation, delay or reverb. Stereo channels share one detector.
+It complements the gate: lower the gate threshold for sustain and let DEHISS
+remove the hiss that rides over decaying notes.
+
+LEARN sets the threshold from the idle hiss floor in two non-blocking steps:
+
+```json
+{"api":1,"id":"ui-20","type":"dehiss_learn","payload":{"phase":"start"}}
+{"api":1,"id":"ui-21","type":"dehiss_learn","payload":{"phase":"finish"}}
+```
+
+Between them the player stays silent for about 2 s. `start` returns the
+current state; `finish` sets `dehiss_threshold_db` 10 dB above the loudest
+measured high-band hiss envelope, saves, and returns the new state, or
+`dehiss_learn_failed` if no audio was measured. Measuring works while DEHISS
+is off and never alters the audio.
+
+## Noise-floor LEARN
+
+High-gain captures apply 60-100 dB of gain to near-silent input, so an
+interface's own converter floor becomes loud hiss even with every knob at
+zero. Noise-floor LEARN measures that floor and sets the input squelch 6 dB
+above it, and the gate threshold so its close point sits 4 dB above it:
+
+```json
+{"api":1,"id":"ui-30","type":"noise_floor_learn","payload":{"phase":"start"}}
+{"api":1,"id":"ui-31","type":"noise_floor_learn","payload":{"phase":"finish"}}
+```
+
+Keep the guitar plugged in with its volume up and do not touch the strings
+for ~2 s between the steps. `finish` returns the updated state (squelch is a
+device setting; the gate threshold marks the preset dirty), or
+`noise_floor_learn_failed` if no input was measured.
+

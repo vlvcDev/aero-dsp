@@ -1,5 +1,70 @@
 part of 'main.dart';
 
+/// Signal-flow columns, parallel rows, and wrapped bands for long chains.
+/// Works on incomplete drafts too; it never changes audio connections.
+Map<int, Offset> arrangePatchNodes(List nodes, {int columns = 6}) {
+  columns = math.max(1, columns);
+  final byId = {for (final node in nodes) node['id'] as int: node as Map};
+  final remaining = byId.keys.toList()..sort();
+  final depths = <int, int>{};
+  final layers = <List<int>>[];
+  while (remaining.isNotEmpty) {
+    final ready = remaining
+        .where((id) => (byId[id]!['inputs'] as List).every((source) =>
+            !byId.containsKey(source) || depths.containsKey(source)))
+        .toList();
+    // Invalid cyclic drafts should still be visible and editable.
+    if (ready.isEmpty) ready.add(remaining.first);
+    for (final id in ready) {
+      final parents = (byId[id]!['inputs'] as List)
+          .where(depths.containsKey)
+          .map((source) => depths[source]!);
+      final depth = parents.isEmpty ? 0 : parents.reduce(math.max) + 1;
+      depths[id] = depth;
+      while (layers.length <= depth) {
+        layers.add([]);
+      }
+      layers[depth].add(id);
+      remaining.remove(id);
+    }
+  }
+  // Keep branches near their parents, with stable ID ordering for ties.
+  final rows = <int, double>{};
+  for (final layer in layers) {
+    double parentRow(int id) {
+      final parents = (byId[id]!['inputs'] as List)
+          .where(rows.containsKey)
+          .map((source) => rows[source]!);
+      return parents.isEmpty
+          ? 0
+          : parents.reduce((a, b) => a + b) / parents.length;
+    }
+
+    layer.sort((a, b) {
+      final order = parentRow(a).compareTo(parentRow(b));
+      return order == 0 ? a.compareTo(b) : order;
+    });
+    for (var i = 0; i < layer.length; i++) {
+      rows[layer[i]] = i.toDouble();
+    }
+  }
+  final positions = <int, Offset>{};
+  var top = 32.0;
+  for (var start = 0; start < layers.length; start += columns) {
+    final band = layers.skip(start).take(columns).toList();
+    final height = band.map((layer) => layer.length).reduce(math.max);
+    for (var column = 0; column < band.length; column++) {
+      final layer = band[column];
+      for (var row = 0; row < layer.length; row++) {
+        positions[layer[row]] = Offset(
+            32 + column * 300, top + ((height - layer.length) / 2 + row) * 200);
+      }
+    }
+    top += height * 200 + 100;
+  }
+  return positions;
+}
+
 /// Layout belongs to the editor, never to the audio graph or render callback.
 class PatchCanvas extends StatefulWidget {
   const PatchCanvas(
@@ -29,6 +94,30 @@ class _PatchCanvasState extends State<PatchCanvas> {
   int? _connecting;
   Offset? _pointer;
   Offset _grab = Offset.zero;
+  Map<int, Offset> _routePositions = {};
+  List<(int, int)> _routeEdges = [];
+  List<Path> _routes = [];
+
+  List<(int, int)> get _edges => [
+        for (final node in widget.document.nodes)
+          for (final source in node['inputs'] as List)
+            (source as int, node['id'] as int),
+      ];
+
+  List<Path> routesFor(Map<int, Offset> positions, List<(int, int)> edges) {
+    if (_routePositions.length != positions.length ||
+        positions.entries.any((e) => _routePositions[e.key] != e.value) ||
+        _routeEdges.length != edges.length ||
+        Iterable<int>.generate(edges.length)
+            .any((i) => _routeEdges[i] != edges[i])) {
+      _routePositions = Map.of(positions);
+      _routeEdges = List.of(edges);
+      _routes = [
+        for (final edge in edges) routePatchCable(positions, edge.$1, edge.$2),
+      ];
+    }
+    return _routes;
+  }
 
   @override
   void dispose() {
@@ -45,7 +134,7 @@ class _PatchCanvasState extends State<PatchCanvas> {
     final box = _viewport.currentContext!.findRenderObject()! as RenderBox;
     final center = box.size.center(Offset.zero);
     final scene = _view.toScene(center);
-    final scale = (_view.value.getMaxScaleOnAxis() * factor).clamp(.15, 2.0);
+    final scale = (_view.value.getMaxScaleOnAxis() * factor).clamp(.02, 2.0);
     _view.value = Matrix4.identity()
       ..translateByDouble(
           center.dx - scene.dx * scale, center.dy - scene.dy * scale, 0, 1)
@@ -54,18 +143,40 @@ class _PatchCanvasState extends State<PatchCanvas> {
 
   void fit() {
     final box = _viewport.currentContext!.findRenderObject()! as RenderBox;
+    if (widget.document.nodes.isEmpty) return;
+    final arranged = arrangePatchNodes(widget.document.nodes);
+    if (arranged.entries
+        .any((entry) => widget.document.positions[entry.key] != entry.value)) {
+      widget.onMoveStart();
+      setState(() {
+        widget.document.positions
+          ..clear()
+          ..addAll(arranged);
+      });
+    }
     final positions =
         widget.document.nodes.map((n) => widget.document.positions[n['id']]!);
     if (positions.isEmpty) return;
-    final left = positions.map((p) => p.dx).reduce(math.min) - 24;
-    final top = positions.map((p) => p.dy).reduce(math.min) - 24;
-    final right = positions.map((p) => p.dx).reduce(math.max) + _width + 24;
-    final bottom = positions.map((p) => p.dy).reduce(math.max) + _height + 24;
+    var bounds = Rect.fromLTRB(
+        positions.map((p) => p.dx).reduce(math.min),
+        positions.map((p) => p.dy).reduce(math.min),
+        positions.map((p) => p.dx).reduce(math.max) + _width,
+        positions.map((p) => p.dy).reduce(math.max) + _height);
+    for (final route in routesFor(arranged, _edges)) {
+      bounds = bounds.expandToInclude(route.getBounds());
+    }
+    bounds = bounds.inflate(24);
+    final left = bounds.left, top = bounds.top;
+    final right = bounds.right, bottom = bounds.bottom;
     final scale = math
         .min(box.size.width / (right - left), box.size.height / (bottom - top))
-        .clamp(.15, 1.0);
+        .clamp(.02, 1.0);
     _view.value = Matrix4.identity()
-      ..translateByDouble(-left * scale, -top * scale, 0, 1)
+      ..translateByDouble(
+          (box.size.width - (right - left) * scale) / 2 - left * scale,
+          (box.size.height - (bottom - top) * scale) / 2 - top * scale,
+          0,
+          1)
       ..scaleByDouble(scale, scale, 1, 1);
   }
 
@@ -138,12 +249,20 @@ class _PatchCanvasState extends State<PatchCanvas> {
       doc.positions.putIfAbsent(
           id, () => Offset(32 + (i % 8) * 300, 32 + (i ~/ 8) * 210));
     }
-    final positions = Map<int, Offset>.from(doc.positions);
-    final edges = <(int, int)>[
+    final positions = <int, Offset>{
       for (final node in doc.nodes)
-        for (final source in node['inputs'] as List)
-          (source as int, node['id'] as int),
-    ];
+        node['id'] as int: doc.positions[node['id']]!,
+    };
+    final routes = routesFor(positions, _edges);
+    var canvasWidth = positions.values.fold(
+        _extent, (size, position) => math.max(size, position.dx + _width + 32));
+    var canvasHeight = positions.values.fold(_extent,
+        (size, position) => math.max(size, position.dy + _height + 32));
+    for (final route in routes) {
+      final bounds = route.getBounds();
+      canvasWidth = math.max(canvasWidth, bounds.right + 32);
+      canvasHeight = math.max(canvasHeight, bounds.bottom + 32);
+    }
     return Column(children: [
       Row(children: [
         IconButton(
@@ -182,18 +301,19 @@ class _PatchCanvasState extends State<PatchCanvas> {
                   key: _viewport,
                   transformationController: _view,
                   constrained: false,
-                  minScale: .15,
+                  minScale: .02,
                   maxScale: 2,
+                  boundaryMargin: const EdgeInsets.all(double.infinity),
                   alignment: Alignment.topLeft,
                   child: SizedBox(
-                      width: _extent,
-                      height: _extent,
-                      child: Stack(children: [
+                      width: canvasWidth,
+                      height: canvasHeight,
+                      child: Stack(clipBehavior: Clip.none, children: [
                         Positioned.fill(
                             child: IgnorePointer(
                                 child: CustomPaint(
                                     painter: _PatchCablePainter(positions,
-                                        edges, _connecting, _pointer)))),
+                                        routes, _connecting, _pointer)))),
                         for (final node in doc.nodes)
                           Positioned(
                               key: ValueKey('patch-node-${node['id']}'),
@@ -234,15 +354,18 @@ class _PatchCanvasState extends State<PatchCanvas> {
                                                     world(d.globalPosition) -
                                                         _grab;
                                                 doc.positions[
-                                                    node['id']
-                                                        as int] = Offset(
-                                                    position.dx.clamp(16,
-                                                        _extent - _width - 16),
-                                                    position.dy.clamp(
-                                                        16,
-                                                        _extent -
-                                                            _height -
-                                                            16));
+                                                        node['id'] as int] =
+                                                    Offset(
+                                                        position.dx.clamp(
+                                                            16,
+                                                            canvasWidth -
+                                                                _width -
+                                                                16),
+                                                        position.dy.clamp(
+                                                            16,
+                                                            canvasHeight -
+                                                                _height -
+                                                                16));
                                               }),
                                           child: GestureDetector(
                                               behavior: HitTestBehavior.opaque,
@@ -308,9 +431,9 @@ class _PatchCanvasState extends State<PatchCanvas> {
 
 class _PatchCablePainter extends CustomPainter {
   const _PatchCablePainter(
-      this.positions, this.edges, this.connecting, this.pointer);
+      this.positions, this.routes, this.connecting, this.pointer);
   final Map<int, Offset> positions;
-  final List<(int, int)> edges;
+  final List<Path> routes;
   final int? connecting;
   final Offset? pointer;
   @override
@@ -329,11 +452,13 @@ class _PatchCablePainter extends CustomPainter {
           paint);
     }
 
-    for (final edge in edges) {
-      final from = positions[edge.$1], to = positions[edge.$2];
-      if (from != null && to != null) {
-        cable(from + const Offset(196, 70), to + const Offset(24, 70));
-      }
+    final outline = Paint()
+      ..color = LostChrome.midnight
+      ..strokeWidth = 7
+      ..style = PaintingStyle.stroke;
+    for (final route in routes) {
+      canvas.drawPath(route, outline);
+      canvas.drawPath(route, paint);
     }
     final from = positions[connecting];
     if (from != null && pointer != null) {

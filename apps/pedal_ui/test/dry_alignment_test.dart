@@ -28,14 +28,16 @@ void main() {
       onChangeTone: () {},
     ))));
     expect(find.textContaining('+37 samples (0.77 ms)'), findsOneWidget);
-    await tester.tap(find.byType(Switch));
+    await tester.ensureVisible(find.byType(DryWetAlignmentControl));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: find.byType(DryWetAlignmentControl), matching: find.byType(Switch)));
     await tester.pumpAndSettle();
     expect(changes['pedal_align_enabled'], 0);
     expect(find.textContaining('Off — original dry blend'), findsOneWidget);
     fail = true;
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.descendant(of: find.byType(DryWetAlignmentControl), matching: find.byType(Switch)));
     await tester.pumpAndSettle();
-    expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+    expect(tester.widget<Switch>(find.descendant(of: find.byType(DryWetAlignmentControl), matching: find.byType(Switch))).value, isFalse);
     expect(tester.takeException(), isNull);
   });
   testWidgets('uncertain and inverted captures never promise correction',

@@ -426,6 +426,7 @@ class ToneMakerService:
                 assert tone3000 is not None
                 path, _ = tone3000.download_best_ir(tone_id, models_dir.parent / "irs")
                 source = f"tone3000:ai-ir:{tone_id}"
+                upsert_model(path, database, source=source)
             cabinet_ir = {"name": path.stem, "path": str(path), "source": source}
         self._recommendations.pop(recommendation_id, None)
         tone_memory = {

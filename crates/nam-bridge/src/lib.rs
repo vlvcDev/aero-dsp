@@ -186,51 +186,55 @@ impl NamModel {
 
     /// Allocation-free failure path for realtime graph adapters. Caller handles
     /// error reporting on the control thread and must silence failed output.
+    /// Blocks longer than the prepared size are processed in prepared-size
+    /// slices; NAM streams its state, so slicing is sample-exact.
     pub fn process_realtime(&mut self, samples: &mut [f32]) -> bool {
-        if self.faulted || samples.len() > self.max_buffer_frames {
+        if self.faulted || self.max_buffer_frames == 0 {
             self.faulted = true;
             return false;
         }
-        self.input_workspace[..samples.len()].copy_from_slice(samples);
-        // SAFETY: prepared buffers and exclusive model ownership match the ABI.
-        let status = unsafe {
-            pedal_nam_process(
-                self.raw.as_ptr(),
-                self.input_workspace.as_ptr(),
-                samples.as_mut_ptr(),
-                samples.len() as c_int,
-            )
-        };
-        self.faulted = status != STATUS_OK;
-        !self.faulted
+        for slice in samples.chunks_mut(self.max_buffer_frames) {
+            if self.process_slice(slice) != STATUS_OK {
+                self.faulted = true;
+                return false;
+            }
+        }
+        true
     }
 
     pub fn process(&mut self, samples: &mut [f32]) -> Result<(), NamError> {
-        if samples.len() > self.max_buffer_frames {
+        if self.max_buffer_frames == 0 {
             return Err(NamError {
                 status: 1,
-                message: "audio block exceeds the prepared NAM buffer size".to_owned(),
+                message: "NAM model was prepared with a zero buffer size".to_owned(),
             });
         }
+        for slice in samples.chunks_mut(self.max_buffer_frames) {
+            let status = self.process_slice(slice);
+            if status != STATUS_OK {
+                self.faulted = true;
+                return Err(NamError {
+                    status,
+                    message: "NAM processing failed".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// `slice.len()` must not exceed `max_buffer_frames`.
+    fn process_slice(&mut self, slice: &mut [f32]) -> c_int {
+        debug_assert!(slice.len() <= self.max_buffer_frames);
         // NAM supports distinct buffers. This workspace was allocated during model loading.
-        self.input_workspace[..samples.len()].copy_from_slice(samples);
-        // SAFETY: The model is exclusively borrowed; buffers are valid and have `samples.len()` frames.
-        let status = unsafe {
+        self.input_workspace[..slice.len()].copy_from_slice(slice);
+        // SAFETY: The model is exclusively borrowed; buffers are valid and have `slice.len()` frames.
+        unsafe {
             pedal_nam_process(
                 self.raw.as_ptr(),
                 self.input_workspace.as_ptr(),
-                samples.as_mut_ptr(),
-                samples.len() as c_int,
+                slice.as_mut_ptr(),
+                slice.len() as c_int,
             )
-        };
-        if status == STATUS_OK {
-            Ok(())
-        } else {
-            self.faulted = true;
-            Err(NamError {
-                status,
-                message: "NAM processing failed".to_owned(),
-            })
         }
     }
 

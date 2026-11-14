@@ -23,6 +23,10 @@ fn main() {
         .define("NAM_SAMPLE_FLOAT", None)
         .define("NAM_ENABLE_A2_FAST", None)
         .define("NAM_DEFAULT_MAX_BUFFER_SIZE", "64")
+        // NAM/Eigen must meet realtime deadlines even in `cargo run` dev
+        // builds, and Eigen's internal asserts are costly in hot loops.
+        .opt_level(3)
+        .define("NDEBUG", None)
         .include(&core)
         .include(core.join("Dependencies/eigen"))
         .include(core.join("Dependencies/nlohmann"))

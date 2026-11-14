@@ -12,7 +12,8 @@ const ANALYSIS_FRAMES: usize = 1_024;
 const DECIMATION: usize = 4;
 const HISTORY_FRAMES: usize = ANALYSIS_FRAMES * DECIMATION;
 const ANALYSIS_HOP: usize = 2_048;
-const MIN_FREQUENCY_HZ: f32 = 55.0;
+// Leave room below A1 for flat tuning and interpolation near the range edge.
+const MIN_FREQUENCY_HZ: f32 = 45.0;
 const MAX_FREQUENCY_HZ: f32 = 1_000.0;
 // Autocorrelation also peaks at whole-number multiples of a period. Prefer the
 // first strong local peak so a decaying B/E string does not get reported as a
@@ -286,6 +287,32 @@ mod tests {
         let (frequency, confidence) = detect_pitch(82.41);
         assert!((frequency - 82.41).abs() < 2.0, "detected {frequency}");
         assert!(confidence > 0.7);
+    }
+
+    #[test]
+    fn detects_seven_string_low_notes_and_semitone_flat_tunings() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            for nominal_hz in [61.735_f32, 55.0] {
+                for expected in [nominal_hz, nominal_hz * 2.0_f32.powf(-1.0 / 12.0)] {
+                    let window = std::array::from_fn(|index| {
+                        let time = (index * DECIMATION) as f32 / sample_rate;
+                        let phase = time * expected * std::f32::consts::TAU;
+                        let envelope = (-time * 2.0).exp();
+                        envelope
+                            * (phase.sin() * 0.22
+                                + (phase * 2.0).sin() * 0.08
+                                + (phase * 3.0).sin() * 0.03)
+                    });
+                    let (frequency, confidence) = analyse(&window, sample_rate);
+                    let cents_error = 1200.0 * (frequency / expected).log2();
+                    assert!(
+                        cents_error.abs() < 3.0,
+                        "{sample_rate} Hz: expected {expected} Hz, detected {frequency} Hz ({cents_error} cents)"
+                    );
+                    assert!(confidence > 0.7, "confidence was {confidence}");
+                }
+            }
+        }
     }
 
     #[test]

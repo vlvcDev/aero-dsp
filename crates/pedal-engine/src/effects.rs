@@ -9,10 +9,6 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-fn gain_from_db(db: f32) -> f32 {
-    10.0_f32.powf(db / 20.0)
-}
-
 /// Increasing fractional delay moves toward the OLDER sample, including at
 /// ring wrap and whole-sample boundaries. Shared by chorus and flanger.
 fn delayed_sample(buffer: &[f32], write: usize, delay: f32) -> f32 {
@@ -81,14 +77,36 @@ impl LooperMode {
 
 /// Controls are atomics so updates never lock the audio callback.
 pub struct EffectsParameters {
+    squelch_enabled: AtomicBool,
+    squelch_threshold_db: AtomicFloat,
+    /// Clean-input detector peaks since the last noise-floor LEARN start.
+    pub input_floor_meter: crate::squelch::FloorMeter,
+    pub gate_floor_meter: crate::squelch::FloorMeter,
+    floor_learning: AtomicBool,
+    dehiss_enabled: AtomicBool,
+    dehiss_threshold_db: AtomicFloat,
+    dehiss_frequency_hz: AtomicFloat,
+    dehiss_range_db: AtomicFloat,
+    /// LEARN in progress: keep measuring even while dehiss is off.
+    dehiss_measuring: AtomicBool,
+    /// Loudest high-band envelope since LEARN started.
+    pub dehiss_meter: crate::dehiss::HissMeter,
     gate_enabled: AtomicBool,
     gate_threshold_db: AtomicFloat,
+    gate_hysteresis_db: AtomicFloat,
     gate_hold_ms: AtomicFloat,
     gate_release_ms: AtomicFloat,
     gate_range_db: AtomicFloat,
     compressor_enabled: AtomicBool,
     compressor_threshold_db: AtomicFloat,
     compressor_ratio: AtomicFloat,
+    compressor_attack_ms: AtomicFloat,
+    compressor_release_ms: AtomicFloat,
+    compressor_level_db: AtomicFloat,
+    compressor_auto_makeup: AtomicBool,
+    compressor_mix: AtomicFloat,
+    /// Largest gain reduction (dB, f32 bits) since the meter last read it.
+    compressor_reduction_db: AtomicU32,
     eq_enabled: AtomicBool,
     eq_low_db: AtomicFloat,
     eq_mid_db: AtomicFloat,
@@ -124,14 +142,32 @@ pub struct EffectsParameters {
 impl EffectsParameters {
     pub fn from_state(state: &EngineState) -> Self {
         Self {
+            squelch_enabled: AtomicBool::new(state.squelch_enabled),
+            squelch_threshold_db: AtomicFloat::new(state.squelch_threshold_db),
+            input_floor_meter: crate::squelch::FloorMeter::default(),
+            gate_floor_meter: crate::squelch::FloorMeter::default(),
+            floor_learning: AtomicBool::new(false),
+            dehiss_enabled: AtomicBool::new(state.dehiss_enabled),
+            dehiss_threshold_db: AtomicFloat::new(state.dehiss_threshold_db),
+            dehiss_frequency_hz: AtomicFloat::new(state.dehiss_frequency_hz),
+            dehiss_range_db: AtomicFloat::new(state.dehiss_range_db),
+            dehiss_measuring: AtomicBool::new(false),
+            dehiss_meter: crate::dehiss::HissMeter::default(),
             gate_enabled: AtomicBool::new(state.gate_enabled),
             gate_threshold_db: AtomicFloat::new(state.gate_threshold_db),
+            gate_hysteresis_db: AtomicFloat::new(state.gate_hysteresis_db),
             gate_hold_ms: AtomicFloat::new(state.gate_hold_ms),
             gate_release_ms: AtomicFloat::new(state.gate_release_ms),
             gate_range_db: AtomicFloat::new(state.gate_range_db),
             compressor_enabled: AtomicBool::new(state.compressor_enabled),
             compressor_threshold_db: AtomicFloat::new(state.compressor_threshold_db),
             compressor_ratio: AtomicFloat::new(state.compressor_ratio),
+            compressor_attack_ms: AtomicFloat::new(state.compressor_attack_ms),
+            compressor_release_ms: AtomicFloat::new(state.compressor_release_ms),
+            compressor_level_db: AtomicFloat::new(state.compressor_level_db),
+            compressor_auto_makeup: AtomicBool::new(state.compressor_auto_makeup),
+            compressor_mix: AtomicFloat::new(state.compressor_mix),
+            compressor_reduction_db: AtomicU32::new(0),
             eq_enabled: AtomicBool::new(state.eq_enabled),
             eq_low_db: AtomicFloat::new(state.eq_low_db),
             eq_mid_db: AtomicFloat::new(state.eq_mid_db),
@@ -166,9 +202,18 @@ impl EffectsParameters {
     }
 
     pub fn update(&self, state: &EngineState) {
+        self.squelch_enabled
+            .store(state.squelch_enabled, Ordering::Relaxed);
+        self.squelch_threshold_db.store(state.squelch_threshold_db);
+        self.dehiss_enabled
+            .store(state.dehiss_enabled, Ordering::Relaxed);
+        self.dehiss_threshold_db.store(state.dehiss_threshold_db);
+        self.dehiss_frequency_hz.store(state.dehiss_frequency_hz);
+        self.dehiss_range_db.store(state.dehiss_range_db);
         self.gate_enabled
             .store(state.gate_enabled, Ordering::Relaxed);
         self.gate_threshold_db.store(state.gate_threshold_db);
+        self.gate_hysteresis_db.store(state.gate_hysteresis_db);
         self.gate_hold_ms.store(state.gate_hold_ms);
         self.gate_release_ms.store(state.gate_release_ms);
         self.gate_range_db.store(state.gate_range_db);
@@ -177,6 +222,13 @@ impl EffectsParameters {
         self.compressor_threshold_db
             .store(state.compressor_threshold_db);
         self.compressor_ratio.store(state.compressor_ratio);
+        self.compressor_attack_ms.store(state.compressor_attack_ms);
+        self.compressor_release_ms
+            .store(state.compressor_release_ms);
+        self.compressor_level_db.store(state.compressor_level_db);
+        self.compressor_auto_makeup
+            .store(state.compressor_auto_makeup, Ordering::Relaxed);
+        self.compressor_mix.store(state.compressor_mix);
         self.eq_enabled.store(state.eq_enabled, Ordering::Relaxed);
         self.eq_low_db.store(state.eq_low_db);
         self.eq_mid_db.store(state.eq_mid_db);
@@ -210,6 +262,78 @@ impl EffectsParameters {
             .store(state.reverb_enabled, Ordering::Relaxed);
         self.reverb_decay_seconds.store(state.reverb_decay_seconds);
         self.reverb_mix.store(state.reverb_mix);
+    }
+
+    /// (enabled, threshold dB) for input-floor squelch users outside the
+    /// effect chain, such as the Patch Lab route.
+    pub fn squelch_settings(&self) -> (bool, f32) {
+        (
+            self.squelch_enabled.load(Ordering::Relaxed),
+            self.squelch_threshold_db.load(),
+        )
+    }
+
+    fn compressor_settings(&self) -> crate::compressor::CompressorSettings {
+        crate::compressor::CompressorSettings {
+            enabled: self.compressor_enabled.load(Ordering::Relaxed),
+            threshold_db: self.compressor_threshold_db.load(),
+            ratio: self.compressor_ratio.load(),
+            attack_ms: self.compressor_attack_ms.load(),
+            release_ms: self.compressor_release_ms.load(),
+            level_db: self.compressor_level_db.load(),
+            auto_makeup: self.compressor_auto_makeup.load(Ordering::Relaxed),
+            mix: self.compressor_mix.load(),
+        }
+    }
+
+    /// Peak compressor gain reduction (dB) since the previous call (meters).
+    pub fn take_compressor_reduction_db(&self) -> f32 {
+        f32::from_bits(self.compressor_reduction_db.swap(0, Ordering::Relaxed))
+    }
+
+    /// Noise-floor LEARN step 1 (control thread): the player stays silent.
+    pub fn start_floor_learn(&self) {
+        self.input_floor_meter.reset();
+        self.gate_floor_meter.reset();
+        self.floor_learning.store(true, Ordering::Relaxed);
+    }
+
+    /// Step 2: (squelch threshold, gate threshold) just above the measured
+    /// floor, or `None` if nothing was measured. The gate's close point
+    /// (threshold - hysteresis) lands 4 dB above the floor so it can close.
+    pub fn finish_floor_learn(&self, gate_hysteresis_db: f32) -> Option<(f32, f32)> {
+        let was_learning = self.floor_learning.swap(false, Ordering::Relaxed);
+        let input = self.input_floor_meter.peak();
+        let gate = self.gate_floor_meter.peak();
+        (was_learning && input > 0.0 && gate > 0.0).then(|| {
+            let gate_db = (20.0 * gate.log10() + gate_hysteresis_db.max(0.0) + 4.0)
+                .clamp(crate::gate::MIN_THRESHOLD_DB, -10.0);
+            (crate::squelch::learned_threshold_db(input), gate_db)
+        })
+    }
+
+    /// LEARN step 1 (control thread): start measuring the idle hiss floor.
+    pub fn start_dehiss_learn(&self) {
+        self.dehiss_meter.reset();
+        self.dehiss_measuring.store(true, Ordering::Relaxed);
+    }
+
+    /// LEARN step 2: stop measuring and return the threshold to use, or
+    /// `None` if no audio was measured (engine not running).
+    pub fn finish_dehiss_learn(&self) -> Option<f32> {
+        let was_measuring = self.dehiss_measuring.swap(false, Ordering::Relaxed);
+        let peak = self.dehiss_meter.peak();
+        (was_measuring && peak > 0.0).then(|| crate::dehiss::HissMeter::learned_threshold_db(peak))
+    }
+
+    fn dehiss_settings(&self) -> crate::dehiss::DehissSettings {
+        crate::dehiss::DehissSettings {
+            enabled: self.dehiss_enabled.load(Ordering::Relaxed),
+            threshold_db: self.dehiss_threshold_db.load(),
+            frequency_hz: self.dehiss_frequency_hz.load(),
+            range_db: self.dehiss_range_db.load(),
+            measure: self.dehiss_measuring.load(Ordering::Relaxed),
+        }
     }
 
     pub fn start_quantized_loop(&self, bpm: u32, bars: u8) {
@@ -247,8 +371,9 @@ pub struct EffectChainProcessor<P> {
     sample_rate: f32,
     gate: crate::gate::Gate,
     gate_gains: Vec<f32>,
-    compressor_envelope: f32,
-    compressor_gain: f32,
+    squelch: crate::squelch::Squelch,
+    dehiss: crate::dehiss::Dehiss,
+    compressor: crate::compressor::Compressor,
     eq: crate::tone_eq::ToneEq,
     chorus_buffer: Vec<f32>,
     chorus_write: usize,
@@ -314,8 +439,9 @@ impl<P> EffectChainProcessor<P> {
             sample_rate: sample_rate_f32,
             gate,
             gate_gains: vec![1.0; 1024],
-            compressor_envelope: 0.0,
-            compressor_gain: 1.0,
+            squelch: crate::squelch::Squelch::new(sample_rate),
+            dehiss: crate::dehiss::Dehiss::new(sample_rate),
+            compressor: crate::compressor::Compressor::new(sample_rate),
             eq: crate::tone_eq::ToneEq::new(sample_rate, [0.0; 3]),
             chorus_buffer: vec![0.0; (sample_rate_f32 * 0.04) as usize],
             chorus_write: 0,
@@ -355,14 +481,30 @@ impl<P> EffectChainProcessor<P> {
         self.gate.configure(
             self.parameters.gate_enabled.load(Ordering::Relaxed),
             self.parameters.gate_threshold_db.load(),
+            self.parameters.gate_hysteresis_db.load(),
             self.parameters.gate_hold_ms.load(),
             self.parameters.gate_release_ms.load(),
             self.parameters.gate_range_db.load(),
             extra_hold,
         );
+        let mut loudest = 0.0_f32;
         for (index, sample) in samples.iter().enumerate() {
             self.gate_gains[index] = self.gate.tick(*sample);
+            loudest = loudest.max(self.gate.envelope());
         }
+        self.parameters.gate_floor_meter.record(loudest);
+    }
+
+    /// Feeds the models exact zeros while the clean input sits at the
+    /// interface's noise floor (see `squelch`). Runs after gate detection,
+    /// which keeps listening to the raw input.
+    pub(crate) fn process_squelch(&mut self, samples: &mut [f32]) {
+        self.squelch.process(
+            self.parameters.squelch_enabled.load(Ordering::Relaxed),
+            self.parameters.squelch_threshold_db.load(),
+            &self.parameters.input_floor_meter,
+            samples,
+        );
     }
 
     /// The gate listens to clean input and applies its time-aligned envelope
@@ -376,45 +518,11 @@ impl<P> EffectChainProcessor<P> {
     }
 
     fn process_compressor(&mut self, samples: &mut [f32]) {
-        let enabled = self.parameters.compressor_enabled.load(Ordering::Relaxed);
-        if !enabled && self.compressor_gain > 0.99999 {
-            self.compressor_gain = 1.0;
-            return;
-        }
-        let threshold = self.parameters.compressor_threshold_db.load();
-        let ratio = self.parameters.compressor_ratio.load().max(1.0);
-        let attack = 1.0 - (-1.0 / (0.005 * self.sample_rate)).exp();
-        let release = 1.0 - (-1.0 / (0.080 * self.sample_rate)).exp();
-        for sample in samples {
-            let power = *sample * *sample;
-            let coefficient = if power > self.compressor_envelope {
-                attack
-            } else {
-                release
-            };
-            self.compressor_envelope += (power - self.compressor_envelope) * coefficient;
-            let over = 10.0 * self.compressor_envelope.max(1e-12).log10() - threshold;
-            // Six-decibel soft knee in the log domain.
-            let reduction = if over < -3.0 {
-                0.0
-            } else if over > 3.0 {
-                over * (1.0 - 1.0 / ratio)
-            } else {
-                (over + 3.0).powi(2) / 12.0 * (1.0 - 1.0 / ratio)
-            };
-            let target = if enabled {
-                gain_from_db(-reduction)
-            } else {
-                1.0
-            };
-            let coefficient = if target < self.compressor_gain {
-                attack
-            } else {
-                release
-            };
-            self.compressor_gain += (target - self.compressor_gain) * coefficient;
-            *sample *= self.compressor_gain;
-        }
+        let settings = self.parameters.compressor_settings();
+        let reduction = self.compressor.process(settings, samples);
+        self.parameters
+            .compressor_reduction_db
+            .fetch_max(reduction.max(0.0).to_bits(), Ordering::Relaxed);
     }
 
     fn process_eq(&mut self, samples: &mut [f32]) {
@@ -651,6 +759,7 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
         let mut right = [0.0; 1024];
         for (input, out) in samples.chunks_mut(1024).zip(output.chunks_mut(1024)) {
             self.process_gate(input);
+            self.process_squelch(input);
             self.process_compressor(input);
             self.process_octaver(input);
             self.source.process_stereo(input, out);
@@ -660,6 +769,9 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
             }
             let left = &mut left[..input.len()];
             let right = &mut right[..input.len()];
+            let settings = self.parameters.dehiss_settings();
+            self.dehiss
+                .process(settings, &self.parameters.dehiss_meter, left, Some(right));
             self.apply_gate_to_model_output(left);
             self.apply_gate_to_model_output(right);
             self.process_eq(left);
@@ -687,9 +799,13 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
         // No allocation occurs in process().
         for samples in samples.chunks_mut(self.gate_gains.len()) {
             self.process_gate(samples);
+            self.process_squelch(samples);
             self.process_compressor(samples);
             self.process_octaver(samples);
             self.source.process(samples);
+            let settings = self.parameters.dehiss_settings();
+            self.dehiss
+                .process(settings, &self.parameters.dehiss_meter, samples, None);
             self.apply_gate_to_model_output(samples);
             self.process_eq(samples);
             self.process_chorus(samples);
@@ -744,6 +860,9 @@ mod tests {
         let state = EngineState {
             gate_enabled: true,
             gate_threshold_db: -40.0,
+            // The probe "model input" is a constant 0.001, which the input
+            // squelch rightly treats as no signal; this test is about the gate.
+            squelch_enabled: false,
             ..Default::default()
         };
         let source: Vec<_> = (0..48_000)
@@ -843,6 +962,49 @@ mod tests {
         chain.process(&mut silent_guitar_input);
 
         assert!(silent_guitar_input.last().expect("sample").abs() < 0.001);
+    }
+
+    /// Stand-in amp: emits deterministic white hiss regardless of input.
+    struct HissingAmp(u32);
+    impl MonoProcessor for HissingAmp {
+        fn process(&mut self, samples: &mut [f32]) {
+            for sample in samples {
+                self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *sample = ((self.0 >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 0.004;
+            }
+        }
+    }
+
+    fn fizz_rms(x: &[f32]) -> f32 {
+        let d: Vec<f32> = x.windows(2).map(|w| w[1] - w[0]).collect();
+        (d.iter().map(|v| v * v).sum::<f32>() / d.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn dehiss_learn_measures_while_off_then_cuts_the_amps_hiss() {
+        let mut state = EngineState::default();
+        let params = Arc::new(EffectsParameters::from_state(&state));
+        let mut chain = EffectChainProcessor::new(HissingAmp(1), Arc::clone(&params), 48_000, 1);
+        // Finishing without a measurement fails cleanly.
+        assert_eq!(params.finish_dehiss_learn(), None);
+
+        params.start_dehiss_learn();
+        let mut idle = vec![0.0; 48_000];
+        chain.process(&mut idle);
+        let before = fizz_rms(&idle[24_000..]);
+        let threshold = params.finish_dehiss_learn().expect("measured hiss");
+        // ~0.002 peak hiss -> about -54 dBFS, plus the 10 dB learn margin.
+        assert!((-56.0..=-38.0).contains(&threshold), "{threshold}");
+        assert_eq!(params.finish_dehiss_learn(), None, "learn ended");
+
+        state.dehiss_enabled = true;
+        state.dehiss_threshold_db = threshold;
+        params.update(&state);
+        let mut idle = vec![0.0; 48_000];
+        chain.process(&mut idle);
+        let after = fizz_rms(&idle[24_000..]);
+        let reduction = 20.0 * (after / before).log10();
+        assert!(reduction < -12.0, "hiss only reduced {reduction} dB");
     }
 
     #[test]
@@ -965,6 +1127,38 @@ impl ModulationNode {
     }
 }
 impl crate::node_rig::StereoNode for ModulationNode {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        match parameter {
+            "rate_hz"
+                if (match self.kind {
+                    ModulationKind::Chorus => 0.05..=8.0,
+                    ModulationKind::Flanger => 0.05..=5.0,
+                    ModulationKind::Tremolo => 0.1..=18.0,
+                })
+                .contains(&value) =>
+            {
+                self.rate = value
+            }
+            "depth" if (0.0..=1.0).contains(&value) => self.depth = value,
+            "feedback"
+                if matches!(self.kind, ModulationKind::Flanger)
+                    && (-0.85..=0.85).contains(&value) =>
+            {
+                self.feedback = value
+            }
+            "mix"
+                if !matches!(self.kind, ModulationKind::Tremolo)
+                    && (0.0..=1.0).contains(&value) =>
+            {
+                self.mix = value
+            }
+            _ => return false,
+        }
+        true
+    }
     fn latency_samples(&self) -> usize {
         0
     } // Effect delay is intentional, not compensation latency.
@@ -1028,6 +1222,14 @@ impl OctaverNode {
     }
 }
 impl crate::node_rig::StereoNode for OctaverNode {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if parameter == "mix" && value.is_finite() && (0.0..=1.0).contains(&value) {
+            self.mix = value;
+            true
+        } else {
+            false
+        }
+    }
     fn latency_samples(&self) -> usize {
         0
     }
@@ -1069,6 +1271,22 @@ mod patch_node_tests {
     use super::*;
     use crate::node_rig::StereoNode;
 
+    #[test]
+    fn modulation_live_update_keeps_delay_and_phase() {
+        let mut node =
+            ModulationNode::new(8000, ModulationKind::Flanger, 1.0, 0.0, 0.5, 1.0).unwrap();
+        node.tick([1.0, 0.0]);
+        for _ in 0..4 {
+            node.tick([0.0; 2]);
+        }
+        let phase = node.phase;
+        let write = node.write;
+        assert!(node.set_parameter("rate_hz", 2.0));
+        assert_eq!(node.phase, phase);
+        assert_eq!(node.write, write);
+        assert!((0..20).any(|_| node.tick([0.0; 2])[0].abs() > 0.01));
+        assert!(!node.set_parameter("feedback", 0.9));
+    }
     #[test]
     fn modulation_is_audible_stereo_independent_and_resets() {
         for kind in [

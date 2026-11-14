@@ -17,6 +17,7 @@ struct Channel {
 
 pub struct FuzzNode {
     channels: [Channel; 2],
+    rate: f64,
     drive: f64,
     bias: f64,
     baseline: f64,
@@ -59,6 +60,7 @@ impl FuzzNode {
         let cutoff = (500.0 * 24.0_f64.powf(tone as f64)).min(rate as f64 * 0.45);
         Ok(Self {
             channels: [Channel::default(); 2],
+            rate: rate as f64,
             drive: 10.0_f64.powf(drive_db as f64 / 20.0),
             bias,
             baseline: bias.tanh(),
@@ -70,6 +72,30 @@ impl FuzzNode {
     }
 }
 impl StereoNode for FuzzNode {
+    fn set_parameter(&mut self, parameter: &str, value: f32) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
+        match parameter {
+            "drive_db" if (0.0..=36.0).contains(&value) => {
+                self.drive = 10.0_f64.powf(value as f64 / 20.0)
+            }
+            "bias" if (-1.0..=1.0).contains(&value) => {
+                self.bias = value as f64;
+                self.baseline = self.bias.tanh();
+            }
+            "tone" if (0.0..=1.0).contains(&value) => {
+                let cutoff = (500.0 * 24.0_f64.powf(value as f64)).min(self.rate * 0.45);
+                self.tone_coefficient = 1.0 - (-std::f64::consts::TAU * cutoff / self.rate).exp();
+            }
+            "mix" if (0.0..=1.0).contains(&value) => self.mix = value as f64,
+            "output_db" if (-36.0..=6.0).contains(&value) => {
+                self.output = 10.0_f64.powf(value as f64 / 20.0)
+            }
+            _ => return false,
+        }
+        true
+    }
     fn latency_samples(&self) -> usize {
         1
     }

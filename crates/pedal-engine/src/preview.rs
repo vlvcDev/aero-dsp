@@ -31,6 +31,7 @@ pub fn audition_level(state: &EngineState, destination: &Path) -> Result<f32, St
     reference.rig_level_db = 0.0;
     reference.render_quality_profile = 3; // Match the live rig, not a higher export profile.
     reference.render_nam_quality = 2;
+    reference.render_nam_oversampling = 0;
     render_source_inner(&reference, destination, None, true, None, None, false)?;
     let audio = AudioFile::load(destination)?;
     let frames = ((DURATION_SECONDS * SAMPLE_RATE as f32) as usize * audio.channels)
@@ -140,12 +141,14 @@ fn render_source_inner(
         state.pre_bypassed || state.bypassed,
         crate::quality::render_nam_size(state),
         true,
+        crate::quality::render_nam_oversampling(state),
     )?;
     let amp = load_model(
         state.model.as_deref(),
         state.amp_bypassed || state.bypassed,
         crate::quality::render_nam_size(state),
         false,
+        crate::quality::render_nam_oversampling(state),
     )?;
     let cabinet = match state.cabinet_ir.as_deref() {
         Some(path) => Some(
@@ -265,6 +268,7 @@ fn load_model(
     bypassed: bool,
     quality: nam_bridge::NamQuality,
     alignment: bool,
+    oversampling: u8,
 ) -> Result<AmpProcessor, String> {
     if bypassed || path.is_none() {
         return Ok(AmpProcessor::Clean);
@@ -276,6 +280,7 @@ fn load_model(
         BLOCK_FRAMES,
         quality,
         alignment,
+        oversampling,
     )
     .map(AmpProcessor::Nam)
     .map_err(|error| format!("could not prepare preview model {path}: {error}"))

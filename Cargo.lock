@@ -362,6 +362,7 @@ dependencies = [
  "alsa",
  "crossbeam-queue",
  "hound",
+ "libc",
  "nam-bridge",
  "rubato",
  "rustfft",

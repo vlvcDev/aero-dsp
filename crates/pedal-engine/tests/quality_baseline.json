@@ -1,0 +1,9 @@
+{
+  "aliasing_db": -36.94,
+  "band_high_db": -49.54,
+  "band_low_db": -0.0,
+  "band_mid_db": -30.42,
+  "idle_noise_db": -63.88,
+  "latency_samples": 224.0,
+  "level_db": -6.76
+}

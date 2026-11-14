@@ -8,10 +8,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .index import list_models, scan_models, upsert_model
+from .index import (
+    list_models, local_tone_paths, measure_captures_async, scan_models, set_favorite, touch_model, upsert_model,
+)
 from .oauth_callback import OAuthCallbackServer
 from .backing_tracks import BackingTrackError, BackingTrackService
-from .tone3000 import Tone3000Error
+from .tone3000 import NotConnectedError, Tone3000Error
 from .tone3000_service import Tone3000Service
 from .tone_maker import ToneMakerError, ToneMakerService
 from .tone_memory import ToneMemoryError, ToneMemoryService
@@ -41,10 +43,22 @@ def handle_request(
         query = payload.get("query", "")
         if not isinstance(query, str):
             return _error(request_id, "invalid_payload", "query must be a string")
-        models = [asdict(model) for model in list_models(database, query=query)]
+        kind, sort = payload.get("kind", "nam"), payload.get("sort", "name")
+        if kind not in ("nam", "ir") or sort not in ("name", "recent"):
+            return _error(request_id, "invalid_payload", "kind must be nam|ir and sort name|recent")
+        models = [asdict(model) for model in list_models(database, query=query, kind=kind, sort=sort)]
+        measure_captures_async(database)
         return _response(request_id, "models", {"models": models})
+    if message_type in ("set_favorite", "touch_model"):
+        path, favorite = payload.get("path"), payload.get("favorite")
+        if not isinstance(path, str) or (message_type == "set_favorite" and not isinstance(favorite, bool)):
+            return _error(request_id, "invalid_payload", "path (and favorite for set_favorite) are required")
+        if not (set_favorite(database, path, favorite) if message_type == "set_favorite" else touch_model(database, path)):
+            return _error(request_id, "not_found", "Model is not in the library")
+        return _response(request_id, message_type, {"favorite": favorite} if message_type == "set_favorite" else {})
     if message_type == "refresh_models":
         records = scan_models(models_dir, database)
+        measure_captures_async(database)
         return _response(request_id, "refreshed", {"count": len(records)})
     if message_type == "tone3000_status":
         status = (
@@ -54,6 +68,7 @@ def handle_request(
                 "available": False,
                 "connected": False,
                 "auth_pending": False,
+                "device_auth_pending": False,
                 "selected_tone_id": None,
             }
         )
@@ -228,6 +243,35 @@ def handle_request(
                 "tone_memory_saved",
                 {"record": tone_memory.save(candidate, note)},
             )
+        if message_type == "tone3000_search":
+            return _response(request_id, "tone3000_tones",
+                             tone3000.browse(payload, local_tone_paths(database)))  # type: ignore[union-attr]
+        if message_type == "tone3000_stream":
+            return _response(request_id, "tone3000_tones",
+                             tone3000.stream(payload, local_tone_paths(database)))  # type: ignore[union-attr]
+        if message_type == "tone3000_trending":
+            return _response(request_id, "tone3000_tones",
+                             tone3000.trending(str(payload.get("gear") or ""), local_tone_paths(database)))  # type: ignore[union-attr]
+        if message_type in ("tone3000_tone_models", "tone3000_load", "tone3000_favorite"):
+            tone_id = payload.get("tone_id")
+            if not isinstance(tone_id, (str, int)):
+                return _error(request_id, "invalid_payload", "tone_id is required")
+            tone_id = str(tone_id)
+            if message_type == "tone3000_favorite":
+                if not isinstance(payload.get("favorite"), bool):
+                    return _error(request_id, "invalid_payload", "favorite must be a boolean")
+                return _response(request_id, "tone3000_favorite",
+                                 {"favorited": tone3000.set_favorite(tone_id, payload["favorite"])})  # type: ignore[union-attr]
+            if message_type == "tone3000_tone_models":
+                return _response(request_id, "tone3000_models",
+                                 {"models": tone3000.tone_models(tone_id, models_dir)})  # type: ignore[union-attr]
+            model_id = payload.get("model_id")
+            path, kind = tone3000.load(tone_id, None if model_id is None else str(model_id), models_dir)  # type: ignore[union-attr]
+            upsert_model(path, database)
+            model = next(m for m in list_models(database, kind=kind) if m.path == str(path.resolve()))
+            return _response(request_id, "tone3000_loaded", {"kind": kind, "model": asdict(model)})
+        if message_type == "tone3000_begin_device_auth":
+            return _response(request_id, "tone3000_device_auth", tone3000.begin_device_auth())  # type: ignore[union-attr]
         if message_type == "tone3000_begin_auth":
             return _response(
                 request_id,
@@ -269,6 +313,8 @@ def handle_request(
             path, _ = tone3000.download(str(tone_id), str(model_id), models_dir)  # type: ignore[union-attr]
             record = upsert_model(path, database, source=f"tone3000:model:{model_id}")
             return _response(request_id, "tone3000_downloaded", {"model": asdict(record)})
+    except NotConnectedError as error:
+        return _error(request_id, "not_connected", str(error))
     except (Tone3000Error, ToneMakerError) as error:
         return _error(request_id, "tone3000_error", str(error))
     except BackingTrackError as error:

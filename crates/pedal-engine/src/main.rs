@@ -88,12 +88,15 @@ impl DspParameters {
                 PedalParameters::new(state.pedal_drive_db, state.pedal_mix, state.pedal_level_db)
                     .with_alignment(state.pedal_align_enabled),
             ),
-            amp: Arc::new(AmpParameters::new(
-                state.amp_bass_db,
-                state.amp_mid_db,
-                state.amp_treble_db,
-                state.amp_volume_db,
-            )),
+            amp: Arc::new(
+                AmpParameters::new(
+                    state.amp_bass_db,
+                    state.amp_mid_db,
+                    state.amp_treble_db,
+                    state.amp_volume_db,
+                )
+                .with_tight(state.amp_tight_hz),
+            ),
             cabinet: Arc::new(CabinetParameters::new(
                 state.cabinet_enabled,
                 state.cabinet_gain_db,
@@ -124,6 +127,7 @@ impl DspParameters {
             state.amp_treble_db,
             state.amp_volume_db,
         );
+        self.amp.set_tight(state.amp_tight_hz);
         self.cabinet.update(
             state.cabinet_enabled,
             state.cabinet_gain_db,
@@ -295,6 +299,12 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
         {
             let mut response =
                 meters_response(request.id, &context.telemetry, &context.tuner_telemetry);
+            response.payload["compressor_reduction_db"] = serde_json::json!(
+                context
+                    .dsp_parameters
+                    .effects
+                    .take_compressor_reduction_db()
+            );
             response.payload["patch_active"] = serde_json::json!(
                 context
                     .patch
@@ -304,6 +314,16 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
                     .unwrap_or(false)
             );
             response
+        } else if let Some(request) = serde_json::from_str::<Request>(&line)
+            .ok()
+            .filter(|r| r.api == API_VERSION && r.message_type == "dehiss_learn")
+        {
+            dehiss_learn(&context, request)
+        } else if let Some(request) = serde_json::from_str::<Request>(&line)
+            .ok()
+            .filter(|r| r.api == API_VERSION && r.message_type == "noise_floor_learn")
+        {
+            noise_floor_learn(&context, request)
         } else if let Some(request) = serde_json::from_str::<Request>(&line)
             .ok()
             .filter(|r| r.api == API_VERSION && r.message_type == "match_rig_level")
@@ -609,6 +629,7 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
                 request.message_type.as_str(),
                 "patch_status"
                     | "apply_patch"
+                    | "update_patch"
                     | "deactivate_patch"
                     | "render_patch"
                     | "render_patch_comparison"
@@ -756,7 +777,7 @@ fn handle_patch_request(
         return Ok(match guard.as_ref() {
             Some(control) => {
                 let (active, faulted, switching) = control.status();
-                serde_json::json!({"available":true,"active":active,"faulted":faulted,"switching":switching,"sample_rate":control.sample_rate,"latency_samples":control.latency_samples(),"bypassed":context.bypass_flags.all.load(Ordering::Relaxed)})
+                serde_json::json!({"available":true,"active":active,"faulted":faulted,"switching":switching,"revision":control.revision(),"sample_rate":control.sample_rate,"latency_samples":control.latency_samples(),"bypassed":context.bypass_flags.all.load(Ordering::Relaxed)})
             }
             None => {
                 serde_json::json!({"available":false,"active":false,"faulted":false,"switching":false})
@@ -842,6 +863,19 @@ fn handle_patch_request(
         .and_then(|v| v.as_str())
         .ok_or("Choose the folder containing your patch assets")?;
     let directory = Path::new(directory);
+    if request.message_type == "update_patch" {
+        let revision = request
+            .payload
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Missing active rig revision")?;
+        let guard = context.patch.lock().map_err(|e| e.to_string())?;
+        guard
+            .as_ref()
+            .ok_or("Live audio is unavailable")?
+            .update(revision, &document, directory)?;
+        return Ok(serde_json::json!({"updated":true,"revision":revision}));
+    }
     if !directory.is_absolute() || !directory.is_dir() {
         return Err("Asset folder must be an existing absolute path".into());
     }
@@ -855,8 +889,8 @@ fn handle_patch_request(
                 document.sample_rate, control.sample_rate
             ));
         }
-        control.submit(Some(prepared))?;
-        return Ok(serde_json::json!({"queued":true}));
+        let revision = control.submit(Some(prepared))?;
+        return Ok(serde_json::json!({"queued":true,"revision":revision.to_string()}));
     }
     let _guard = context.preview_lock.lock().map_err(|e| e.to_string())?;
     let source_path = request
@@ -978,6 +1012,7 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
         pre_bypassed,
         amp_bypassed,
         nam_quality,
+        nam_oversampling,
     ) = {
         let mut state = shared_state.lock().expect("control state lock poisoned");
         state.sample_rate = negotiated.sample_rate;
@@ -999,6 +1034,7 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
             pre_bypassed,
             amp_bypassed,
             state.nam_quality,
+            state.nam_oversampling,
         )
     };
     bypass_flags.all.store(persisted_bypass, Ordering::Relaxed);
@@ -1011,6 +1047,7 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
         negotiated.sample_rate,
         negotiated.period_frames,
         nam_quality,
+        nam_oversampling,
     );
     let (amp, amp_failed) = load_restored_model(
         "amp",
@@ -1018,6 +1055,7 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
         negotiated.sample_rate,
         negotiated.period_frames,
         nam_quality,
+        nam_oversampling,
     );
     shared_state.lock().expect("control state").pedal_alignment =
         pedal_engine::dsp::MonoProcessor::dry_wet_alignment(&pre);
@@ -1079,6 +1117,7 @@ fn run_audio_worker(context: &AudioWorkerContext) -> Result<(), String> {
         negotiated.sample_rate,
         Arc::clone(&bypass_flags.all),
     );
+    let chain = chain.with_squelch(Arc::clone(&dsp_parameters.effects), negotiated.sample_rate);
     *context.patch.lock().expect("patch control") = Some(patch_control);
     let chain = TunerTapProcessor::new(
         chain,
@@ -1115,6 +1154,7 @@ fn load_restored_model(
     sample_rate: u32,
     buffer_frames: u32,
     quality: u8,
+    oversampling: u8,
 ) -> (AmpProcessor, bool) {
     let Some(path) = path else {
         return (AmpProcessor::Clean, false);
@@ -1125,6 +1165,7 @@ fn load_restored_model(
         buffer_frames as usize,
         pedal_engine::quality::nam_size(quality),
         slot == "pedal",
+        oversampling,
     ) {
         Ok(model) => {
             eprintln!("loaded restored {slot} NAM model {path}");
@@ -1214,6 +1255,10 @@ fn handle_control_line(
             render_quality_profile: state.render_quality_profile,
             nam_quality: state.nam_quality,
             render_nam_quality: state.render_nam_quality,
+            nam_oversampling: state.nam_oversampling,
+            render_nam_oversampling: state.render_nam_oversampling,
+            squelch_enabled: state.squelch_enabled,
+            squelch_threshold_db: state.squelch_threshold_db,
             ..EngineState::default()
         };
         return state_response(request.id, state);
@@ -1358,6 +1403,7 @@ fn handle_control_line(
         let enabled = !bypassed;
         match effect {
             "gate" => state.gate_enabled = enabled,
+            "dehiss" => state.dehiss_enabled = enabled,
             "compressor" => state.compressor_enabled = enabled,
             "eq" => state.eq_enabled = enabled,
             "chorus" => state.chorus_enabled = enabled,
@@ -1397,6 +1443,7 @@ fn handle_control_line(
             "flanger" => state.flanger_visible = visible,
             "tremolo" => state.tremolo_visible = visible,
             "octaver" => state.octaver_visible = visible,
+            "dehiss" => state.dehiss_visible = visible,
             "delay" => state.delay_visible = visible,
             "reverb" => state.reverb_visible = visible,
             "looper" => state.looper_visible = visible,
@@ -1607,7 +1654,12 @@ fn handle_control_line(
                 }
             }
         }
-        if control == "nam_quality" && value != f32::from(state.nam_quality) {
+        let model_rebuild = match control {
+            "nam_quality" => value != f32::from(state.nam_quality),
+            "nam_oversampling" => value != f32::from(state.nam_oversampling),
+            _ => false,
+        };
+        if model_rebuild {
             let mut next = state.clone();
             if let Err(message) = set_control(&mut next, control, value) {
                 return control_error(request.id, "invalid_control", message);
@@ -1635,6 +1687,10 @@ fn handle_control_line(
                 | "render_quality_profile"
                 | "nam_quality"
                 | "render_nam_quality"
+                | "nam_oversampling"
+                | "render_nam_oversampling"
+                | "squelch_enabled"
+                | "squelch_threshold_db"
                 | "calibration_enabled"
                 | "input_reference_dbu"
                 | "input_trim_db"
@@ -1689,6 +1745,7 @@ fn handle_control_line(
         state.buffer_frames.max(128) as usize,
         pedal_engine::quality::nam_size(state.nam_quality),
         slot == "pre",
+        state.nam_oversampling,
     ) {
         Ok(model) => model,
         Err(error) => {
@@ -1744,6 +1801,7 @@ fn prepare_preset_model(
         state.buffer_frames.max(128) as usize,
         pedal_engine::quality::nam_size(state.nam_quality),
         alignment,
+        state.nam_oversampling,
     )
     .map(AmpProcessor::Nam)
     .map_err(|error| error.to_string())
@@ -1764,6 +1822,20 @@ fn prepare_preset_cabinet(
 }
 
 fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(), &'static str> {
+    if control == "compressor_auto_makeup" {
+        if value != 0.0 && value != 1.0 {
+            return Err("auto makeup must be 0 or 1");
+        }
+        state.compressor_auto_makeup = value == 1.0;
+        return Ok(());
+    }
+    if control == "squelch_enabled" {
+        if value != 0.0 && value != 1.0 {
+            return Err("squelch must be 0 or 1");
+        }
+        state.squelch_enabled = value == 1.0;
+        return Ok(());
+    }
     if control == "pedal_align_enabled" {
         if value != 0.0 && value != 1.0 {
             return Err("alignment must be 0 or 1");
@@ -1776,6 +1848,25 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
     }
     if let Some(key) = control.strip_prefix("amp_eq_") {
         return state.amp_eq.set_control(key, value);
+    }
+    if control == "nam_oversampling" || control == "render_nam_oversampling" {
+        let live = control == "nam_oversampling";
+        let valid = value.is_finite()
+            && value.fract() == 0.0
+            && (0.0..=8.0).contains(&value)
+            && (pedal_engine::nam_oversampling::is_valid_factor(value as u8)
+                || (!live && value == 0.0));
+        if !valid {
+            return Err(
+                "NAM oversampling must be 1, 2, 4 or 8 (render also accepts 0, same as live)",
+            );
+        }
+        if live {
+            state.nam_oversampling = value as u8;
+        } else {
+            state.render_nam_oversampling = value as u8;
+        }
+        return Ok(());
     }
     if control == "nam_quality" || control == "render_nam_quality" {
         let maximum = if control == "nam_quality" { 1.0 } else { 2.0 };
@@ -1805,6 +1896,17 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         }
         return Ok(());
     }
+    if matches!(control, "pedal_normalize_enabled" | "amp_normalize_enabled") {
+        if value != 0.0 && value != 1.0 {
+            return Err("normalization must be 0 or 1");
+        }
+        if control == "pedal_normalize_enabled" {
+            state.pedal_normalize_enabled = value == 1.0;
+        } else {
+            state.amp_normalize_enabled = value == 1.0;
+        }
+        return Ok(());
+    }
     if control == "calibration_enabled" {
         if value == 1.0 && !state.input_reference_set {
             return Err(
@@ -1828,22 +1930,68 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         "input_reference_dbu" => (&mut state.input_reference_dbu, -30.0, 30.0),
         "input_trim_db" => (&mut state.input_trim_db, -24.0, 24.0),
         "rig_level_db" => (&mut state.rig_level_db, -24.0, 12.0),
-        "pedal_drive_db" => (&mut state.pedal_drive_db, 0.0, 24.0),
+        "pedal_drive_db" => (&mut state.pedal_drive_db, -24.0, 24.0),
         "pedal_mix" => (&mut state.pedal_mix, 0.0, 1.0),
-        "pedal_level_db" => (&mut state.pedal_level_db, -24.0, 12.0),
+        "pedal_level_db" => (&mut state.pedal_level_db, -24.0, 24.0),
         "amp_bass_db" => (&mut state.amp_bass_db, -12.0, 12.0),
         "amp_mid_db" => (&mut state.amp_mid_db, -12.0, 12.0),
         "amp_treble_db" => (&mut state.amp_treble_db, -12.0, 12.0),
-        "amp_volume_db" => (&mut state.amp_volume_db, -24.0, 12.0),
+        "amp_volume_db" => (&mut state.amp_volume_db, -24.0, 24.0),
+        "amp_tight_hz" => (
+            &mut state.amp_tight_hz,
+            pedal_engine::dsp::TIGHT_MIN_HZ,
+            pedal_engine::dsp::TIGHT_MAX_HZ,
+        ),
         "cabinet_gain_db" => (&mut state.cabinet_gain_db, -24.0, 12.0),
         "cabinet_low_cut_hz" => (&mut state.cabinet_low_cut_hz, 20.0, 500.0),
         "cabinet_high_cut_hz" => (&mut state.cabinet_high_cut_hz, 1_000.0, 20_000.0),
-        "gate_threshold_db" => (&mut state.gate_threshold_db, -80.0, -10.0),
+        "gate_threshold_db" => (
+            &mut state.gate_threshold_db,
+            pedal_engine::gate::MIN_THRESHOLD_DB,
+            -10.0,
+        ),
+        "squelch_threshold_db" => (
+            &mut state.squelch_threshold_db,
+            pedal_engine::squelch::THRESHOLD_RANGE_DB.0,
+            pedal_engine::squelch::THRESHOLD_RANGE_DB.1,
+        ),
+        "dehiss_threshold_db" => (
+            &mut state.dehiss_threshold_db,
+            pedal_engine::dehiss::THRESHOLD_RANGE_DB.0,
+            pedal_engine::dehiss::THRESHOLD_RANGE_DB.1,
+        ),
+        "dehiss_frequency_hz" => (
+            &mut state.dehiss_frequency_hz,
+            pedal_engine::dehiss::FREQUENCY_RANGE_HZ.0,
+            pedal_engine::dehiss::FREQUENCY_RANGE_HZ.1,
+        ),
+        "dehiss_range_db" => (
+            &mut state.dehiss_range_db,
+            pedal_engine::dehiss::RANGE_RANGE_DB.0,
+            pedal_engine::dehiss::RANGE_RANGE_DB.1,
+        ),
+        "gate_hysteresis_db" => (&mut state.gate_hysteresis_db, 0.0, 30.0),
         "gate_hold_ms" => (&mut state.gate_hold_ms, 0.0, 500.0),
         "gate_release_ms" => (&mut state.gate_release_ms, 5.0, 1_000.0),
         "gate_range_db" => (&mut state.gate_range_db, 0.0, 90.0),
         "compressor_threshold_db" => (&mut state.compressor_threshold_db, -48.0, 0.0),
         "compressor_ratio" => (&mut state.compressor_ratio, 1.0, 20.0),
+        "compressor_attack_ms" => (
+            &mut state.compressor_attack_ms,
+            pedal_engine::compressor::ATTACK_RANGE_MS.0,
+            pedal_engine::compressor::ATTACK_RANGE_MS.1,
+        ),
+        "compressor_release_ms" => (
+            &mut state.compressor_release_ms,
+            pedal_engine::compressor::RELEASE_RANGE_MS.0,
+            pedal_engine::compressor::RELEASE_RANGE_MS.1,
+        ),
+        "compressor_level_db" => (
+            &mut state.compressor_level_db,
+            pedal_engine::compressor::LEVEL_RANGE_DB.0,
+            pedal_engine::compressor::LEVEL_RANGE_DB.1,
+        ),
+        "compressor_mix" => (&mut state.compressor_mix, 0.0, 1.0),
         "eq_low_db" => (&mut state.eq_low_db, -12.0, 12.0),
         "eq_mid_db" => (&mut state.eq_mid_db, -12.0, 12.0),
         "eq_high_db" => (&mut state.eq_high_db, -12.0, 12.0),
@@ -1864,7 +2012,13 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         "reverb_mix" => (&mut state.reverb_mix, 0.0, 1.0),
         _ => return Err("unknown control"),
     };
-    if !(minimum..=maximum).contains(&value) {
+    if !(minimum..=maximum).contains(&value)
+        && !(value == 0.0
+            && matches!(
+                control,
+                "cabinet_low_cut_hz" | "cabinet_high_cut_hz" | "amp_tight_hz"
+            ))
+    {
         return Err("control value is outside its supported range");
     }
     *target = value;
@@ -1908,6 +2062,90 @@ fn presets_response(id: String, presets: &PresetStore) -> Response {
     }
 }
 
+/// Two-step noise-floor LEARN: `{"phase":"start"}`, ~2 s without playing,
+/// then `{"phase":"finish"}` sets the input squelch (device setting) and the
+/// gate threshold (preset) just above the interface's measured noise floor.
+fn noise_floor_learn(context: &ControlContext, request: Request) -> Response {
+    let effects = &context.dsp_parameters.effects;
+    match request
+        .payload
+        .get("phase")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("start") => {
+            effects.start_floor_learn();
+            let state = context.state.lock().expect("state");
+            state_response(request.id, &state)
+        }
+        Some("finish") => {
+            let mut state = context.state.lock().expect("state");
+            let Some((squelch_db, gate_db)) = effects.finish_floor_learn(state.gate_hysteresis_db)
+            else {
+                return control_error(
+                    request.id,
+                    "noise_floor_learn_failed",
+                    "No input was measured. Start LEARN with the engine running.",
+                );
+            };
+            state.squelch_threshold_db = squelch_db;
+            if state.gate_threshold_db != gate_db {
+                state.gate_threshold_db = gate_db;
+                mark_preset_dirty(&mut state);
+            }
+            context.dsp_parameters.update(&state);
+            match pedal_engine::state::save_atomic(&context.state_path, &state) {
+                Ok(()) => state_response(request.id, &state),
+                Err(error) => control_error(request.id, "save_failed", &error.to_string()),
+            }
+        }
+        _ => control_error(
+            request.id,
+            "invalid_payload",
+            "noise_floor_learn requires phase 'start' or 'finish'",
+        ),
+    }
+}
+
+/// Two-step LEARN for the dehiss threshold, so no request ever blocks:
+/// `{"phase":"start"}` begins measuring the idle hiss floor (the player stays
+/// silent ~2 s), `{"phase":"finish"}` sets the threshold just above it.
+fn dehiss_learn(context: &ControlContext, request: Request) -> Response {
+    let effects = &context.dsp_parameters.effects;
+    match request
+        .payload
+        .get("phase")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("start") => {
+            effects.start_dehiss_learn();
+            let state = context.state.lock().expect("state");
+            state_response(request.id, &state)
+        }
+        Some("finish") => {
+            let Some(threshold) = effects.finish_dehiss_learn() else {
+                return control_error(
+                    request.id,
+                    "dehiss_learn_failed",
+                    "No audio was measured. Start LEARN with the engine running.",
+                );
+            };
+            let mut state = context.state.lock().expect("state");
+            state.dehiss_threshold_db = threshold;
+            mark_preset_dirty(&mut state);
+            context.dsp_parameters.update(&state);
+            match pedal_engine::state::save_atomic(&context.state_path, &state) {
+                Ok(()) => state_response(request.id, &state),
+                Err(error) => control_error(request.id, "save_failed", &error.to_string()),
+            }
+        }
+        _ => control_error(
+            request.id,
+            "invalid_payload",
+            "dehiss_learn requires phase 'start' or 'finish'",
+        ),
+    }
+}
+
 fn meters_response(
     id: String,
     telemetry: &RealtimeTelemetry,
@@ -1925,12 +2163,17 @@ fn meters_response(
             "input_db": to_db(snapshot.input_peak),
             "output_db": to_db(snapshot.output_peak),
             "clipped": snapshot.clipped,
+            "rig_limiter_reduction_db": snapshot.rig_limiter_reduction_db,
+            "output_limiter_reduction_db": snapshot.output_limiter_reduction_db,
             "cpu_percent": snapshot.cpu_percent,
             "worst_cpu_percent": snapshot.worst_cpu_percent,
             "deadline_misses": snapshot.deadline_misses,
             "audio_status": audio_status,
             "audio_error": audio_error,
             "xruns": snapshot.xruns,
+            // SCHED_FIFO priorities; 0 means normal (non-realtime) scheduling.
+            "audio_realtime_priority": pedal_engine::realtime::audio_priority(),
+            "dsp_worker_realtime_priority": pedal_engine::realtime::worker_priority(),
             "tuner_hz": tuner_hz,
             "tuner_confidence": tuner_confidence,
         }),
@@ -2048,6 +2291,22 @@ mod tests {
         assert!(state.pedal_alignment.is_none());
     }
     #[test]
+    fn cabinet_cut_controls_accept_off_and_valid_ranges() {
+        let mut state = EngineState::default();
+        for (name, min, max) in [
+            ("cabinet_low_cut_hz", 20.0, 500.0),
+            ("cabinet_high_cut_hz", 1000.0, 20000.0),
+        ] {
+            for value in [0.0, min, max] {
+                assert!(set_control(&mut state, name, value).is_ok());
+            }
+            for value in [-1.0, 1.0, min - 1.0, max + 1.0, f32::NAN, f32::INFINITY] {
+                assert!(set_control(&mut state, name, value).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn nam_eq_controls_are_validated_and_mark_presets_dirty() {
         let mut state = EngineState {
             preset_id: Some("eq-test".into()),
@@ -2111,9 +2370,61 @@ mod tests {
     }
 
     #[test]
+    fn dehiss_controls_validate_ranges_and_round_trip_in_presets() {
+        let mut state = pedal_engine::EngineState::default();
+        assert!(!state.dehiss_enabled);
+        for (name, min, max) in [
+            ("dehiss_threshold_db", -100.0, -30.0),
+            ("dehiss_frequency_hz", 1_500.0, 8_000.0),
+            ("dehiss_range_db", 0.0, 40.0),
+        ] {
+            super::set_control(&mut state, name, min).unwrap();
+            super::set_control(&mut state, name, max).unwrap();
+            for invalid in [min - 1.0, max + 1.0, f32::NAN] {
+                assert!(
+                    super::set_control(&mut state, name, invalid).is_err(),
+                    "{name}"
+                );
+            }
+        }
+        state.dehiss_enabled = true;
+        state.dehiss_threshold_db = -58.0;
+        let rig = pedal_engine::presets::PresetRig::from_state(&state);
+        let mut restored = pedal_engine::EngineState::default();
+        rig.apply_to(&mut restored);
+        assert!(restored.dehiss_enabled);
+        assert_eq!(restored.dehiss_threshold_db, -58.0);
+        let legacy: pedal_engine::presets::PresetRig = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.dehiss_enabled, "old presets keep dehiss off");
+        assert_eq!(state.snapshot()["dehiss_threshold_db"], -58.0);
+    }
+
+    #[test]
+    fn amp_tight_accepts_off_or_its_range_and_round_trips_in_presets() {
+        let mut state = pedal_engine::EngineState::default();
+        assert_eq!(state.amp_tight_hz, 0.0);
+        for valid in [0.0, 20.0, 150.0, 300.0] {
+            super::set_control(&mut state, "amp_tight_hz", valid).unwrap();
+            assert_eq!(state.amp_tight_hz, valid);
+        }
+        for invalid in [10.0, 301.0, -5.0, f32::NAN] {
+            assert!(super::set_control(&mut state, "amp_tight_hz", invalid).is_err());
+        }
+        state.amp_tight_hz = 120.0;
+        let rig = pedal_engine::presets::PresetRig::from_state(&state);
+        let mut restored = pedal_engine::EngineState::default();
+        rig.apply_to(&mut restored);
+        assert_eq!(restored.amp_tight_hz, 120.0);
+        let legacy: pedal_engine::presets::PresetRig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.amp_tight_hz, 0.0, "old presets keep TIGHT off");
+        assert_eq!(state.snapshot()["amp_tight_hz"], 120.0);
+    }
+
+    #[test]
     fn gate_controls_validate_ranges_and_report_snapshot() {
         let mut state = pedal_engine::EngineState::default();
         for (name, min, max) in [
+            ("gate_hysteresis_db", 0.0, 30.0),
             ("gate_hold_ms", 0.0, 500.0),
             ("gate_release_ms", 5.0, 1000.0),
             ("gate_range_db", 0.0, 90.0),
@@ -2369,10 +2680,38 @@ mod tests {
     }
 
     #[test]
+    fn nam_slot_normalization_and_gain_controls_validate_reference_ranges() {
+        let mut state = EngineState::default();
+        for name in ["pedal_normalize_enabled", "amp_normalize_enabled"] {
+            assert_eq!(state.snapshot()[name], true);
+            set_control(&mut state, name, 0.0).unwrap();
+            assert_eq!(state.snapshot()[name], false);
+            for invalid in [-1.0, 0.5, 2.0, f32::NAN, f32::INFINITY] {
+                assert!(set_control(&mut state, name, invalid).is_err());
+                assert_eq!(state.snapshot()[name], false);
+            }
+            set_control(&mut state, name, 1.0).unwrap();
+            assert_eq!(state.snapshot()[name], true);
+        }
+        for name in ["pedal_drive_db", "pedal_level_db", "amp_volume_db"] {
+            for db in [-24.0, 0.0, 24.0] {
+                set_control(&mut state, name, db).unwrap();
+                assert_eq!(state.snapshot()[name], db);
+            }
+            for invalid in [-24.1, 24.1, f32::NAN, f32::INFINITY] {
+                assert!(set_control(&mut state, name, invalid).is_err());
+                assert_eq!(state.snapshot()[name], 24.0);
+            }
+        }
+    }
+
+    #[test]
     fn meter_response_reports_peaks_clipping_cpu_and_xruns() {
         let telemetry = RealtimeTelemetry::default();
         let tuner_telemetry = TunerTelemetry::default();
         telemetry.record_levels(0.5, 0.25, true);
+        telemetry.record_limiter_gain(pedal_engine::dsp::LimiterStage::Rig, 0.5);
+        telemetry.record_limiter_gain(pedal_engine::dsp::LimiterStage::Output, 0.25);
         telemetry.record_cpu_percent(7.5);
         telemetry.record_xrun();
 
@@ -2383,6 +2722,25 @@ mod tests {
         assert_eq!(response.payload["clipped"], true);
         assert_eq!(response.payload["cpu_percent"], 7.5);
         assert_eq!(response.payload["xruns"], 1);
+        assert!(
+            (response.payload["rig_limiter_reduction_db"]
+                .as_f64()
+                .unwrap()
+                - 6.0206)
+                .abs()
+                < 0.001
+        );
+        assert!(
+            (response.payload["output_limiter_reduction_db"]
+                .as_f64()
+                .unwrap()
+                - 12.0412)
+                .abs()
+                < 0.001
+        );
+        let next = meters_response("meters-2".to_owned(), &telemetry, &tuner_telemetry);
+        assert_eq!(next.payload["rig_limiter_reduction_db"], 0.0);
+        assert_eq!(next.payload["output_limiter_reduction_db"], 0.0);
     }
 
     #[test]

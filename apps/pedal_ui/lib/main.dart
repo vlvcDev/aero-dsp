@@ -15,9 +15,11 @@ part 'chords.dart';
 part 'phrase_tab.dart';
 part 'node_editor.dart';
 part 'node_canvas.dart';
+part 'node_cables.dart';
 part 'node_audio.dart';
 part 'tone_workbench.dart';
 part 'node_library.dart';
+part 'tone_browser.dart';
 
 const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');
 
@@ -974,15 +976,17 @@ class _RigScreenState extends State<RigScreen> {
                           }),
                         ),
                         const SizedBox(height: 6),
-                        _MeterStrip(snapshot: _meters),
+                        MeterStrip(snapshot: _meters),
                         const SizedBox(height: 8),
                         Expanded(
                           child: IndexedStack(
-                            index: _patchWorkspace ? 3 : _chordsWorkspace
-                                ? 2
-                                : _tracksWorkspace
-                                    ? 1
-                                    : 0,
+                            index: _patchWorkspace
+                                ? 3
+                                : _chordsWorkspace
+                                    ? 2
+                                    : _tracksWorkspace
+                                        ? 1
+                                        : 0,
                             children: [
                               _buildPedalboardWorkspace(),
                               TrackManagerSheet(
@@ -994,7 +998,8 @@ class _RigScreenState extends State<RigScreen> {
                                   catalog: _catalog,
                                   client: _client,
                                   active: _chordsWorkspace),
-                              PatchEditor(document: _patchDocument, client: _client),
+                              PatchEditor(
+                                  document: _patchDocument, client: _client),
                             ],
                           ),
                         ),
@@ -1065,21 +1070,23 @@ class _RigScreenState extends State<RigScreen> {
         },
       );
 
-  void _showModelLibrary({ModelSlot? initialSlot}) {
-    showAeroControlBay<void>(
-      context,
-      title: 'NAM Tone Library',
-      icon: Icons.library_music,
-      heightFactor: .86,
-      child: ModelLibrarySheet(
+  void _showToneBrowser(ToneTarget target, {ToneSource? source}) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      fullscreenDialog: true,
+      builder: (_) => ToneBrowser(
         catalog: _catalog,
-        engineConnected: _engine.connected,
-        selectedPrePath: _engine.preModel,
-        selectedAmpPath: _engine.model,
-        onSelected: _client.selectModel,
-        initialSlot: initialSlot,
+        target: target,
+        initialSource: source,
+        nowPlayingPath: switch (target) {
+          ToneTarget.pre => _engine.preModel,
+          ToneTarget.amp => _engine.model,
+          ToneTarget.cabinet => _engine.cabinetIr,
+        },
+        onSelectModel: _client.selectModel,
+        onSelectCabinet: _client.selectCabinet,
+        onBrowseFiles: target == ToneTarget.cabinet ? _chooseCabinetIr : null,
       ),
-    );
+    ));
   }
 
   void _stopPreview() {
@@ -1261,19 +1268,8 @@ class _RigScreenState extends State<RigScreen> {
   Future<Process> _startPreviewPlayer(String path) =>
       _startLocalAudioPlayback(path);
 
-  void _showTone3000() {
-    showAeroControlBay<void>(
-      context,
-      title: 'TONE3000 Browser',
-      icon: Icons.cloud_download_outlined,
-      heightFactor: .9,
-      child: Tone3000BrowserSheet(
-        catalog: _catalog,
-        engineConnected: _engine.connected,
-        onSelected: _client.selectModel,
-      ),
-    );
-  }
+  void _showTone3000() =>
+      _showToneBrowser(ToneTarget.amp, source: ToneSource.tone3000);
 
   Future<void> _showToneMaker() async {
     final application = await showAeroControlBay<AiToneApplication>(
@@ -1407,7 +1403,8 @@ class _RigScreenState extends State<RigScreen> {
                             child: AudioQualitySheet(
                                 snapshot: _engine,
                                 onChanged: _client.setControl,
-                                onMatch: _client.matchRigLevel))
+                                onMatch: _client.matchRigLevel,
+                                onLearnFloor: _client.noiseFloorLearn))
                         : null,
                   ),
                   const SizedBox(height: 10),
@@ -1494,7 +1491,7 @@ class _RigScreenState extends State<RigScreen> {
       context,
       title: slot == ModelSlot.pre ? 'Drive NAM' : 'Amp NAM',
       icon: slot == ModelSlot.pre ? Icons.bolt : Icons.speaker,
-      heightFactor: .7,
+      heightFactor: MediaQuery.sizeOf(context).height <= 360 ? .95 : .7,
       cartridge: true,
       child: SlotControlsSheet(
         slot: slot,
@@ -1504,7 +1501,8 @@ class _RigScreenState extends State<RigScreen> {
         onCaptureSelected: (model) => _client.selectModel(model, slot),
         onChangeTone: () {
           Navigator.pop(context);
-          _showModelLibrary(initialSlot: slot);
+          _showToneBrowser(
+              slot == ModelSlot.pre ? ToneTarget.pre : ToneTarget.amp);
         },
       ),
     );
@@ -1584,6 +1582,7 @@ class _RigScreenState extends State<RigScreen> {
       EffectKind.flanger => OptionalPedal.flanger,
       EffectKind.tremolo => OptionalPedal.tremolo,
       EffectKind.octaver => OptionalPedal.octaver,
+      EffectKind.dehiss => OptionalPedal.dehiss,
       EffectKind.delay => OptionalPedal.delay,
       EffectKind.reverb => OptionalPedal.reverb,
       EffectKind.gate || EffectKind.compressor => null,
@@ -1600,6 +1599,8 @@ class _RigScreenState extends State<RigScreen> {
         onChanged: _client.setControl,
         onRemove:
             optionalPedal == null ? null : () => _removePedal(optionalPedal),
+        onLearn: effect == EffectKind.dehiss ? _client.dehissLearn : null,
+        meters: effect == EffectKind.compressor ? _client.meters : null,
       ),
     );
   }
@@ -1609,12 +1610,15 @@ class _RigScreenState extends State<RigScreen> {
       context,
       title: 'Cabinet IR',
       icon: Icons.speaker_outlined,
-      heightFactor: .7,
+      heightFactor: MediaQuery.sizeOf(context).height <= 360 ? .95 : .7,
       cartridge: true,
       child: CabinetControlsSheet(
         snapshot: _engine,
         onChanged: _client.setControl,
-        onChooseIr: _chooseCabinetIr,
+        onChooseIr: () async {
+          Navigator.pop(context);
+          _showToneBrowser(ToneTarget.cabinet);
+        },
         onClear: _client.clearCabinet,
       ),
     );
@@ -1754,6 +1758,7 @@ class _RigScreenState extends State<RigScreen> {
 
 enum EffectKind {
   gate,
+  dehiss,
   compressor,
   eq,
   chorus,
@@ -1765,6 +1770,7 @@ enum EffectKind {
 }
 
 enum OptionalPedal {
+  dehiss,
   eq,
   chorus,
   flanger,
@@ -1777,6 +1783,7 @@ enum OptionalPedal {
 
 extension OptionalPedalDetails on OptionalPedal {
   String get label => switch (this) {
+        OptionalPedal.dehiss => 'DEHISS',
         OptionalPedal.eq => 'EQ',
         OptionalPedal.chorus => 'CHORUS',
         OptionalPedal.flanger => 'FLANGER',
@@ -1788,6 +1795,7 @@ extension OptionalPedalDetails on OptionalPedal {
       };
 
   String get description => switch (this) {
+        OptionalPedal.dehiss => 'Remove amp hiss as notes fade',
         OptionalPedal.eq => 'Shape low, mid, and high frequencies',
         OptionalPedal.chorus => 'Add width and movement',
         OptionalPedal.flanger => 'Sweep a metallic moving comb filter',
@@ -1800,6 +1808,7 @@ extension OptionalPedalDetails on OptionalPedal {
       };
 
   IconData get icon => switch (this) {
+        OptionalPedal.dehiss => Icons.noise_control_off,
         OptionalPedal.eq => Icons.equalizer,
         OptionalPedal.chorus => Icons.waves,
         OptionalPedal.flanger => Icons.waterfall_chart,
@@ -1815,6 +1824,7 @@ extension OptionalPedalDetails on OptionalPedal {
       : PedalCategory.effect;
 
   EffectKind? get effect => switch (this) {
+        OptionalPedal.dehiss => EffectKind.dehiss,
         OptionalPedal.eq => EffectKind.eq,
         OptionalPedal.chorus => EffectKind.chorus,
         OptionalPedal.flanger => EffectKind.flanger,
@@ -1856,6 +1866,7 @@ extension EffectKindDetails on EffectKind {
 
   String get label => switch (this) {
         EffectKind.gate => 'GATE',
+        EffectKind.dehiss => 'DEHISS',
         EffectKind.compressor => 'COMP',
         EffectKind.eq => 'EQ',
         EffectKind.chorus => 'CHORUS',
@@ -1868,6 +1879,7 @@ extension EffectKindDetails on EffectKind {
 
   IconData get icon => switch (this) {
         EffectKind.gate => Icons.graphic_eq,
+        EffectKind.dehiss => Icons.noise_control_off,
         EffectKind.compressor => Icons.compress,
         EffectKind.eq => Icons.equalizer,
         EffectKind.chorus => Icons.waves,
@@ -1880,6 +1892,7 @@ extension EffectKindDetails on EffectKind {
 
   Color get color => switch (this) {
         EffectKind.gate => const Color(0xff1c5cc4),
+        EffectKind.dehiss => const Color(0xff2a74d6),
         EffectKind.compressor => const Color(0xff1d8ccf),
         EffectKind.eq => const Color(0xff18b1be),
         EffectKind.chorus => const Color(0xff315ccf),
@@ -2069,10 +2082,11 @@ class Pedalboard extends StatelessWidget {
               (constraints.maxHeight - 42).clamp(72.0, 520.0).toDouble();
           _PedalTile effectTile(EffectKind effect) => _PedalTile(
                 label: effect.label,
-                category:
-                    effect == EffectKind.gate || effect == EffectKind.compressor
-                        ? PedalCategory.utility
-                        : PedalCategory.effect,
+                category: effect == EffectKind.gate ||
+                        effect == EffectKind.dehiss ||
+                        effect == EffectKind.compressor
+                    ? PedalCategory.utility
+                    : PedalCategory.effect,
                 status: snapshot.effectEnabled(effect) ? 'ON' : 'BYPASS',
                 icon: effect.icon,
                 active: snapshot.effectEnabled(effect),
@@ -2085,6 +2099,7 @@ class Pedalboard extends StatelessWidget {
           final optionalPedals = OptionalPedal.values
               .where((pedal) =>
                   pedal != OptionalPedal.octaver &&
+                  pedal != OptionalPedal.dehiss &&
                   snapshot.pedalVisible(pedal))
               .toList(growable: false);
           return ClipRRect(
@@ -2112,21 +2127,36 @@ class Pedalboard extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(12, 7, 12, 2),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 7, 12, 2),
                     child: Row(
                       children: [
-                        Icon(Icons.cable, size: 14, color: LostChrome.lime),
-                        SizedBox(width: 5),
-                        Text('SIGNAL PATH',
+                        const Icon(Icons.cable,
+                            size: 14, color: LostChrome.lime),
+                        const SizedBox(width: 5),
+                        const Text('SIGNAL PATH',
                             style: TextStyle(
                               color: LostChrome.ice,
                               fontWeight: FontWeight.w800,
                               letterSpacing: 1.4,
                               fontSize: 11,
                             )),
-                        Spacer(),
-                        Text('DRAG TO EXPLORE',
+                        if (snapshot.cabinetEnabled &&
+                            (snapshot.preIncludesCab ||
+                                snapshot.ampIncludesCab)) ...[
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: _CabDoubleFilterWarning(
+                                enabled: snapshot.connected,
+                                onTap: () => onCabinetToggle(true),
+                              ),
+                            ),
+                          ),
+                        ] else
+                          const Spacer(),
+                        const Text('DRAG TO EXPLORE',
                             style: TextStyle(
                                 color: Color(0xff9ed9ff), fontSize: 10)),
                       ],
@@ -2144,6 +2174,11 @@ class Pedalboard extends StatelessWidget {
                                 9, tileHeight >= 260 ? 24 : 3, 9, 16),
                             children: [
                               effectTile(EffectKind.gate),
+                              // Optional: shown beside the gate once added.
+                              if (snapshot.dehissVisible) ...[
+                                const _SignalArrow(),
+                                effectTile(EffectKind.dehiss),
+                              ],
                               const _SignalArrow(),
                               effectTile(EffectKind.compressor),
                               if (snapshot.octaverVisible) ...[
@@ -2244,6 +2279,124 @@ class Pedalboard extends StatelessWidget {
             ),
           );
         },
+      );
+}
+
+class _CaptureGainBadge extends StatelessWidget {
+  const _CaptureGainBadge({required this.gainDb});
+
+  final double gainDb;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color;
+    if (gainDb < 35) {
+      color = LostChrome.lime;
+    } else if (gainDb <= 55) {
+      color = const Color(0xffffc857);
+    } else {
+      color = const Color(0xffff6b6b);
+    }
+    return _CaptureBadge(
+      label: '${gainDb >= 0 ? '+' : ''}${gainDb.round()} dB',
+      color: color,
+      tooltip:
+          'Small-signal gain: how hard this capture amplifies quiet signals. '
+          'Prog/djent rhythm tones are usually +35 to +50 dB.',
+    );
+  }
+}
+
+class _CaptureCabBadge extends StatelessWidget {
+  const _CaptureCabBadge();
+
+  @override
+  Widget build(BuildContext context) => const _CaptureBadge(
+        label: 'CAB',
+        color: Color(0xffffc857),
+        tooltip:
+            'This capture already includes a speaker cabinet. Turn the cab IR '
+            'off to avoid double filtering.',
+      );
+}
+
+class _CaptureBadge extends StatelessWidget {
+  const _CaptureBadge({
+    required this.label,
+    required this.color,
+    required this.tooltip,
+  });
+
+  final String label;
+  final Color color;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: tooltip,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: .18),
+            borderRadius: BorderRadius.circular(5),
+            border: Border.all(color: color.withValues(alpha: .8)),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w900,
+              letterSpacing: .4,
+            ),
+          ),
+        ),
+      );
+}
+
+class _CabDoubleFilterWarning extends StatelessWidget {
+  const _CabDoubleFilterWarning({required this.enabled, required this.onTap});
+
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        enabled: enabled,
+        label: 'Capture includes a cab. Turn the cabinet IR off',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: enabled ? onTap : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: const Color(0x66ffb300),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: const Color(0xffffc857)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    size: 12, color: Color(0xffffc857)),
+                SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    'Capture includes a cab — IR off?',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: LostChrome.pearl,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       );
 }
 
@@ -2627,10 +2780,10 @@ class _ChromeDriveNamTileState extends State<_ChromeDriveNamTile> {
                       children: [
                         _ChromeKnob(
                           label: 'DRIVE',
-                          position: _driveDb / 24,
+                          position: (_driveDb + 24) / 48,
                           size: roomy ? (tall ? 58 : 44) : 27,
                           onDelta: (delta) =>
-                              _adjust('pedal_drive_db', delta * .18, 0, 24),
+                              _adjust('pedal_drive_db', delta * .18, -24, 24),
                           onCommit: () => _commit('pedal_drive_db'),
                         ),
                         SizedBox(width: roomy ? 12 : 5),
@@ -2645,10 +2798,10 @@ class _ChromeDriveNamTileState extends State<_ChromeDriveNamTile> {
                         SizedBox(width: roomy ? 12 : 5),
                         _ChromeKnob(
                           label: 'LEVEL',
-                          position: (_levelDb + 24) / 36,
+                          position: (_levelDb + 24) / 48,
                           size: roomy ? (tall ? 58 : 44) : 27,
                           onDelta: (delta) =>
-                              _adjust('pedal_level_db', delta * .22, -24, 12),
+                              _adjust('pedal_level_db', delta * .22, -24, 24),
                           onCommit: () => _commit('pedal_level_db'),
                         ),
                       ],
@@ -2759,6 +2912,8 @@ class _ChromeKnob extends StatelessWidget {
     required this.size,
     required this.onDelta,
     required this.onCommit,
+    this.onTap,
+    this.tooltip,
   });
 
   final String label;
@@ -2766,50 +2921,74 @@ class _ChromeKnob extends StatelessWidget {
   final double size;
   final ValueChanged<double> onDelta;
   final VoidCallback onCommit;
+  final VoidCallback? onTap;
+  final String? tooltip;
 
   @override
-  Widget build(BuildContext context) =>
-      Column(mainAxisSize: MainAxisSize.min, children: [
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onVerticalDragUpdate: (details) => onDelta(-details.delta.dy),
-          onVerticalDragEnd: (_) => onCommit(),
-          child: Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                  color: LostChrome.ice, width: size > 40 ? 2.8 : 1.7),
-              gradient: const RadialGradient(
-                  center: Alignment(-.3, -.45),
-                  colors: [
-                    Color(0xff9bedff),
-                    Color(0xff2674c1),
-                    Color(0xff08285d)
-                  ]),
-              boxShadow: const [
-                BoxShadow(color: Color(0x8822caff), blurRadius: 5)
-              ],
-            ),
-            child: Transform.rotate(
-              angle: -2.25 + position.clamp(0, 1) * 4.5,
-              child: Align(
-                  alignment: Alignment.topCenter,
-                  child: SizedBox(
-                      width: size > 40 ? 5 : 3,
-                      height: size * .29,
-                      child: ColoredBox(color: LostChrome.pearl))),
+  Widget build(BuildContext context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Tooltip(
+            message: tooltip ?? label,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onTap,
+              onVerticalDragUpdate: (details) => onDelta(-details.delta.dy),
+              onVerticalDragEnd: (_) => onCommit(),
+              child: SizedBox(
+                width: onTap == null ? size : math.max(size, 48),
+                height: onTap == null ? size : math.max(size, 48),
+                child: Center(
+                  child: Container(
+                    width: size,
+                    height: size,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: LostChrome.ice,
+                        width: size > 40 ? 2.8 : 1.7,
+                      ),
+                      gradient: const RadialGradient(
+                        center: Alignment(-.3, -.45),
+                        colors: [
+                          Color(0xff9bedff),
+                          Color(0xff2674c1),
+                          Color(0xff08285d),
+                        ],
+                      ),
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x8822caff), blurRadius: 5),
+                      ],
+                    ),
+                    child: Transform.rotate(
+                      angle: -2.25 + position.clamp(0, 1) * 4.5,
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: SizedBox(
+                          width: size > 40 ? 5 : 3,
+                          height: size * .29,
+                          child: ColoredBox(color: LostChrome.pearl),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-        ),
-        SizedBox(height: size > 40 ? 3 : 1),
-        Text(label,
-            style: TextStyle(
-                color: LostChrome.pearl,
-                fontSize: size > 40 ? 9 : 5.5,
-                fontWeight: FontWeight.w900)),
-      ]);
+          SizedBox(height: size > 40 ? 3 : 1),
+          SizedBox(
+            width: onTap == null ? size : math.max(size, 48),
+            child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(label,
+                    style: TextStyle(
+                        color: LostChrome.pearl,
+                        fontSize: size > 40 ? 9 : 5.5,
+                        fontWeight: FontWeight.w900))),
+          ),
+        ],
+      );
 }
 
 /// The amp model is represented as a low, wide head rather than another
@@ -3188,14 +3367,14 @@ class _SkylineAmpHeadTileState extends State<_SkylineAmpHeadTile> {
                   Row(children: [
                     _ChromeKnob(
                         label: 'VOL',
-                        position: (_volume + 24) / 36,
+                        position: (_volume + 24) / 48,
                         size: roomy
                             ? knobSize * 1.22
                             : showAmpModelScreen
                                 ? 31
                                 : 25,
                         onDelta: (d) =>
-                            _adjust('amp_volume_db', d * .22, -24, 12),
+                            _adjust('amp_volume_db', d * .22, -24, 24),
                         onCommit: () => _commit('amp_volume_db')),
                     if (showAmpModelScreen) ...[
                       const SizedBox(width: 7),
@@ -3266,6 +3445,8 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
   late double _gain;
   late double _lowCut;
   late double _highCut;
+  double _lastLowCut = 80;
+  double _lastHighCut = 8000;
 
   @override
   void initState() {
@@ -3273,14 +3454,22 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
     _gain = widget.gainDb;
     _lowCut = widget.lowCutHz;
     _highCut = widget.highCutHz;
+    if (_lowCut > 0) _lastLowCut = _lowCut;
+    if (_highCut > 0) _lastHighCut = _highCut;
   }
 
   @override
   void didUpdateWidget(covariant _RoadcaseCabinetTile oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.gainDb != widget.gainDb) _gain = widget.gainDb;
-    if (oldWidget.lowCutHz != widget.lowCutHz) _lowCut = widget.lowCutHz;
-    if (oldWidget.highCutHz != widget.highCutHz) _highCut = widget.highCutHz;
+    if (oldWidget.lowCutHz != widget.lowCutHz) {
+      _lowCut = widget.lowCutHz;
+      if (_lowCut > 0) _lastLowCut = _lowCut;
+    }
+    if (oldWidget.highCutHz != widget.highCutHz) {
+      _highCut = widget.highCutHz;
+      if (_highCut > 0) _lastHighCut = _highCut;
+    }
   }
 
   void _adjust(String control, double delta, double minimum, double maximum) {
@@ -3296,10 +3485,23 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
           _gain = value;
         case 'cabinet_low_cut_hz':
           _lowCut = value;
+          _lastLowCut = value;
         default:
           _highCut = value;
+          _lastHighCut = value;
       }
     });
+  }
+
+  void _toggleCut(String control) {
+    setState(() {
+      if (control == 'cabinet_low_cut_hz') {
+        _lowCut = _lowCut == 0 ? _lastLowCut : 0;
+      } else {
+        _highCut = _highCut == 0 ? _lastHighCut : 0;
+      }
+    });
+    _commit(control);
   }
 
   void _commit(String control) {
@@ -3318,7 +3520,7 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
     final roomy = widget.height >= 260;
     final tall = widget.height >= 390;
     final showGrille = widget.height >= 185;
-    final showControls = widget.height >= 260;
+    final showControls = widget.height >= 320;
     final knobSize = tall ? 52.0 : 40.0;
     final irName = widget.irName?.replaceAll('.wav', '') ?? 'LOAD AN IR';
     final active = widget.active;
@@ -3341,31 +3543,33 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
             child: Container(
               margin: EdgeInsets.symmetric(vertical: dense ? 2 : 3),
               padding: EdgeInsets.fromLTRB(
-                  dense
-                      ? 6
-                      : roomy
-                          ? 13
-                          : 8,
-                  dense
-                      ? 4
-                      : roomy
-                          ? 11
-                          : 6,
-                  dense
-                      ? 6
-                      : roomy
-                          ? 13
-                          : 8,
-                  dense
-                      ? 4
-                      : roomy
-                          ? 11
-                          : 6),
+                dense
+                    ? 6
+                    : roomy
+                        ? 13
+                        : 8,
+                dense
+                    ? 4
+                    : roomy
+                        ? 11
+                        : 6,
+                dense
+                    ? 6
+                    : roomy
+                        ? 13
+                        : 8,
+                dense
+                    ? 4
+                    : roomy
+                        ? 11
+                        : 6,
+              ),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(dense ? 11 : 14),
                 border: Border.all(
-                    color: active ? LostChrome.pearl : const Color(0xff76b7ec),
-                    width: active ? 1.6 : 1.1),
+                  color: active ? LostChrome.pearl : const Color(0xff76b7ec),
+                  width: active ? 1.6 : 1.1,
+                ),
                 gradient: active
                     ? const LinearGradient(
                         begin: Alignment.topLeft,
@@ -3376,57 +3580,63 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
                           Color(0xff071d52),
                         ],
                       )
-                    : const LinearGradient(colors: [
-                        Color(0xff164777),
-                        Color(0xff103265),
-                        Color(0xff071a42),
-                      ]),
+                    : const LinearGradient(
+                        colors: [
+                          Color(0xff164777),
+                          Color(0xff103265),
+                          Color(0xff071a42),
+                        ],
+                      ),
                 boxShadow: [
                   BoxShadow(
-                      color: active
-                          ? LostChrome.electric.withValues(alpha: .58)
-                          : Colors.black54,
-                      blurRadius: active ? 15 : 5,
-                      offset: const Offset(0, 3)),
+                    color: active
+                        ? LostChrome.electric.withValues(alpha: .58)
+                        : Colors.black54,
+                    blurRadius: active ? 15 : 5,
+                    offset: const Offset(0, 3),
+                  ),
                 ],
               ),
               foregroundDecoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(dense ? 11 : 14),
                 gradient: const LinearGradient(
-                    begin: Alignment(-1, -1),
-                    end: Alignment(.4, .15),
-                    colors: [
-                      Color(0x66efffff),
-                      Color(0x1812bcff),
-                      Colors.transparent
-                    ],
-                    stops: [
-                      0,
-                      .3,
-                      .62
-                    ]),
+                  begin: Alignment(-1, -1),
+                  end: Alignment(.4, .15),
+                  colors: [
+                    Color(0x66efffff),
+                    Color(0x1812bcff),
+                    Colors.transparent,
+                  ],
+                  stops: [0, .3, .62],
+                ),
               ),
-              child: Column(children: [
-                Row(children: [
-                  Container(
-                    padding: EdgeInsets.symmetric(
-                        horizontal: dense
-                            ? 3
-                            : roomy
-                                ? 8
-                                : 5,
-                        vertical: dense
-                            ? 1
-                            : roomy
-                                ? 4
-                                : 2),
-                    decoration: BoxDecoration(
-                        color: const Color(0xff063a7c).withValues(alpha: .8),
-                        borderRadius: BorderRadius.circular(5),
-                        border: Border.all(
-                            color: LostChrome.ice.withValues(alpha: .8))),
-                    child: Text('CAB / IR',
-                        style: TextStyle(
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: dense
+                              ? 3
+                              : roomy
+                                  ? 8
+                                  : 5,
+                          vertical: dense
+                              ? 1
+                              : roomy
+                                  ? 4
+                                  : 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xff063a7c).withValues(alpha: .8),
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(
+                            color: LostChrome.ice.withValues(alpha: .8),
+                          ),
+                        ),
+                        child: Text(
+                          'CAB / IR',
+                          style: TextStyle(
                             color: LostChrome.pearl,
                             fontSize: dense
                                 ? 5.5
@@ -3434,181 +3644,228 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
                                     ? 9
                                     : 6.5,
                             fontWeight: FontWeight.w900,
-                            letterSpacing: .35)),
-                  ),
-                  const Spacer(),
-                  InkWell(
-                    onTap: widget.disabled ? null : widget.onFootswitch,
-                    borderRadius: BorderRadius.circular(22),
-                    child: Container(
-                      width: dense
-                          ? 16
-                          : roomy
-                              ? 38
-                              : 25,
-                      height: dense
-                          ? 16
-                          : roomy
-                              ? 38
-                              : 25,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: LostChrome.ice, width: roomy ? 2 : 1),
-                        gradient: const LinearGradient(colors: [
-                          Color(0xffe7fbff),
-                          Color(0xff56bdea),
-                          Color(0xffd9f8ff),
-                        ]),
-                        boxShadow: active
-                            ? const [
-                                BoxShadow(color: LostChrome.lime, blurRadius: 9)
-                              ]
-                            : null,
+                            letterSpacing: .35,
+                          ),
+                        ),
                       ),
-                      child: Icon(Icons.power_settings_new,
-                          size: dense
-                              ? 9
+                      const Spacer(),
+                      InkWell(
+                        onTap: widget.disabled ? null : widget.onFootswitch,
+                        borderRadius: BorderRadius.circular(22),
+                        child: Container(
+                          width: dense
+                              ? 16
                               : roomy
-                                  ? 21
-                                  : 14,
-                          color: const Color(0xff16447f)),
-                    ),
+                                  ? 38
+                                  : 25,
+                          height: dense
+                              ? 16
+                              : roomy
+                                  ? 38
+                                  : 25,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: LostChrome.ice,
+                              width: roomy ? 2 : 1,
+                            ),
+                            gradient: const LinearGradient(
+                              colors: [
+                                Color(0xffe7fbff),
+                                Color(0xff56bdea),
+                                Color(0xffd9f8ff),
+                              ],
+                            ),
+                            boxShadow: active
+                                ? const [
+                                    BoxShadow(
+                                      color: LostChrome.lime,
+                                      blurRadius: 9,
+                                    ),
+                                  ]
+                                : null,
+                          ),
+                          child: Icon(
+                            Icons.power_settings_new,
+                            size: dense
+                                ? 9
+                                : roomy
+                                    ? 21
+                                    : 14,
+                            color: const Color(0xff16447f),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ]),
-                SizedBox(
+                  SizedBox(
                     height: dense
                         ? 2
                         : roomy
                             ? 8
-                            : 4),
-                Text('IR CAB',
-                    style: TextStyle(
-                        color: LostChrome.pearl,
-                        fontSize: dense
-                            ? 8
-                            : roomy
-                                ? 19
-                                : 12,
-                        fontWeight: FontWeight.w900,
-                        fontStyle: FontStyle.italic,
-                        letterSpacing: dense ? 0 : .3)),
-                if (showGrille) ...[
-                  SizedBox(height: roomy ? 10 : 4),
-                  Container(
-                    width: double.infinity,
-                    height: tall
-                        ? 115
-                        : roomy
-                            ? 82
-                            : 40,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(7),
-                      border: Border.all(
-                          color: LostChrome.ice.withValues(alpha: .8)),
-                      color: const Color(0xff061a3d),
-                    ),
-                    child: Stack(alignment: Alignment.center, children: [
-                      Positioned.fill(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: CustomPaint(
-                              painter: const _CrossHatchGrillePainter()),
-                        ),
-                      ),
-                      Container(
-                        width: tall
-                            ? 76
-                            : roomy
-                                ? 57
-                                : 28,
-                        height: tall
-                            ? 76
-                            : roomy
-                                ? 57
-                                : 28,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                              color: LostChrome.ice.withValues(alpha: .78),
-                              width: tall ? 3 : 2),
-                          gradient: const RadialGradient(colors: [
-                            Color(0xffd5fbff),
-                            Color(0xff277fc4),
-                            Color(0xff092653),
-                            Color(0xff020a21),
-                          ], stops: [
-                            0,
-                            .12,
-                            .42,
-                            1
-                          ]),
-                          boxShadow: const [
-                            BoxShadow(color: Color(0x883bdcff), blurRadius: 8)
-                          ],
-                        ),
-                      ),
-                    ]),
+                            : 4,
                   ),
-                ],
-                if (showControls) ...[
-                  const Spacer(),
-                  Row(
+                  Text(
+                    'IR CAB',
+                    style: TextStyle(
+                      color: LostChrome.pearl,
+                      fontSize: dense
+                          ? 8
+                          : roomy
+                              ? 19
+                              : 12,
+                      fontWeight: FontWeight.w900,
+                      fontStyle: FontStyle.italic,
+                      letterSpacing: dense ? 0 : .3,
+                    ),
+                  ),
+                  if (showGrille) ...[
+                    SizedBox(height: roomy ? 10 : 4),
+                    Container(
+                      width: double.infinity,
+                      height: tall
+                          ? 115
+                          : roomy
+                              ? 82
+                              : 40,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(
+                          color: LostChrome.ice.withValues(alpha: .8),
+                        ),
+                        color: const Color(0xff061a3d),
+                      ),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Positioned.fill(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: CustomPaint(
+                                painter: const _CrossHatchGrillePainter(),
+                              ),
+                            ),
+                          ),
+                          Container(
+                            width: tall
+                                ? 76
+                                : roomy
+                                    ? 57
+                                    : 28,
+                            height: tall
+                                ? 76
+                                : roomy
+                                    ? 57
+                                    : 28,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: LostChrome.ice.withValues(alpha: .78),
+                                width: tall ? 3 : 2,
+                              ),
+                              gradient: const RadialGradient(
+                                colors: [
+                                  Color(0xffd5fbff),
+                                  Color(0xff277fc4),
+                                  Color(0xff092653),
+                                  Color(0xff020a21),
+                                ],
+                                stops: [0, .12, .42, 1],
+                              ),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x883bdcff),
+                                  blurRadius: 8,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (showControls) ...[
+                    const Spacer(),
+                    Row(
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
                         _ChromeKnob(
-                            label: 'LEVEL',
-                            position: (_gain + 24) / 36,
-                            size: knobSize,
-                            onDelta: (d) =>
-                                _adjust('cabinet_gain_db', d * .22, -24, 12),
-                            onCommit: () => _commit('cabinet_gain_db')),
+                          label: 'LEVEL',
+                          position: (_gain + 24) / 36,
+                          size: knobSize,
+                          onDelta: (d) =>
+                              _adjust('cabinet_gain_db', d * .22, -24, 12),
+                          onCommit: () => _commit('cabinet_gain_db'),
+                        ),
                         _ChromeKnob(
-                            label: 'LOW CUT',
-                            position: (_lowCut - 20) / 480,
-                            size: knobSize,
-                            onDelta: (d) =>
-                                _adjust('cabinet_low_cut_hz', d * 3.2, 20, 500),
-                            onCommit: () => _commit('cabinet_low_cut_hz')),
+                          label: _lowCut == 0 ? 'LOW CUT OFF' : 'LOW CUT ON',
+                          position: ((_lowCut - 20) / 480).clamp(0, 1),
+                          onTap: () => _toggleCut('cabinet_low_cut_hz'),
+                          tooltip:
+                              'Low cut: tap to turn on or off; drag to adjust frequency',
+                          size: knobSize,
+                          onDelta: (d) =>
+                              _adjust('cabinet_low_cut_hz', d * 3.2, 20, 500),
+                          onCommit: () => _commit('cabinet_low_cut_hz'),
+                        ),
                         _ChromeKnob(
-                            label: 'HIGH CUT',
-                            position: (_highCut - 1000) / 19000,
-                            size: knobSize,
-                            onDelta: (d) => _adjust(
-                                'cabinet_high_cut_hz', d * 120, 1000, 20000),
-                            onCommit: () => _commit('cabinet_high_cut_hz')),
-                      ]),
-                  SizedBox(height: roomy ? 10 : 3),
-                  Container(
-                    width: double.infinity,
-                    padding: EdgeInsets.symmetric(
-                        horizontal: roomy ? 8 : 5, vertical: roomy ? 5 : 2),
-                    decoration: BoxDecoration(
+                          label: _highCut == 0 ? 'HIGH CUT OFF' : 'HIGH CUT ON',
+                          position: ((_highCut - 1000) / 19000).clamp(0, 1),
+                          onTap: () => _toggleCut('cabinet_high_cut_hz'),
+                          tooltip:
+                              'High cut: tap to turn on or off; drag to adjust frequency',
+                          size: knobSize,
+                          onDelta: (d) => _adjust(
+                            'cabinet_high_cut_hz',
+                            d * 120,
+                            1000,
+                            20000,
+                          ),
+                          onCommit: () => _commit('cabinet_high_cut_hz'),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: roomy ? 10 : 3),
+                    Container(
+                      width: double.infinity,
+                      padding: EdgeInsets.symmetric(
+                        horizontal: roomy ? 8 : 5,
+                        vertical: roomy ? 5 : 2,
+                      ),
+                      decoration: BoxDecoration(
                         color: const Color(0xaa021634),
                         borderRadius: BorderRadius.circular(5),
                         border: Border.all(
-                            color: LostChrome.ice.withValues(alpha: .62))),
-                    child: Text(irName,
+                          color: LostChrome.ice.withValues(alpha: .62),
+                        ),
+                      ),
+                      child: Text(
+                        irName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                         style: TextStyle(
-                            color: LostChrome.ice,
-                            fontSize: roomy ? 10 : 7,
-                            fontWeight: FontWeight.w900)),
-                  ),
-                ] else if (!dense) ...[
-                  const Spacer(),
-                  Text(widget.status,
-                      style: TextStyle(
-                          color: active
-                              ? LostChrome.lime
-                              : const Color(0xffa6d7f2),
-                          fontSize: compact ? 8 : 10,
+                          color: LostChrome.ice,
+                          fontSize: roomy ? 10 : 7,
                           fontWeight: FontWeight.w900,
-                          letterSpacing: .7)),
+                        ),
+                      ),
+                    ),
+                  ] else if (!dense) ...[
+                    const Spacer(),
+                    Text(
+                      widget.status,
+                      style: TextStyle(
+                        color:
+                            active ? LostChrome.lime : const Color(0xffa6d7f2),
+                        fontSize: compact ? 8 : 10,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: .7,
+                      ),
+                    ),
+                  ],
                 ],
-              ]),
+              ),
             ),
           ),
         ),
@@ -4275,10 +4532,16 @@ class SlotControlsSheet extends StatefulWidget {
 class _SlotControlsSheetState extends State<SlotControlsSheet> {
   late final Map<String, double> _values;
   bool _advanced = false;
+  late bool _normalize;
+  bool _normalizeBusy = false;
+  final Map<String, double> _lastCut = {'amp_tight_hz': 120};
 
   @override
   void initState() {
     super.initState();
+    _normalize = widget.slot == ModelSlot.pre
+        ? widget.snapshot.pedalNormalizeEnabled
+        : widget.snapshot.ampNormalizeEnabled;
     _values = {
       'pedal_drive_db': widget.snapshot.pedalDriveDb,
       'pedal_mix': widget.snapshot.pedalMix,
@@ -4287,20 +4550,41 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
       'amp_mid_db': widget.snapshot.ampMidDb,
       'amp_treble_db': widget.snapshot.ampTrebleDb,
       'amp_volume_db': widget.snapshot.ampVolumeDb,
+      'amp_tight_hz': widget.snapshot.ampTightHz,
     };
+    for (final key in _lastCut.keys) {
+      if (_values[key]! > 0) _lastCut[key] = _values[key]!;
+    }
+  }
+
+  void _setValue(_ControlDefinition control, double value) {
+    setState(() {
+      _values[control.keyName] = value;
+      if (_lastCut.containsKey(control.keyName) && value > 0) {
+        _lastCut[control.keyName] = value;
+      }
+    });
+  }
+
+  void _toggle(_ControlDefinition control) {
+    final current = _values[control.keyName]!;
+    final value = current == 0 ? _lastCut[control.keyName]! : 0.0;
+    _setValue(control, value);
+    _commit(control, value);
   }
 
   List<_ControlDefinition> get _controls => widget.slot == ModelSlot.pre
       ? const [
-          _ControlDefinition('pedal_drive_db', 'DRIVE', 0, 24, 48, 'dB'),
+          _ControlDefinition('pedal_drive_db', 'DRIVE', -24, 24, 96, 'dB'),
           _ControlDefinition('pedal_mix', 'MIX', 0, 1, 20, '%', percent: true),
-          _ControlDefinition('pedal_level_db', 'LEVEL', -24, 12, 72, 'dB'),
+          _ControlDefinition('pedal_level_db', 'LEVEL', -24, 24, 96, 'dB'),
         ]
       : const [
           _ControlDefinition('amp_bass_db', 'BASS', -12, 12, 48, 'dB'),
           _ControlDefinition('amp_mid_db', 'MID', -12, 12, 48, 'dB'),
           _ControlDefinition('amp_treble_db', 'TREBLE', -12, 12, 48, 'dB'),
-          _ControlDefinition('amp_volume_db', 'VOLUME', -24, 12, 72, 'dB'),
+          _ControlDefinition('amp_volume_db', 'VOLUME', -24, 24, 96, 'dB'),
+          _ControlDefinition('amp_tight_hz', 'TIGHT', 20, 300, 28, 'Hz'),
         ];
 
   Future<void> _commit(_ControlDefinition control, double value) async {
@@ -4350,6 +4634,55 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
                 LayoutBuilder(
                     builder: (context, constraints) => SingleChildScrollView(
                             child: Column(children: [
+                          Tooltip(
+                            message: widget.slot == ModelSlot.pre
+                                ? 'Uses capture loudness metadata with a -18 LUFS reference. Missing metadata means no automatic adjustment. Calibration may override Drive with a valid handoff.'
+                                : 'Uses capture loudness metadata with a -18 LUFS reference. Missing metadata means no automatic adjustment.',
+                            child: SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(
+                                  'NORMALIZE ${_normalize ? 'ON' : 'OFF'}',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w800)),
+                              subtitle: const Text(
+                                  'Match capture levels using loudness data.',
+                                  style: TextStyle(color: LostChrome.ice)),
+                              value: _normalize,
+                              onChanged: _normalizeBusy
+                                  ? null
+                                  : (value) async {
+                                      setState(() => _normalizeBusy = true);
+                                      try {
+                                        await widget.onChanged(
+                                            widget.slot == ModelSlot.pre
+                                                ? 'pedal_normalize_enabled'
+                                                : 'amp_normalize_enabled',
+                                            value ? 1 : 0);
+                                        if (mounted)
+                                          setState(() => _normalize = value);
+                                      } catch (error) {
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(this.context)
+                                              .showSnackBar(SnackBar(
+                                                  content: Text('$error')));
+                                        }
+                                      } finally {
+                                        if (mounted)
+                                          setState(
+                                              () => _normalizeBusy = false);
+                                      }
+                                    },
+                            ),
+                          ),
+                          if (widget.slot == ModelSlot.pre)
+                            const Text(
+                                'Drive sets the input level into the fixed capture; it is not a hardware knob.',
+                                style: TextStyle(color: LostChrome.ice)),
+                          if (widget.slot == ModelSlot.amp)
+                            const Text(
+                                'Pre-amp low cut: trims lows before the amp\'s gain stage for tighter high-gain palm mutes. 100–150 Hz is a classic tight-boost setting.',
+                                style: TextStyle(
+                                    color: Color(0xffa2d5f5), fontSize: 11)),
                           if (widget.slot == ModelSlot.pre)
                             DryWetAlignmentControl(
                                 snapshot: widget.snapshot,
@@ -4362,9 +4695,9 @@ class _SlotControlsSheetState extends State<SlotControlsSheet> {
                               child: _VerticalControlBank(
                                 controls: _controls,
                                 values: _values,
-                                onChanged: (control, value) => setState(
-                                    () => _values[control.keyName] = value),
+                                onChanged: _setValue,
                                 onChangeEnd: _commit,
+                                onToggle: _toggle,
                               )),
                         ]))),
                 NamEqSheet(
@@ -4655,12 +4988,22 @@ class CabinetControlsSheet extends StatefulWidget {
 
 class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
   late final Map<String, double> _values;
+  final Map<String, double> _lastCut = {
+    'cabinet_low_cut_hz': 80,
+    'cabinet_high_cut_hz': 8000,
+  };
 
   static const _controls = [
     _ControlDefinition('cabinet_gain_db', 'LEVEL', -24, 12, 72, 'dB'),
     _ControlDefinition('cabinet_low_cut_hz', 'LOW CUT', 20, 500, 48, 'Hz'),
     _ControlDefinition(
-        'cabinet_high_cut_hz', 'HIGH CUT', 1000, 20000, 52, 'Hz'),
+      'cabinet_high_cut_hz',
+      'HIGH CUT',
+      1000,
+      20000,
+      52,
+      'Hz',
+    ),
   ];
 
   @override
@@ -4671,6 +5014,29 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
       'cabinet_low_cut_hz': widget.snapshot.cabinetLowCutHz,
       'cabinet_high_cut_hz': widget.snapshot.cabinetHighCutHz,
     };
+    for (final key in _lastCut.keys) {
+      if (_values[key]! > 0) _lastCut[key] = _values[key]!;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant CabinetControlsSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final previous = [
+      oldWidget.snapshot.cabinetLowCutHz,
+      oldWidget.snapshot.cabinetHighCutHz,
+    ];
+    final current = [
+      widget.snapshot.cabinetLowCutHz,
+      widget.snapshot.cabinetHighCutHz,
+    ];
+    final keys = ['cabinet_low_cut_hz', 'cabinet_high_cut_hz'];
+    for (var i = 0; i < keys.length; i++) {
+      if (previous[i] != current[i]) {
+        _values[keys[i]] = current[i];
+        if (current[i] > 0) _lastCut[keys[i]] = current[i];
+      }
+    }
   }
 
   Future<void> _commit(_ControlDefinition control, double value) async {
@@ -4684,6 +5050,22 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
     }
   }
 
+  void _setValue(_ControlDefinition control, double value) {
+    setState(() {
+      _values[control.keyName] = value;
+      if (_lastCut.containsKey(control.keyName) && value > 0) {
+        _lastCut[control.keyName] = value;
+      }
+    });
+  }
+
+  void _toggle(_ControlDefinition control) {
+    final current = _values[control.keyName]!;
+    final value = current == 0 ? _lastCut[control.keyName]! : 0.0;
+    _setValue(control, value);
+    _commit(control, value);
+  }
+
   @override
   Widget build(BuildContext context) {
     final name =
@@ -4694,26 +5076,42 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('CABINET RESPONSE',
-                style: TextStyle(
-                    color: LostChrome.electric,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: .9)),
+            const Text(
+              'CABINET RESPONSE',
+              style: TextStyle(
+                color: LostChrome.electric,
+                fontWeight: FontWeight.w900,
+                letterSpacing: .9,
+              ),
+            ),
             const SizedBox(height: 3),
-            Text(name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: LostChrome.ice, fontSize: 13)),
-            const Text('WAV IR • Runs after the amp head',
-                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11)),
+            Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: LostChrome.ice, fontSize: 13),
+            ),
+            const Text(
+              'WAV IR • Automatic headroom • LEVEL adjusts output',
+              style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11),
+            ),
             const SizedBox(height: 8),
             Expanded(
-              child: _VerticalControlBank(
-                controls: _controls,
-                values: _values,
-                onChanged: (control, value) =>
-                    setState(() => _values[control.keyName] = value),
-                onChangeEnd: _commit,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final bank = _VerticalControlBank(
+                    controls: _controls,
+                    values: _values,
+                    onChanged: _setValue,
+                    onChangeEnd: _commit,
+                    onToggle: _toggle,
+                  );
+                  return constraints.maxHeight < 200
+                      ? SingleChildScrollView(
+                          child: SizedBox(height: 200, child: bank),
+                        )
+                      : bank;
+                },
               ),
             ),
             Row(
@@ -4747,19 +5145,26 @@ class AudioQualitySheet extends StatefulWidget {
       {required this.snapshot,
       required this.onChanged,
       required this.onMatch,
+      this.onLearnFloor,
       super.key});
   final EngineSnapshot snapshot;
   final Future<void> Function(String, double) onChanged;
   final Future<double> Function() onMatch;
+
+  /// Runs the NOISE FLOOR LEARN flow and resolves with the learned thresholds.
+  final Future<({double squelchThresholdDb, double gateThresholdDb})>
+      Function()? onLearnFloor;
   @override
   State<AudioQualitySheet> createState() => _AudioQualitySheetState();
 }
 
 class _AudioQualitySheetState extends State<AudioQualitySheet> {
   int _renderNamRevision = 0;
+  int _renderOversamplingRevision = 0;
   late Map<String, double> _values;
   late bool _calibrated;
   bool _busy = false;
+  bool _learningFloor = false;
   String? _message;
   @override
   void initState() {
@@ -4771,12 +5176,38 @@ class _AudioQualitySheetState extends State<AudioQualitySheet> {
           (s['render_quality_profile'] as num?)?.toDouble() ?? 3,
       'nam_quality': (s['nam_quality'] as num?)?.toDouble() ?? 1,
       'render_nam_quality': (s['render_nam_quality'] as num?)?.toDouble() ?? 2,
+      'nam_oversampling': (s['nam_oversampling'] as num?)?.toDouble() ?? 1,
+      'render_nam_oversampling':
+          (s['render_nam_oversampling'] as num?)?.toDouble() ?? 0,
       'input_reference_dbu':
           (s['input_reference_dbu'] as num?)?.toDouble() ?? 0,
       'input_trim_db': (s['input_trim_db'] as num?)?.toDouble() ?? 0,
       'rig_level_db': (s['rig_level_db'] as num?)?.toDouble() ?? 0,
+      'squelch_enabled': (s['squelch_enabled'] as bool? ?? true) ? 1 : 0,
+      'squelch_threshold_db':
+          (s['squelch_threshold_db'] as num?)?.toDouble() ?? -105,
     };
     _calibrated = s['calibration_enabled'] as bool? ?? false;
+  }
+
+  Future<void> _learnFloor() async {
+    final learn = widget.onLearnFloor;
+    if (learn == null) return;
+    setState(() => _learningFloor = true);
+    try {
+      final result = await learn();
+      if (mounted) {
+        setState(
+            () => _values['squelch_threshold_db'] = result.squelchThresholdDb);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _learningFloor = false);
+    }
   }
 
   Future<void> _commit(String key, double value) async {
@@ -4814,7 +5245,7 @@ class _AudioQualitySheetState extends State<AudioQualitySheet> {
                 ? null
                 : (v) => _commit('quality_profile', v.single.toDouble())),
         const Text(
-            'Cabinet response: Portable 64 ms • High 200 ms. Device buffer and NAM sample rate stay unchanged.'),
+            'Cabinet response: Portable 64 ms • High 500 ms. Device buffer and NAM sample rate stay unchanged.'),
         const SizedBox(height: 12),
         DropdownButtonFormField<int>(
             isExpanded: true,
@@ -4824,7 +5255,7 @@ class _AudioQualitySheetState extends State<AudioQualitySheet> {
             items: const [
               DropdownMenuItem(value: 3, child: Text('Same as live')),
               DropdownMenuItem(value: 0, child: Text('Portable — 64 ms IR')),
-              DropdownMenuItem(value: 1, child: Text('High — 200 ms IR')),
+              DropdownMenuItem(value: 1, child: Text('High — 500 ms IR')),
               DropdownMenuItem(
                   value: 2, child: Text('Offline — up to 1 second IR'))
             ],
@@ -4873,6 +5304,50 @@ class _AudioQualitySheetState extends State<AudioQualitySheet> {
         ),
         const Text(
             'Rendering includes reamping and processed previews. Audition level matching always uses the live size. These device preferences persist across presets.'),
+        const SizedBox(height: 12),
+        const Text('NAM OVERSAMPLING',
+            style: TextStyle(fontWeight: FontWeight.w900)),
+        SegmentedButton<int>(
+          key: const Key('live-nam-oversampling'),
+          segments: const [
+            ButtonSegment(value: 1, label: Text('OFF')),
+            ButtonSegment(value: 2, label: Text('2X')),
+            ButtonSegment(value: 4, label: Text('4X')),
+            ButtonSegment(value: 8, label: Text('8X')),
+          ],
+          selected: {_values['nam_oversampling']!.toInt()},
+          onSelectionChanged: _busy
+              ? null
+              : (v) => _commit('nam_oversampling', v.single.toDouble()),
+        ),
+        const Text(
+            'Reduces high-gain aliasing fizz. Each step doubles NAM CPU; LSTM captures stay at 1x.'),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<int>(
+          key: ValueKey('render-nam-oversampling-$_renderOversamplingRevision'),
+          isExpanded: true,
+          initialValue: _values['render_nam_oversampling']!.toInt(),
+          decoration:
+              const InputDecoration(labelText: 'RENDER NAM OVERSAMPLING'),
+          items: const [
+            DropdownMenuItem(value: 0, child: Text('Same as live')),
+            DropdownMenuItem(value: 1, child: Text('Off')),
+            DropdownMenuItem(value: 2, child: Text('2x')),
+            DropdownMenuItem(value: 4, child: Text('4x')),
+            DropdownMenuItem(value: 8, child: Text('8x')),
+          ],
+          onChanged: _busy
+              ? null
+              : (v) async {
+                  if (v == null) return;
+                  await _commit('render_nam_oversampling', v.toDouble());
+                  // Recreate the form field from the confirmed value, including on
+                  // failure, as the render NAM size dropdown does.
+                  if (mounted) setState(() => _renderOversamplingRevision++);
+                },
+        ),
+        const Text(
+            'Offline renders and previews only. Same as live uses the live oversampling setting.'),
         const SizedBox(height: 12),
         SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -4927,6 +5402,38 @@ class _AudioQualitySheetState extends State<AudioQualitySheet> {
                   }),
         const Text(
             'Uses a fixed test performance to match RMS level, not an automatic gain rider. Only post-rig level changes; NAM drive and EQ stay untouched.'),
+        const SizedBox(height: 12),
+        const Text('NOISE FLOOR',
+            style: TextStyle(fontWeight: FontWeight.w900)),
+        SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Squelch input noise floor'),
+            subtitle: const Text(
+                "Feeds the amp exact silence while you're not playing, so high-gain captures can't amplify the interface's own noise."),
+            value: _values['squelch_enabled']! == 1,
+            onChanged:
+                _busy ? null : (v) => _commit('squelch_enabled', v ? 1 : 0)),
+        SizedBox(
+            height: 230,
+            child: _VerticalControlBank(
+                controls: const [
+                  _ControlDefinition(
+                      'squelch_threshold_db', 'SQUELCH', -130, -60, 70, 'dB'),
+                ],
+                values: _values,
+                onChanged: (c, v) => setState(() => _values[c.keyName] = v),
+                onChangeEnd: (c, v) => _commit(c.keyName, v))),
+        if (widget.onLearnFloor != null) ...[
+          const SizedBox(height: 8),
+          FilledButton.icon(
+              icon: Icon(_learningFloor ? Icons.hourglass_top : Icons.hearing),
+              label: Text(_learningFloor
+                  ? 'LISTENING… DON\'T PLAY'
+                  : 'LEARN NOISE FLOOR'),
+              onPressed: _learningFloor ? null : _learnFloor),
+        ],
+        const Text(
+            "Press LEARN with your guitar plugged in and volume up, without touching the strings. It sets the squelch and the noise gate just above your interface's noise floor."),
         if (_message != null)
           Padding(
               padding: const EdgeInsets.only(top: 8),
@@ -4941,6 +5448,8 @@ class EffectControlsSheet extends StatefulWidget {
     required this.snapshot,
     required this.onChanged,
     this.onRemove,
+    this.onLearn,
+    this.meters,
     super.key,
   });
 
@@ -4949,6 +5458,12 @@ class EffectControlsSheet extends StatefulWidget {
   final Future<void> Function(String, double) onChanged;
   final Future<bool> Function()? onRemove;
 
+  /// Runs the DEHISS LEARN flow and resolves with the learned threshold.
+  final Future<double> Function()? onLearn;
+
+  /// Live meters, used by the compressor's GR readout.
+  final Stream<MeterSnapshot>? meters;
+
   @override
   State<EffectControlsSheet> createState() => _EffectControlsSheetState();
 }
@@ -4956,6 +5471,9 @@ class EffectControlsSheet extends StatefulWidget {
 class _EffectControlsSheetState extends State<EffectControlsSheet> {
   late final Map<String, double> _values;
   bool _applyingGateFeel = false;
+  bool _applyingCompressorFeel = false;
+  late bool _autoMakeup;
+  bool _learningDehiss = false;
   late bool _cleanOctave;
   bool _changingOctaveMode = false;
 
@@ -4963,6 +5481,7 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
   void initState() {
     super.initState();
     _values = widget.snapshot.effectControls(widget.effect);
+    _autoMakeup = widget.snapshot.compressorAutoMakeup;
     _cleanOctave = widget.snapshot.octaverClean;
   }
 
@@ -4984,16 +5503,37 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
   List<_ControlDefinition> get _controls => switch (widget.effect) {
         EffectKind.gate => const [
             _ControlDefinition(
-                'gate_threshold_db', 'THRESHOLD', -80, -10, 70, 'dB'),
+                'gate_threshold_db', 'THRESHOLD', -120, -10, 110, 'dB'),
+            // How far a ringing note may fade below THRESHOLD before closing.
+            _ControlDefinition(
+                'gate_hysteresis_db', 'HYSTERESIS', 0, 30, 30, 'dB'),
             _ControlDefinition('gate_hold_ms', 'HOLD', 0, 500, 100, 'ms'),
             _ControlDefinition(
                 'gate_release_ms', 'RELEASE', 5, 1000, 199, 'ms'),
             _ControlDefinition('gate_range_db', 'REDUCTION', 0, 90, 90, 'dB'),
           ],
+        EffectKind.dehiss => const [
+            _ControlDefinition(
+                'dehiss_threshold_db', 'THRESHOLD', -100, -30, 70, 'dB'),
+            _ControlDefinition(
+                'dehiss_frequency_hz', 'ABOVE', 1500, 8000, 65, 'Hz',
+                logarithmic: true),
+            _ControlDefinition('dehiss_range_db', 'REDUCTION', 0, 40, 40, 'dB'),
+          ],
         EffectKind.compressor => const [
             _ControlDefinition(
                 'compressor_threshold_db', 'THRESHOLD', -48, 0, 48, 'dB'),
             _ControlDefinition('compressor_ratio', 'RATIO', 1, 20, 38, ':1'),
+            _ControlDefinition(
+                'compressor_attack_ms', 'ATTACK', .5, 50, 99, 'ms',
+                logarithmic: true),
+            _ControlDefinition(
+                'compressor_release_ms', 'RELEASE', 30, 500, 94, 'ms',
+                logarithmic: true),
+            _ControlDefinition('compressor_mix', 'MIX', 0, 1, 20, '%',
+                percent: true),
+            _ControlDefinition(
+                'compressor_level_db', 'LEVEL', -12, 24, 36, 'dB'),
           ],
         EffectKind.eq => const [
             _ControlDefinition('eq_low_db', 'LOW', -12, 12, 48, 'dB'),
@@ -5041,10 +5581,66 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
           ],
       };
 
-  Future<void> _setGateFeel(double hold, double release, double range) async {
+  Future<void> _learnDehiss() async {
+    final learn = widget.onLearn;
+    if (learn == null) return;
+    setState(() => _learningDehiss = true);
+    try {
+      final threshold = await learn();
+      if (mounted) setState(() => _values['dehiss_threshold_db'] = threshold);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _learningDehiss = false);
+    }
+  }
+
+  Future<void> _setCompressorFeel(double threshold, double ratio, double attack,
+      double release, double mix) async {
+    setState(() => _applyingCompressorFeel = true);
+    try {
+      for (final entry in {
+        'compressor_threshold_db': threshold,
+        'compressor_ratio': ratio,
+        'compressor_attack_ms': attack,
+        'compressor_release_ms': release,
+        'compressor_mix': mix,
+      }.entries) {
+        await widget.onChanged(entry.key, entry.value);
+        if (!mounted) return;
+        setState(() => _values[entry.key] = entry.value);
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _applyingCompressorFeel = false);
+    }
+  }
+
+  Future<void> _setAutoMakeup(bool on) async {
+    try {
+      await widget.onChanged('compressor_auto_makeup', on ? 1 : 0);
+      if (mounted) setState(() => _autoMakeup = on);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  Future<void> _setGateFeel(
+      double hysteresis, double hold, double release, double range) async {
     setState(() => _applyingGateFeel = true);
     try {
       for (final entry in {
+        'gate_hysteresis_db': hysteresis,
         'gate_hold_ms': hold,
         'gate_release_ms': release,
         'gate_range_db': range,
@@ -5080,6 +5676,10 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
     return LayoutBuilder(builder: (context, constraints) {
       final compactGate =
           detail == EffectKind.gate && constraints.maxHeight < 440;
+      final compactDehiss =
+          detail == EffectKind.dehiss && constraints.maxHeight < 440;
+      final compactCompressor =
+          detail == EffectKind.compressor && constraints.maxHeight < 440;
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -5091,7 +5691,7 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                       color: detail.color,
                       fontWeight: FontWeight.w900,
                       letterSpacing: .9)),
-              if (!compactGate)
+              if (!compactGate && !compactDehiss && !compactCompressor)
                 const Text(
                     'Settings are saved with your preset. Drag vertically.',
                     style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
@@ -5105,21 +5705,21 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                       OutlinedButton(
                         onPressed: _applyingGateFeel
                             ? null
-                            : () => _setGateFeel(10, 15, 80),
+                            : () => _setGateFeel(6, 10, 15, 80),
                         child: const Text('TIGHT RHYTHM'),
                       ),
                       const SizedBox(width: 8),
                       OutlinedButton(
                         onPressed: _applyingGateFeel
                             ? null
-                            : () => _setGateFeel(60, 150, 80),
+                            : () => _setGateFeel(18, 60, 150, 80),
                         child: const Text('NATURAL SUSTAIN'),
                       ),
                       const SizedBox(width: 8),
                       OutlinedButton(
                         onPressed: _applyingGateFeel
                             ? null
-                            : () => _setGateFeel(30, 200, 25),
+                            : () => _setGateFeel(12, 30, 200, 25),
                         child: const Text('GENTLE CLEANUP'),
                       ),
                     ]),
@@ -5140,6 +5740,63 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                     'Feel keeps your threshold. Hold bridges gaps; release softens the close; reduction sets how much noise is removed.',
                     style: TextStyle(color: LostChrome.ice, fontSize: 12),
                   ),
+              ],
+              if (detail == EffectKind.compressor) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 48,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(children: [
+                      OutlinedButton(
+                        onPressed: _applyingCompressorFeel
+                            ? null
+                            : () => _setCompressorFeel(-30, 8, 1, 200, 1),
+                        child: const Text('SUSTAIN'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _applyingCompressorFeel
+                            ? null
+                            : () => _setCompressorFeel(-24, 4, 20, 120, .7),
+                        child: const Text('SNAP'),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton(
+                        onPressed: _applyingCompressorFeel
+                            ? null
+                            : () => _setCompressorFeel(-20, 2, 10, 150, .5),
+                        child: const Text('TRANSPARENT'),
+                      ),
+                    ]),
+                  ),
+                ),
+                Row(children: [
+                  Switch(value: _autoMakeup, onChanged: _setAutoMakeup),
+                  const Text('AUTO MAKEUP',
+                      style: TextStyle(color: LostChrome.ice, fontSize: 12)),
+                  const Spacer(),
+                  if (widget.meters != null)
+                    StreamBuilder<MeterSnapshot>(
+                      stream: widget.meters,
+                      builder: (context, snapshot) {
+                        final reduction =
+                            snapshot.data?.compressorReductionDb ?? 0;
+                        return Text(
+                          reduction > .1
+                              ? 'GR ${reduction.toStringAsFixed(1)} dB'
+                              : 'GR 0.0 dB',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        );
+                      },
+                    ),
+                ]),
+                Text(
+                  'SNAP lets the pick through for articulate cleans and crunch; SUSTAIN evens out long notes; TRANSPARENT blends in the dry signal.',
+                  maxLines: compactCompressor ? 1 : 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: LostChrome.ice, fontSize: 12),
+                ),
               ],
               if (detail == EffectKind.octaver) ...[
                 const SizedBox(height: 8),
@@ -5167,10 +5824,35 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                     style:
                         const TextStyle(color: LostChrome.ice, fontSize: 12)),
               ],
+              if (detail == EffectKind.dehiss && widget.onLearn != null) ...[
+                const SizedBox(height: 8),
+                Row(children: [
+                  FilledButton.icon(
+                    icon: Icon(
+                        _learningDehiss ? Icons.hourglass_top : Icons.hearing),
+                    label: Text(
+                        _learningDehiss ? 'LISTENING… DON\'T PLAY' : 'LEARN'),
+                    onPressed: _learningDehiss ? null : _learnDehiss,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Tooltip(
+                      message:
+                          "Removes amp hiss above the ABOVE frequency as notes fade, keeping their body. Use LEARN: press it, don't play for 2 seconds.",
+                      child: Text(
+                          "Removes amp hiss above the ABOVE frequency as notes fade, keeping their body. Use LEARN: press it, don't play for 2 seconds.",
+                          maxLines: compactDehiss ? 1 : 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: LostChrome.ice, fontSize: 12)),
+                    ),
+                  ),
+                ]),
+              ],
               const SizedBox(height: 8),
               Expanded(
                 child: AbsorbPointer(
-                  absorbing: _applyingGateFeel,
+                  absorbing: _applyingGateFeel || _applyingCompressorFeel,
                   child: _VerticalControlBank(
                     controls: _controls,
                     values: _values,
@@ -11009,6 +11691,8 @@ const _tunings = [
   _Tuning('Drop C', ['C2', 'G2', 'C3', 'F3', 'A3', 'D4']),
   _Tuning('Open G', ['D2', 'G2', 'D3', 'G3', 'B3', 'D4']),
   _Tuning('Open D', ['D2', 'A2', 'D3', 'F♯3', 'A3', 'D4']),
+  _Tuning('7-string Standard B', ['B1', 'E2', 'A2', 'D3', 'G3', 'B3', 'E4']),
+  _Tuning('7-string Drop A', ['A1', 'E2', 'A2', 'D3', 'G3', 'B3', 'E4']),
 ];
 
 class _TunerReading {
@@ -11093,12 +11777,14 @@ class _VerticalControlBank extends StatelessWidget {
     required this.values,
     required this.onChanged,
     required this.onChangeEnd,
+    this.onToggle,
   });
 
   final List<_ControlDefinition> controls;
   final Map<String, double> values;
   final void Function(_ControlDefinition, double) onChanged;
   final Future<void> Function(_ControlDefinition, double) onChangeEnd;
+  final void Function(_ControlDefinition)? onToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -11114,6 +11800,12 @@ class _VerticalControlBank extends StatelessWidget {
               value: values[control.keyName]!,
               onChanged: (value) => onChanged(control, value),
               onChangeEnd: (value) => onChangeEnd(control, value),
+              onToggle: ((control.keyName.startsWith('cabinet_') &&
+                              control.keyName.endsWith('_cut_hz')) ||
+                          control.keyName == 'amp_tight_hz') &&
+                      onToggle != null
+                  ? () => onToggle!(control)
+                  : null,
             ),
           ),
       ],
@@ -11127,12 +11819,14 @@ class _ControlSlider extends StatelessWidget {
     required this.value,
     required this.onChanged,
     required this.onChangeEnd,
+    this.onToggle,
   });
 
   final _ControlDefinition definition;
   final double value;
   final ValueChanged<double> onChanged;
   final ValueChanged<double> onChangeEnd;
+  final VoidCallback? onToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -11147,9 +11841,13 @@ class _ControlSlider extends StatelessWidget {
       child: Column(
         children: [
           const SizedBox(height: 10),
-          Text(definition.label,
-              style: const TextStyle(
-                  fontWeight: FontWeight.w900, letterSpacing: .7)),
+          Text(
+            definition.label,
+            style: const TextStyle(
+              fontWeight: FontWeight.w900,
+              letterSpacing: .7,
+            ),
+          ),
           const SizedBox(height: 4),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
@@ -11157,9 +11855,13 @@ class _ControlSlider extends StatelessWidget {
               color: LostChrome.electric.withValues(alpha: .18),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: Text(definition.format(value),
-                style: const TextStyle(
-                    color: LostChrome.ice, fontWeight: FontWeight.w800)),
+            child: Text(
+              onToggle != null && value == 0 ? 'OFF' : definition.format(value),
+              style: const TextStyle(
+                color: LostChrome.ice,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
           ),
           Expanded(
             child: RotatedBox(
@@ -11169,16 +11871,28 @@ class _ControlSlider extends StatelessWidget {
                 min: definition.sliderValue(definition.minimum),
                 max: definition.sliderValue(definition.maximum),
                 divisions: definition.divisions,
-                label: definition.format(value),
+                label: onToggle != null && value == 0
+                    ? 'OFF'
+                    : definition.format(value),
                 onChanged: (v) => onChanged(definition.actualValue(v)),
                 onChangeEnd: (v) => onChangeEnd(definition.actualValue(v)),
               ),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.only(bottom: 11),
-            child: Icon(Icons.drag_indicator, color: LostChrome.ice, size: 18),
-          ),
+          if (onToggle != null)
+            TextButton(
+              onPressed: onToggle,
+              child: Text(value == 0 ? 'TURN ON' : 'TURN OFF'),
+            )
+          else
+            const Padding(
+              padding: EdgeInsets.only(bottom: 11),
+              child: Icon(
+                Icons.drag_indicator,
+                color: LostChrome.ice,
+                size: 18,
+              ),
+            ),
         ],
       ),
     );
@@ -12267,739 +12981,6 @@ class _AiRigChoice extends StatelessWidget {
       );
 }
 
-class ModelLibrarySheet extends StatefulWidget {
-  const ModelLibrarySheet({
-    required this.catalog,
-    required this.engineConnected,
-    required this.selectedPrePath,
-    required this.selectedAmpPath,
-    required this.onSelected,
-    this.initialSlot,
-    super.key,
-  });
-
-  final CatalogClient catalog;
-  final bool engineConnected;
-  final String? selectedPrePath;
-  final String? selectedAmpPath;
-  final Future<void> Function(CatalogModel, ModelSlot) onSelected;
-  final ModelSlot? initialSlot;
-
-  @override
-  State<ModelLibrarySheet> createState() => _ModelLibrarySheetState();
-}
-
-class _ModelLibrarySheetState extends State<ModelLibrarySheet> {
-  late Future<List<CatalogModel>> _models;
-  late String _category;
-  String _query = '';
-  String? _tag;
-  bool _syncingTags = false;
-
-  Future<void> _syncTags() async {
-    setState(() {
-      _syncingTags = true;
-      _selectionError = null;
-    });
-    var failures = 0;
-    try {
-      final models = await widget.catalog.listModels();
-      final groups = models
-          .map((m) => m.captureGroup)
-          .whereType<String>()
-          .where((g) => g.startsWith('tone3000:'))
-          .toSet();
-      for (final group in groups) {
-        if (!mounted) return;
-        try {
-          await widget.catalog
-              .syncToneTags(group.substring('tone3000:'.length));
-        } catch (_) {
-          failures++;
-        }
-      }
-      if (mounted) {
-        setState(() {
-          _models = widget.catalog.listModels();
-          _tag = null;
-          _selectionError = failures > 0
-              ? 'Could not update $failures collections. Cached tags are still available; check your connection and T3K sign-in.'
-              : null;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _selectionError = 'Could not sync tags: $e');
-    } finally {
-      if (mounted) setState(() => _syncingTags = false);
-    }
-  }
-
-  String? _selectingPath;
-  String? _selectionError;
-
-  @override
-  void initState() {
-    super.initState();
-    _category = widget.initialSlot == ModelSlot.pre ? 'Pedals' : 'Amps';
-    _models = widget.catalog.listModels();
-  }
-
-  void _refresh() => setState(() => _models = widget.catalog.refreshAndList());
-
-  Future<void> _choose(CatalogModel model) async {
-    ModelSlot? slot = widget.initialSlot;
-    slot ??= _category == 'Pedals'
-        ? ModelSlot.pre
-        : _category == 'Amps'
-            ? ModelSlot.amp
-            : null;
-    slot ??= await showDialog<ModelSlot>(
-        context: context,
-        builder: (c) => AlertDialog(
-                title: Text(model.displayName),
-                content: const Text('Load this unclassified capture into:'),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(c, ModelSlot.pre),
-                      child: const Text('PEDAL')),
-                  FilledButton(
-                      onPressed: () => Navigator.pop(c, ModelSlot.amp),
-                      child: const Text('AMP')),
-                ]));
-    if (slot == null || !mounted) return;
-    setState(() {
-      _selectingPath = model.path;
-      _selectionError = null;
-    });
-    try {
-      await widget.onSelected(model, slot);
-      if (mounted) Navigator.pop(context);
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _selectingPath = null;
-          _selectionError = '$e';
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-      child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Row(children: [
-              const Icon(Icons.offline_pin_outlined, color: LostChrome.ice),
-              const SizedBox(width: 8),
-              const Expanded(
-                  child: Text('ON THIS DEVICE',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                          color: LostChrome.pearl))),
-              IconButton(
-                  tooltip: 'Sync tags from TONE3000',
-                  onPressed:
-                      _syncingTags || _selectingPath != null ? null : _syncTags,
-                  icon: _syncingTags
-                      ? const SizedBox.square(
-                          dimension: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.sync)),
-              IconButton(
-                  tooltip: 'Rescan model folder',
-                  onPressed: _selectingPath == null ? _refresh : null,
-                  icon: const Icon(Icons.refresh)),
-            ]),
-            TextField(
-                decoration: const InputDecoration(
-                    hintText: 'Find a pedal, amp or capture…',
-                    prefixIcon: Icon(Icons.search),
-                    isDense: true),
-                onChanged: (v) =>
-                    setState(() => _query = v.toLowerCase().trim())),
-            if (!widget.engineConnected)
-              const Text('Engine offline — browsing only.',
-                  style: TextStyle(color: LostChrome.ice)),
-            if (_selectionError != null)
-              Text(_selectionError!,
-                  style: const TextStyle(color: Color(0xffffb3bf))),
-            Expanded(
-                child: FutureBuilder<List<CatalogModel>>(
-                    future: _models,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState != ConnectionState.done) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
-                      if (snapshot.hasError) {
-                        return _LibraryMessage(
-                            icon: Icons.folder_off_outlined,
-                            title: 'Local library unavailable',
-                            detail: '${snapshot.error}',
-                            action: _refresh);
-                      }
-                      final all = snapshot.data ?? <CatalogModel>[];
-                      final tags = all
-                          .where((m) => m.category == _category)
-                          .expand((m) => m.tags)
-                          .toSet()
-                          .toList()
-                        ..sort();
-                      final models = all
-                          .where((m) =>
-                              m.category == _category &&
-                              (_tag == null ||
-                                  (_tag == ''
-                                      ? m.tags.isEmpty
-                                      : m.tags.contains(_tag))) &&
-                              '${m.displayName} ${m.collectionName}'
-                                  .toLowerCase()
-                                  .contains(_query))
-                          .toList()
-                        ..sort((a, b) =>
-                            a.collectionName.compareTo(b.collectionName));
-                      final groups = <String, List<CatalogModel>>{};
-                      for (final model in models) {
-                        (groups[model.captureGroup ?? model.path] ??= [])
-                            .add(model);
-                      }
-                      return Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Row(children: [
-                                  for (final category in [
-                                    'Pedals',
-                                    'Amps',
-                                    'Unclassified'
-                                  ])
-                                    Padding(
-                                        padding: const EdgeInsets.only(
-                                            right: 6, top: 6, bottom: 6),
-                                        child: ChoiceChip(
-                                            avatar: Icon(
-                                                category == 'Pedals'
-                                                    ? Icons.bolt
-                                                    : category == 'Amps'
-                                                        ? Icons.speaker
-                                                        : Icons.help_outline,
-                                                size: 18),
-                                            label: Text(
-                                                '$category (${all.where((m) => m.category == category).length})'),
-                                            selected: _category == category,
-                                            onSelected: _selectingPath == null
-                                                ? (_) => setState(() {
-                                                      _category = category;
-                                                      _tag = null;
-                                                    })
-                                                : null)),
-                                ])),
-                            SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                child: Row(children: [
-                                  for (final tag in <String?>[
-                                    null,
-                                    ...tags,
-                                    ''
-                                  ])
-                                    Padding(
-                                        padding: const EdgeInsets.only(
-                                            right: 6, bottom: 6),
-                                        child: ChoiceChip(
-                                            label: Text(tag == null
-                                                ? 'All tags'
-                                                : tag.isEmpty
-                                                    ? 'Untagged'
-                                                    : tag),
-                                            selected: _tag == tag,
-                                            selectedColor: LostChrome.ocean,
-                                            onSelected: (_) => setState(() =>
-                                                _tag =
-                                                    _tag == tag ? null : tag))),
-                                ])),
-                            if (_category == 'Unclassified')
-                              const Text(
-                                  'Type unavailable or ambiguous. These captures are still usable.',
-                                  style: TextStyle(
-                                      color: LostChrome.ice, fontSize: 12)),
-                            Expanded(
-                                child: groups.isEmpty
-                                    ? Center(
-                                        child: Text(all.isEmpty
-                                            ? 'No downloaded NAMs yet. Add tones using T3K, then refresh.'
-                                            : 'No matching ${_category.toLowerCase()} on this device.'))
-                                    : ListView.builder(
-                                        itemCount: groups.length,
-                                        itemBuilder: (context, index) {
-                                          final captures =
-                                              groups.values.elementAt(index);
-                                          final selected = captures.any((m) =>
-                                              m.path ==
-                                                  widget.selectedPrePath ||
-                                              m.path == widget.selectedAmpPath);
-                                          final icon = _category == 'Pedals'
-                                              ? Icons.bolt
-                                              : _category == 'Amps'
-                                                  ? Icons.speaker
-                                                  : Icons.graphic_eq;
-                                          Widget capture(CatalogModel model) {
-                                            final active = model.path ==
-                                                    widget.selectedPrePath ||
-                                                model.path ==
-                                                    widget.selectedAmpPath;
-                                            return ListTile(
-                                                contentPadding:
-                                                    const EdgeInsets.symmetric(
-                                                        horizontal: 16,
-                                                        vertical: 6),
-                                                leading: Icon(
-                                                    active
-                                                        ? Icons.check_circle
-                                                        : icon,
-                                                    color: active
-                                                        ? LostChrome.lime
-                                                        : LostChrome.ice,
-                                                    size: 30),
-                                                title: Text(model.displayName,
-                                                    style: const TextStyle(
-                                                        fontWeight:
-                                                            FontWeight.w800,
-                                                        fontSize: 17)),
-                                                subtitle: Text(
-                                                    '${active ? 'LOADED • ' : ''}${model.sizeLabel} • Saved locally',
-                                                    style: const TextStyle(
-                                                        color: LostChrome.ice)),
-                                                trailing: _selectingPath == model.path
-                                                    ? const SizedBox.square(
-                                                        dimension: 24,
-                                                        child: CircularProgressIndicator(
-                                                            strokeWidth: 2))
-                                                    : const Icon(Icons.chevron_right),
-                                                enabled: widget.engineConnected && _selectingPath == null,
-                                                onTap: widget.engineConnected && _selectingPath == null ? () => _choose(model) : null);
-                                          }
-
-                                          return Container(
-                                              margin: const EdgeInsets.only(
-                                                  bottom: 10),
-                                              clipBehavior: Clip.antiAlias,
-                                              decoration: BoxDecoration(
-                                                  borderRadius:
-                                                      BorderRadius.circular(18),
-                                                  border: Border.all(
-                                                      color: selected
-                                                          ? LostChrome.lime
-                                                          : LostChrome.ice
-                                                              .withValues(
-                                                                  alpha: .6)),
-                                                  gradient: const LinearGradient(
-                                                      begin: Alignment.topLeft,
-                                                      end: Alignment.bottomRight,
-                                                      colors: [
-                                                        Color(0xff22649a),
-                                                        Color(0xff102c53),
-                                                        Color(0xff081a36)
-                                                      ])),
-                                              child: captures.length == 1
-                                                  ? capture(captures.first)
-                                                  : ExpansionTile(
-                                                      key: PageStorageKey(
-                                                          '$_category:${groups.keys.elementAt(index)}'),
-                                                      initiallyExpanded:
-                                                          selected,
-                                                      leading: Icon(icon, color: LostChrome.ice, size: 32),
-                                                      title: Text(captures.first.collectionName, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900)),
-                                                      subtitle: Text('${captures.length} captures on this device', style: const TextStyle(color: LostChrome.ice)),
-                                                      children: captures.map(capture).toList()));
-                                        })),
-                          ]);
-                    })),
-          ])));
-}
-
-class Tone3000BrowserSheet extends StatefulWidget {
-  const Tone3000BrowserSheet({
-    required this.catalog,
-    required this.engineConnected,
-    required this.onSelected,
-    this.initialSlot,
-    super.key,
-  });
-
-  final CatalogClient catalog;
-  final bool engineConnected;
-  final Future<void> Function(CatalogModel, ModelSlot) onSelected;
-  final ModelSlot? initialSlot;
-
-  @override
-  State<Tone3000BrowserSheet> createState() => _Tone3000BrowserSheetState();
-}
-
-class _Tone3000BrowserSheetState extends State<Tone3000BrowserSheet> {
-  final Set<String> _checked = {};
-  String? _downloadProgress;
-  Tone3000Status? _status;
-  SelectedTone? _selection;
-  Timer? _loginPoll;
-  String? _authorizeUrl;
-  String? _error;
-  bool _busy = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadStatus();
-  }
-
-  @override
-  void dispose() {
-    _loginPoll?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadStatus() async {
-    try {
-      final status = await widget.catalog.tone3000Status();
-      if (!mounted) return;
-      setState(() {
-        _status = status;
-        _busy = false;
-        _error = null;
-      });
-      if (status.selectedToneId != null) {
-        _loginPoll?.cancel();
-        await _loadSelected();
-      } else if (!status.authPending && _authorizeUrl != null) {
-        _loginPoll?.cancel();
-        setState(() => _authorizeUrl = null);
-      }
-    } catch (error) {
-      if (mounted) setState(() => _setError(error));
-    }
-  }
-
-  Future<void> _browse() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final url = await widget.catalog.beginTone3000Auth();
-      if (!mounted) return;
-      setState(() {
-        _authorizeUrl = url;
-        _busy = false;
-      });
-      _loginPoll?.cancel();
-      _loginPoll = Timer.periodic(
-        const Duration(seconds: 2),
-        (_) => _loadStatus(),
-      );
-    } catch (error) {
-      if (mounted) setState(() => _setError(error));
-    }
-  }
-
-  Future<void> _loadSelected() async {
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    try {
-      final selection = await widget.catalog.selectedTone3000();
-      if (mounted) {
-        setState(() {
-          _selection = selection;
-          _checked
-            ..clear()
-            ..addAll(selection.models.map((m) => m.id));
-          _authorizeUrl = null;
-          _busy = false;
-        });
-      }
-    } catch (error) {
-      if (mounted) setState(() => _setError(error));
-    }
-  }
-
-  void _setError(Object error) {
-    _error = '$error';
-    _busy = false;
-  }
-
-  Future<void> _download(RemoteTone tone, List<RemoteModel> captures) async {
-    if (captures.isEmpty) return;
-    final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-              title: Text('Download ${captures.length} captures?'),
-              content: Text(
-                  'Save the selected captures from ${tone.name} together for offline use. '
-                  'Total download size is not supplied by this catalog. The first selected capture can be loaded after downloading.'),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context, false),
-                    child: const Text('Cancel')),
-                FilledButton(
-                    onPressed: () => Navigator.pop(context, true),
-                    child: const Text('Download'))
-              ],
-            ));
-    if (confirmed != true || !mounted) return;
-    setState(() => _busy = true);
-    try {
-      final cached = await widget.catalog.listModels();
-      CatalogModel? first;
-      for (var i = 0; i < captures.length; i++) {
-        if (!mounted) return;
-        final remote = captures[i];
-        setState(() => _downloadProgress =
-            'Capture ${i + 1}/${captures.length}: ${remote.name}');
-        final existing = cached
-            .where((m) =>
-                m.captureGroup == 'tone3000:${tone.id}' &&
-                m.captureId == remote.id)
-            .firstOrNull;
-        final downloaded = existing ??
-            await widget.catalog.downloadTone3000Model(tone.id, remote.id);
-        first ??= downloaded;
-      }
-      final model = first!;
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _selection = null;
-        _downloadProgress = null;
-      });
-      if (!widget.engineConnected) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Downloaded for offline use.')),
-        );
-        return;
-      }
-      final slot = widget.initialSlot ??
-          await showDialog<ModelSlot>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: Text(model.name),
-              content: const Text('Downloaded. Where should this model run?'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, ModelSlot.pre),
-                  child: const Text('PEDAL'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, ModelSlot.amp),
-                  child: const Text('AMP'),
-                ),
-              ],
-            ),
-          );
-      if (slot != null) {
-        await widget.onSelected(model, slot);
-        if (mounted) Navigator.of(context).pop();
-      }
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _downloadProgress = null;
-          _setError('$error. Completed captures are saved; retry to continue.');
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final status = _status;
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(children: [
-              Text('TONE3000', style: Theme.of(context).textTheme.titleLarge),
-              const Spacer(),
-              if (status?.connected ?? false)
-                IconButton(
-                  tooltip: 'Disconnect account',
-                  onPressed: _busy
-                      ? null
-                      : () async {
-                          await widget.catalog.disconnectTone3000();
-                          await _loadStatus();
-                        },
-                  icon: const Icon(Icons.logout),
-                ),
-            ]),
-            if (_error != null)
-              Text(_error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error)),
-            if (_busy) const LinearProgressIndicator(),
-            if (_downloadProgress != null)
-              Text(_downloadProgress!,
-                  maxLines: 2, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 8),
-            if (status == null)
-              const Expanded(child: Center(child: CircularProgressIndicator()))
-            else if (!status.available)
-              const Expanded(
-                child: Center(
-                  child: Text(
-                    'Online browsing is not configured.\nLocal downloaded tones still work offline.',
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              )
-            else if (_authorizeUrl != null)
-              Expanded(child: _buildHandoff())
-            else if (_selection != null)
-              Expanded(child: _buildSelection(_selection!))
-            else
-              Expanded(child: _buildBrowse()),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBrowse() => Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Browse TONE3000’s community library of NAM captures. '
-              'TONE3000 handles sign-in, previews, and tone selection.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 14),
-            FilledButton.icon(
-              onPressed: _busy ? null : _browse,
-              icon: const Icon(Icons.open_in_browser),
-              label: const Text('BROWSE TONE3000'),
-            ),
-          ],
-        ),
-      );
-
-  Widget _buildHandoff() {
-    return ListView(children: [
-      const Text(
-          'Open this address to sign in, preview tones, and select one:'),
-      const SizedBox(height: 8),
-      SelectableText(_authorizeUrl!),
-      const SizedBox(height: 8),
-      FilledButton.tonalIcon(
-        onPressed: () => Clipboard.setData(ClipboardData(text: _authorizeUrl!)),
-        icon: const Icon(Icons.copy),
-        label: const Text('COPY LINK'),
-      ),
-      const SizedBox(height: 8),
-      const Text('Waiting for tone selection…', textAlign: TextAlign.center),
-    ]);
-  }
-
-  Widget _buildSelection(SelectedTone selection) => Column(children: [
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Icon(selection.tone.gear == 'pedal'
-              ? Icons.tune
-              : Icons.speaker_outlined),
-          title: Text(selection.tone.name),
-          subtitle: Text(
-              '${selection.tone.author} • ${selection.tone.gear.toUpperCase()}'),
-          trailing: TextButton(
-            onPressed: _busy ? null : _browse,
-            child: const Text('CHANGE'),
-          ),
-        ),
-        const Divider(height: 1),
-        Wrap(spacing: 8, children: [
-          TextButton(
-              onPressed: _busy
-                  ? null
-                  : () => setState(
-                      () => _checked.addAll(selection.models.map((m) => m.id))),
-              child: const Text('Select all')),
-          TextButton(
-              onPressed: _busy ? null : () => setState(_checked.clear),
-              child: const Text('Clear selection')),
-          FilledButton.icon(
-              onPressed: _busy || _checked.isEmpty
-                  ? null
-                  : () => _download(
-                      selection.tone,
-                      selection.models
-                          .where((m) => _checked.contains(m.id))
-                          .toList()),
-              icon: const Icon(Icons.download),
-              label: Text('Download ${_checked.length} captures')),
-        ]),
-        Expanded(
-          child: selection.models.isEmpty
-              ? const Center(child: Text('No compatible NAM A2 models found.'))
-              : ListView.separated(
-                  itemCount: selection.models.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final model = selection.models[index];
-                    return CheckboxListTile(
-                      dense: true,
-                      title: Text(model.name),
-                      subtitle: const Text('NAM A2'),
-                      value: _checked.contains(model.id),
-                      onChanged: _busy
-                          ? null
-                          : (checked) => setState(() {
-                                if (checked == true) {
-                                  _checked.add(model.id);
-                                } else {
-                                  _checked.remove(model.id);
-                                }
-                              }),
-                    );
-                  },
-                ),
-        ),
-      ]);
-}
-
-class _LibraryMessage extends StatelessWidget {
-  const _LibraryMessage({
-    required this.icon,
-    required this.title,
-    required this.detail,
-    required this.action,
-  });
-
-  final IconData icon;
-  final String title;
-  final String detail;
-  final VoidCallback action;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 42),
-          const SizedBox(height: 12),
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 6),
-          Text(detail, textAlign: TextAlign.center),
-          const SizedBox(height: 12),
-          OutlinedButton(onPressed: action, child: const Text('REFRESH')),
-        ],
-      ),
-    );
-  }
-}
-
 class _StatusDot extends StatelessWidget {
   const _StatusDot({required this.connected});
 
@@ -13971,16 +13952,20 @@ class _AudioScopePainter extends CustomPainter {
       revision != oldDelegate.revision || clipped != oldDelegate.clipped;
 }
 
-class _MeterStrip extends StatelessWidget {
-  const _MeterStrip({required this.snapshot});
+class MeterStrip extends StatelessWidget {
+  const MeterStrip({super.key, required this.snapshot});
 
   final MeterSnapshot snapshot;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final active = snapshot.audioStatus == 'running';
+    final scale = MediaQuery.textScalerOf(context).scale(1);
+    final levels = Row(
       children: [
-        Expanded(child: _LevelMeter(label: 'IN', db: snapshot.inputDb)),
+        Expanded(
+          child: _LevelMeter(label: 'IN', db: snapshot.inputDb),
+        ),
         const SizedBox(width: 10),
         Expanded(
           child: _LevelMeter(
@@ -13990,22 +13975,121 @@ class _MeterStrip extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        Tooltip(
-          message: snapshot.audioError ??
-              'Audio deadline usage, not total computer CPU. Worst: ${snapshot.worstCpuPercent.round()}%. Missed deadlines: ${snapshot.deadlineMisses}.',
-          child: Text(
-            snapshot.audioStatus == 'running'
-                ? 'DSP ${snapshot.cpuPercent.round()}% / MAX ${snapshot.worstCpuPercent.round()}%\nXRUN ${snapshot.xruns}'
-                : 'AUDIO ${snapshot.audioStatus.toUpperCase()}',
-            textAlign: TextAlign.right,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: snapshot.audioStatus == 'recovering'
-                      ? const Color(0xffff8b9b)
-                      : null,
-                ),
+        Expanded(
+          flex: 2,
+          child: Tooltip(
+            message: snapshot.audioError ??
+                'Audio deadline usage, not total computer CPU. Worst: ${snapshot.worstCpuPercent.round()}%. Missed deadlines: ${snapshot.deadlineMisses}.'
+                    '${active && snapshot.audioRealtimePriority <= 0 ? ' Realtime is off. Grant rtprio (systemd LimitRTPRIO or /etc/security/limits.d) to reduce xruns.' : ''}',
+            child: Text(
+              active
+                  ? 'DSP ${snapshot.cpuPercent.round()}% / MAX ${snapshot.worstCpuPercent.round()}%\nXRUN ${snapshot.xruns}\n${snapshot.realtimeLabel}'
+                  : 'AUDIO ${snapshot.audioStatus.toUpperCase()}',
+              textAlign: TextAlign.right,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: snapshot.audioStatus == 'recovering'
+                        ? const Color(0xffff8b9b)
+                        : null,
+                  ),
+            ),
           ),
         ),
       ],
+    );
+    final reductions = Wrap(
+      spacing: 8,
+      runSpacing: 3,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(
+          'LIMITER REDUCTION',
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
+        SizedBox(
+          width: 120 * scale,
+          child: _ReductionMeter(
+            label: 'RIG',
+            db: active && !snapshot.patchActive
+                ? snapshot.rigLimiterReductionDb
+                : null,
+            inactive: active && snapshot.patchActive,
+          ),
+        ),
+        SizedBox(
+          width: 120 * scale,
+          child: _ReductionMeter(
+            label: 'OUT',
+            db: active ? snapshot.outputLimiterReductionDb : null,
+          ),
+        ),
+      ],
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth >= 850 * scale) {
+          return Row(
+            children: [
+              Expanded(child: levels),
+              const SizedBox(width: 16),
+              reductions,
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [levels, const SizedBox(height: 3), reductions],
+        );
+      },
+    );
+  }
+}
+
+class _ReductionMeter extends StatelessWidget {
+  const _ReductionMeter({
+    required this.label,
+    required this.db,
+    this.inactive = false,
+  });
+
+  final String label;
+  final double? db;
+  final bool inactive;
+
+  @override
+  Widget build(BuildContext context) {
+    final reduction = db == null ? null : (db! <= 0 ? 0.0 : db!);
+    final value = reduction == null ? 0.0 : reduction.clamp(0.0, 24.0) / 24.0;
+    final color = reduction != null && reduction >= 6
+        ? const Color(0xffff657a)
+        : reduction != null && reduction >= 3
+            ? const Color(0xffffbd59)
+            : LostChrome.electric;
+    final stage = label == 'RIG' ? 'pedalboard rig' : 'final mix output';
+    return Tooltip(
+      message: '$label is the $stage limiter attenuation, separate from output '
+          'volume. 0 dB means no attenuation. Sustained high reduction means '
+          'upstream levels should be turned down.'
+          '${inactive ? ' The rig limiter is inactive while a patch is live.' : ''}',
+      child: Row(
+        children: [
+          Text(
+            '$label ${inactive ? 'OFF' : reduction == null ? '—' : '${reduction.toStringAsFixed(1)} dB'}',
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: value,
+                minHeight: 5,
+                color: color,
+                backgroundColor: Theme.of(context).colorScheme.surfaceContainer,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -14053,6 +14137,8 @@ class MeterSnapshot {
   final bool patchActive;
   const MeterSnapshot({
     this.patchActive = false,
+    this.rigLimiterReductionDb,
+    this.outputLimiterReductionDb,
     required this.inputDb,
     required this.outputDb,
     required this.clipped,
@@ -14064,10 +14150,15 @@ class MeterSnapshot {
     this.audioError,
     this.worstCpuPercent = 0,
     this.deadlineMisses = 0,
+    this.audioRealtimePriority = 0,
+    this.dspWorkerRealtimePriority = 0,
+    this.compressorReductionDb = 0,
   });
 
   const MeterSnapshot.silent()
       : patchActive = false,
+        rigLimiterReductionDb = null,
+        outputLimiterReductionDb = null,
         inputDb = -120,
         outputDb = -120,
         clipped = false,
@@ -14078,10 +14169,17 @@ class MeterSnapshot {
         audioStatus = 'disabled',
         audioError = null,
         worstCpuPercent = 0,
-        deadlineMisses = 0;
+        deadlineMisses = 0,
+        audioRealtimePriority = 0,
+        dspWorkerRealtimePriority = 0,
+        compressorReductionDb = 0;
 
   factory MeterSnapshot.fromJson(Map<String, dynamic> json) => MeterSnapshot(
         patchActive: json['patch_active'] as bool? ?? false,
+        rigLimiterReductionDb:
+            (json['rig_limiter_reduction_db'] as num?)?.toDouble(),
+        outputLimiterReductionDb:
+            (json['output_limiter_reduction_db'] as num?)?.toDouble(),
         inputDb: (json['input_db'] as num?)?.toDouble() ?? -120,
         outputDb: (json['output_db'] as num?)?.toDouble() ?? -120,
         clipped: json['clipped'] as bool? ?? false,
@@ -14093,8 +14191,18 @@ class MeterSnapshot {
         audioError: json['audio_error'] as String?,
         worstCpuPercent: (json['worst_cpu_percent'] as num?)?.toDouble() ?? 0,
         deadlineMisses: (json['deadline_misses'] as num?)?.toInt() ?? 0,
+        audioRealtimePriority:
+            (json['audio_realtime_priority'] as num?)?.toInt() ?? 0,
+        dspWorkerRealtimePriority:
+            (json['dsp_worker_realtime_priority'] as num?)?.toInt() ?? 0,
+        compressorReductionDb:
+            (json['compressor_reduction_db'] as num?)?.toDouble() ?? 0,
       );
 
+  /// Peak compressor gain reduction in dB since the last meter poll (>= 0).
+  final double compressorReductionDb;
+  final double? rigLimiterReductionDb;
+  final double? outputLimiterReductionDb;
   final double inputDb;
   final double outputDb;
   final bool clipped;
@@ -14106,12 +14214,24 @@ class MeterSnapshot {
   final String? audioError;
   final double worstCpuPercent;
   final int deadlineMisses;
+  final int audioRealtimePriority;
+  final int dspWorkerRealtimePriority;
+
+  String get realtimeLabel {
+    if (audioRealtimePriority <= 0) return 'Realtime: off';
+    final workers = dspWorkerRealtimePriority > 0
+        ? ' · workers $dspWorkerRealtimePriority'
+        : '';
+    return 'Realtime: FIFO $audioRealtimePriority$workers';
+  }
 }
 
 class EngineSnapshot {
   final Map<String, dynamic> audioSettings;
   const EngineSnapshot({
     this.audioSettings = const {},
+    this.pedalNormalizeEnabled = false,
+    this.ampNormalizeEnabled = false,
     required this.connected,
     required this.bypassed,
     required this.preBypassed,
@@ -14128,6 +14248,7 @@ class EngineSnapshot {
     required this.ampMidDb,
     required this.ampTrebleDb,
     required this.ampVolumeDb,
+    required this.ampTightHz,
     required this.cabinetEnabled,
     required this.cabinetIr,
     required this.cabinetGainDb,
@@ -14135,12 +14256,25 @@ class EngineSnapshot {
     required this.cabinetHighCutHz,
     required this.gateEnabled,
     required this.gateThresholdDb,
+    this.gateHysteresisDb = 12,
     this.gateHoldMs = 20,
     this.gateReleaseMs = 50,
     this.gateRangeDb = 80,
+    this.dehissEnabled = false,
+    this.dehissVisible = false,
+    this.dehissThresholdDb = -70,
+    this.dehissFrequencyHz = 3000,
+    this.dehissRangeDb = 24,
+    this.preIncludesCab = false,
+    this.ampIncludesCab = false,
     required this.compressorEnabled,
     required this.compressorThresholdDb,
     required this.compressorRatio,
+    this.compressorAttackMs = 10,
+    this.compressorReleaseMs = 120,
+    this.compressorLevelDb = 0,
+    this.compressorMix = 1,
+    this.compressorAutoMakeup = true,
     required this.eqEnabled,
     required this.eqVisible,
     required this.eqLowDb,
@@ -14186,6 +14320,8 @@ class EngineSnapshot {
 
   const EngineSnapshot.disconnected()
       : audioSettings = const {},
+        pedalNormalizeEnabled = false,
+        ampNormalizeEnabled = false,
         connected = false,
         bypassed = true,
         preBypassed = true,
@@ -14202,19 +14338,33 @@ class EngineSnapshot {
         ampMidDb = 0,
         ampTrebleDb = 0,
         ampVolumeDb = 0,
+        ampTightHz = 0,
         cabinetEnabled = false,
         cabinetIr = null,
         cabinetGainDb = 0,
-        cabinetLowCutHz = 80,
-        cabinetHighCutHz = 8000,
+        cabinetLowCutHz = 0,
+        cabinetHighCutHz = 0,
         gateEnabled = false,
         gateThresholdDb = -80,
+        gateHysteresisDb = 12,
         gateHoldMs = 20,
         gateReleaseMs = 50,
         gateRangeDb = 80,
+        dehissEnabled = false,
+        dehissVisible = false,
+        dehissThresholdDb = -70,
+        dehissFrequencyHz = 3000,
+        dehissRangeDb = 24,
+        preIncludesCab = false,
+        ampIncludesCab = false,
         compressorEnabled = false,
         compressorThresholdDb = -18,
         compressorRatio = 3,
+        compressorAttackMs = 10,
+        compressorReleaseMs = 120,
+        compressorLevelDb = 0,
+        compressorMix = 1,
+        compressorAutoMakeup = true,
         eqEnabled = false,
         eqVisible = false,
         eqLowDb = 0,
@@ -14260,6 +14410,8 @@ class EngineSnapshot {
   factory EngineSnapshot.fromJson(Map<String, dynamic> json) {
     return EngineSnapshot(
       audioSettings: Map<String, dynamic>.from(json),
+      pedalNormalizeEnabled: json['pedal_normalize_enabled'] as bool? ?? false,
+      ampNormalizeEnabled: json['amp_normalize_enabled'] as bool? ?? false,
       connected: true,
       bypassed: json['bypassed'] as bool? ?? true,
       preBypassed: json['pre_bypassed'] as bool? ?? false,
@@ -14276,21 +14428,38 @@ class EngineSnapshot {
       ampMidDb: (json['amp_mid_db'] as num?)?.toDouble() ?? 0,
       ampTrebleDb: (json['amp_treble_db'] as num?)?.toDouble() ?? 0,
       ampVolumeDb: (json['amp_volume_db'] as num?)?.toDouble() ?? 0,
+      ampTightHz: (json['amp_tight_hz'] as num?)?.toDouble() ?? 0,
       cabinetEnabled: json['cabinet_enabled'] as bool? ?? false,
+      preIncludesCab: json['pre_includes_cab'] as bool? ?? false,
+      ampIncludesCab: json['amp_includes_cab'] as bool? ?? false,
       cabinetIr: json['cabinet_ir'] as String?,
       cabinetGainDb: (json['cabinet_gain_db'] as num?)?.toDouble() ?? 0,
-      cabinetLowCutHz: (json['cabinet_low_cut_hz'] as num?)?.toDouble() ?? 80,
-      cabinetHighCutHz:
-          (json['cabinet_high_cut_hz'] as num?)?.toDouble() ?? 8000,
+      cabinetLowCutHz: (json['cabinet_low_cut_hz'] as num?)?.toDouble() ?? 0,
+      cabinetHighCutHz: (json['cabinet_high_cut_hz'] as num?)?.toDouble() ?? 0,
       gateEnabled: json['gate_enabled'] as bool? ?? false,
       gateThresholdDb: (json['gate_threshold_db'] as num?)?.toDouble() ?? -80,
+      gateHysteresisDb: (json['gate_hysteresis_db'] as num?)?.toDouble() ?? 12,
       gateHoldMs: (json['gate_hold_ms'] as num?)?.toDouble() ?? 20,
       gateReleaseMs: (json['gate_release_ms'] as num?)?.toDouble() ?? 50,
       gateRangeDb: (json['gate_range_db'] as num?)?.toDouble() ?? 80,
+      dehissEnabled: json['dehiss_enabled'] as bool? ?? false,
+      dehissVisible: json['dehiss_visible'] as bool? ?? false,
+      dehissThresholdDb:
+          (json['dehiss_threshold_db'] as num?)?.toDouble() ?? -70,
+      dehissFrequencyHz:
+          (json['dehiss_frequency_hz'] as num?)?.toDouble() ?? 3000,
+      dehissRangeDb: (json['dehiss_range_db'] as num?)?.toDouble() ?? 24,
       compressorEnabled: json['compressor_enabled'] as bool? ?? false,
       compressorThresholdDb:
           (json['compressor_threshold_db'] as num?)?.toDouble() ?? -18,
       compressorRatio: (json['compressor_ratio'] as num?)?.toDouble() ?? 3,
+      compressorAttackMs:
+          (json['compressor_attack_ms'] as num?)?.toDouble() ?? 10,
+      compressorReleaseMs:
+          (json['compressor_release_ms'] as num?)?.toDouble() ?? 120,
+      compressorLevelDb: (json['compressor_level_db'] as num?)?.toDouble() ?? 0,
+      compressorMix: (json['compressor_mix'] as num?)?.toDouble() ?? 1,
+      compressorAutoMakeup: json['compressor_auto_makeup'] as bool? ?? true,
       eqEnabled: json['eq_enabled'] as bool? ?? false,
       eqVisible: json['eq_visible'] as bool? ?? false,
       eqLowDb: (json['eq_low_db'] as num?)?.toDouble() ?? 0,
@@ -14337,6 +14506,8 @@ class EngineSnapshot {
     );
   }
 
+  final bool pedalNormalizeEnabled;
+  final bool ampNormalizeEnabled;
   final bool connected;
   final bool bypassed;
   final bool preBypassed;
@@ -14353,19 +14524,33 @@ class EngineSnapshot {
   final double ampMidDb;
   final double ampTrebleDb;
   final double ampVolumeDb;
+  final double ampTightHz;
   final bool cabinetEnabled;
+  final bool preIncludesCab;
+  final bool ampIncludesCab;
   final String? cabinetIr;
   final double cabinetGainDb;
   final double cabinetLowCutHz;
   final double cabinetHighCutHz;
   final bool gateEnabled;
   final double gateThresholdDb;
+  final double gateHysteresisDb;
   final double gateHoldMs;
   final double gateReleaseMs;
   final double gateRangeDb;
+  final bool dehissEnabled;
+  final bool dehissVisible;
+  final double dehissThresholdDb;
+  final double dehissFrequencyHz;
+  final double dehissRangeDb;
   final bool compressorEnabled;
   final double compressorThresholdDb;
   final double compressorRatio;
+  final double compressorAttackMs;
+  final double compressorReleaseMs;
+  final double compressorLevelDb;
+  final double compressorMix;
+  final bool compressorAutoMakeup;
   final bool eqEnabled;
   final bool eqVisible;
   final double eqLowDb;
@@ -14412,6 +14597,7 @@ class EngineSnapshot {
 
   bool effectEnabled(EffectKind effect) => switch (effect) {
         EffectKind.gate => gateEnabled,
+        EffectKind.dehiss => dehissEnabled,
         EffectKind.compressor => compressorEnabled,
         EffectKind.eq => eqEnabled,
         EffectKind.chorus => chorusEnabled,
@@ -14423,6 +14609,7 @@ class EngineSnapshot {
       };
 
   bool pedalVisible(OptionalPedal pedal) => switch (pedal) {
+        OptionalPedal.dehiss => dehissVisible,
         OptionalPedal.eq => eqVisible,
         OptionalPedal.chorus => chorusVisible,
         OptionalPedal.flanger => flangerVisible,
@@ -14434,8 +14621,14 @@ class EngineSnapshot {
       };
 
   Map<String, double> effectControls(EffectKind effect) => switch (effect) {
+        EffectKind.dehiss => {
+            'dehiss_threshold_db': dehissThresholdDb,
+            'dehiss_frequency_hz': dehissFrequencyHz,
+            'dehiss_range_db': dehissRangeDb,
+          },
         EffectKind.gate => {
             'gate_threshold_db': gateThresholdDb,
+            'gate_hysteresis_db': gateHysteresisDb,
             'gate_hold_ms': gateHoldMs,
             'gate_release_ms': gateReleaseMs,
             'gate_range_db': gateRangeDb,
@@ -14443,6 +14636,10 @@ class EngineSnapshot {
         EffectKind.compressor => {
             'compressor_threshold_db': compressorThresholdDb,
             'compressor_ratio': compressorRatio,
+            'compressor_attack_ms': compressorAttackMs,
+            'compressor_release_ms': compressorReleaseMs,
+            'compressor_mix': compressorMix,
+            'compressor_level_db': compressorLevelDb,
           },
         EffectKind.eq => {
             'eq_low_db': eqLowDb,
@@ -14690,7 +14887,9 @@ class ControlClient {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .first
-          .timeout(const Duration(minutes: 3));
+          .timeout(type == 'update_patch' || type == 'patch_status'
+              ? const Duration(seconds: 2)
+              : const Duration(minutes: 3));
       final response = jsonDecode(line) as Map<String, dynamic>;
       if (response['type'] == 'error') {
         throw EngineException(response['payload'].toString());
@@ -14944,6 +15143,34 @@ class ControlClient {
     return ((response['payload'] as Map)['rig_level_db'] as num).toDouble();
   }
 
+  /// Two-step DEHISS LEARN: start, let the room go quiet for 2 seconds, then
+  /// finish. The finish response is a normal state snapshot.
+  Future<double> dehissLearn() async {
+    await _requestRaw('dehiss_learn', {'phase': 'start'},
+        timeoutMessage: 'DEHISS learn could not start');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final response = await _requestRaw('dehiss_learn', {'phase': 'finish'},
+        timeoutMessage: 'DEHISS learn timed out');
+    return ((response['payload'] as Map)['dehiss_threshold_db'] as num)
+        .toDouble();
+  }
+
+  /// Two-step NOISE FLOOR LEARN: start, stay silent for 2 seconds, then finish.
+  /// The finish response is a normal state snapshot.
+  Future<({double squelchThresholdDb, double gateThresholdDb})>
+      noiseFloorLearn() async {
+    await _requestRaw('noise_floor_learn', {'phase': 'start'},
+        timeoutMessage: 'Noise floor learn could not start');
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final response = await _requestRaw('noise_floor_learn', {'phase': 'finish'},
+        timeoutMessage: 'Noise floor learn timed out');
+    final payload = response['payload'] as Map;
+    return (
+      squelchThresholdDb: (payload['squelch_threshold_db'] as num).toDouble(),
+      gateThresholdDb: (payload['gate_threshold_db'] as num).toDouble(),
+    );
+  }
+
   Future<void> setControl(String control, double value) => _request(
         'set_control',
         {'control': control, 'value': value},
@@ -15159,6 +15386,10 @@ class CatalogModel {
     this.captureGroupName,
     this.gear,
     this.tags = const [],
+    this.gainDb,
+    this.includesCab,
+    this.kind = 'nam',
+    this.lastUsed,
   });
 
   factory CatalogModel.fromJson(Map<String, dynamic> json) => CatalogModel(
@@ -15178,6 +15409,10 @@ class CatalogModel {
             .toSet()
             .toList()
           ..sort(),
+        gainDb: (json['gain_db'] as num?)?.toDouble(),
+        includesCab: json['includes_cab'] as bool?,
+        kind: json['kind'] as String? ?? 'nam',
+        lastUsed: (json['last_used'] as num?)?.toDouble(),
       );
 
   final String name;
@@ -15190,6 +15425,27 @@ class CatalogModel {
   final String? captureGroupName;
   final String? gear;
   final List<String> tags;
+  final double? gainDb;
+  final bool? includesCab;
+  final String kind;
+  final double? lastUsed;
+
+  CatalogModel withFavorite(bool value) => CatalogModel(
+        name: name,
+        path: path,
+        sizeBytes: sizeBytes,
+        source: source,
+        favorite: value,
+        captureGroup: captureGroup,
+        captureId: captureId,
+        captureGroupName: captureGroupName,
+        gear: gear,
+        tags: tags,
+        gainDb: gainDb,
+        includesCab: includesCab,
+        kind: kind,
+        lastUsed: lastUsed,
+      );
 
   String get displayName => readableNamName(name);
   String get collectionName {
@@ -15200,7 +15456,7 @@ class CatalogModel {
   }
 
   static String readableNamName(String value) => value
-      .replaceFirst(RegExp(r'\.nam$', caseSensitive: false), '')
+      .replaceFirst(RegExp(r'\.(nam|wav)$', caseSensitive: false), '')
       .replaceFirst(RegExp(r'[-_]\d{5,}$'), '')
       .replaceAll(RegExp(r'[_-]+'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
@@ -15241,6 +15497,7 @@ class Tone3000Status {
     required this.connected,
     this.authPending = false,
     this.selectedToneId,
+    this.deviceAuthPending = false,
   });
 
   factory Tone3000Status.fromJson(Map<String, dynamic> json) => Tone3000Status(
@@ -15248,12 +15505,14 @@ class Tone3000Status {
         connected: json['connected'] as bool? ?? false,
         authPending: json['auth_pending'] as bool? ?? false,
         selectedToneId: json['selected_tone_id'] as String?,
+        deviceAuthPending: json['device_auth_pending'] as bool? ?? false,
       );
 
   final bool available;
   final bool connected;
   final bool authPending;
   final String? selectedToneId;
+  final bool deviceAuthPending;
 }
 
 class ToneMakerStatus {
@@ -15577,6 +15836,104 @@ class CatalogClient {
         .toList(growable: false);
   }
 
+  /// Lists models of one [kind] ('nam' or 'ir'), optionally ordered by
+  /// 'name' or 'recent'.
+  Future<List<CatalogModel>> listModelsFor({String? kind, String? sort}) async {
+    final payload = await _payload('list_models', {
+      if (kind != null) 'kind': kind,
+      if (sort != null) 'sort': sort,
+    });
+    return (payload['models'] as List<dynamic>? ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CatalogModel.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<ToneResults> tone3000Search({
+    String? query,
+    String? gear,
+    String? sort,
+    String? format,
+    bool? verified,
+    bool? calibrated,
+    int page = 1,
+    int pageSize = 12,
+  }) async =>
+      ToneResults.fromJson(await _payload(
+        'tone3000_search',
+        {
+          if (query != null && query.isNotEmpty) 'query': query,
+          if (gear != null) 'gear': gear,
+          if (sort != null) 'sort': sort,
+          if (format != null) 'format': format,
+          if (verified == true) 'verified': true,
+          if (calibrated == true) 'calibrated': true,
+          'page': page,
+          'page_size': pageSize,
+        },
+        timeout: const Duration(seconds: 20),
+      ));
+
+  Future<ToneResults> tone3000Trending({String? gear}) async =>
+      ToneResults.fromJson(await _payload(
+        'tone3000_trending',
+        {if (gear != null) 'gear': gear},
+        timeout: const Duration(seconds: 20),
+      ));
+
+  Future<ToneResults> tone3000Stream(
+    String stream, {
+    String? query,
+    String? gear,
+    int page = 1,
+    int pageSize = 12,
+  }) async =>
+      ToneResults.fromJson(await _payload(
+        'tone3000_stream',
+        {
+          'stream': stream,
+          if (query != null && query.isNotEmpty) 'query': query,
+          if (gear != null) 'gear': gear,
+          'page': page,
+          'page_size': pageSize,
+        },
+        timeout: const Duration(seconds: 20),
+      ));
+
+  Future<List<ToneVariant>> tone3000ToneModels(String toneId) async {
+    final payload = await _payload('tone3000_tone_models', {'tone_id': toneId});
+    return (payload['models'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(ToneVariant.fromJson)
+        .toList(growable: false);
+  }
+
+  Future<ToneLoadResult> tone3000Load(String toneId, {String? modelId}) async =>
+      ToneLoadResult.fromJson(await _payload(
+        'tone3000_load',
+        {'tone_id': toneId, if (modelId != null) 'model_id': modelId},
+        timeout: const Duration(seconds: 90),
+      ));
+
+  Future<bool> tone3000Favorite(String toneId, bool favorite) async {
+    final payload = await _payload(
+        'tone3000_favorite', {'tone_id': toneId, 'favorite': favorite});
+    return payload['favorited'] as bool? ?? favorite;
+  }
+
+  Future<bool> setFavorite(String path, bool favorite) async {
+    final payload =
+        await _payload('set_favorite', {'path': path, 'favorite': favorite});
+    return payload['favorite'] as bool? ?? favorite;
+  }
+
+  Future<void> touchModel(String path) async {
+    await _payload('touch_model', {'path': path});
+  }
+
+  Future<DeviceAuth> beginTone3000DeviceAuth() async => DeviceAuth.fromJson(
+      await _payload('tone3000_begin_device_auth', const {}));
+
   Future<List<CatalogModel>> refreshAndList() async {
     final response = await _request('refresh_models', const {});
     if (response['type'] == 'error') {
@@ -15701,7 +16058,8 @@ class CatalogClient {
     final payload = response['payload'] as Map<String, dynamic>? ?? const {};
     if (response['type'] == 'error') {
       throw CatalogException(
-          payload['message'] as String? ?? 'Catalog request failed');
+          payload['message'] as String? ?? 'Catalog request failed',
+          code: payload['code'] as String?);
     }
     return payload;
   }
@@ -15743,10 +16101,144 @@ class CatalogClient {
 }
 
 class CatalogException implements Exception {
-  const CatalogException(this.message);
+  const CatalogException(this.message, {this.code});
 
   final String message;
+  final String? code;
 
   @override
   String toString() => message;
+}
+
+class ToneCard {
+  const ToneCard({
+    required this.id,
+    required this.title,
+    required this.format,
+    this.gear,
+    this.imageUrl,
+    this.downloads,
+    this.creatorName,
+    this.verified = false,
+    this.hasA2 = false,
+    this.favorited,
+    this.localPath,
+  });
+
+  factory ToneCard.fromJson(Map<String, dynamic> json) {
+    final creator = json['creator'] as Map<String, dynamic>? ?? const {};
+    return ToneCard(
+      id: '${json['id']}',
+      title: json['title'] as String? ?? 'Untitled',
+      gear: json['gear'] as String?,
+      format: json['format'] as String? ?? 'nam',
+      imageUrl: json['image_url'] as String?,
+      downloads: (json['downloads'] as num?)?.toInt(),
+      creatorName: creator['name'] as String?,
+      verified: creator['verified'] as bool? ?? false,
+      hasA2: json['has_a2'] as bool? ?? false,
+      favorited: json['favorited'] as bool?,
+      localPath: json['local_path'] as String?,
+    );
+  }
+
+  final String id;
+  final String title;
+  final String? gear;
+  final String format;
+  final String? imageUrl;
+  final int? downloads;
+  final String? creatorName;
+  final bool verified;
+  final bool hasA2;
+  final bool? favorited;
+  final String? localPath;
+
+  ToneCard copyWith({bool? favorited, String? localPath}) => ToneCard(
+        id: id,
+        title: title,
+        gear: gear,
+        format: format,
+        imageUrl: imageUrl,
+        downloads: downloads,
+        creatorName: creatorName,
+        verified: verified,
+        hasA2: hasA2,
+        favorited: favorited ?? this.favorited,
+        localPath: localPath ?? this.localPath,
+      );
+}
+
+class ToneResults {
+  const ToneResults({
+    required this.tones,
+    this.page = 1,
+    this.totalPages,
+    this.total,
+  });
+
+  factory ToneResults.fromJson(Map<String, dynamic> json) => ToneResults(
+        tones: (json['tones'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ToneCard.fromJson)
+            .toList(growable: false),
+        page: (json['page'] as num?)?.toInt() ?? 1,
+        totalPages: (json['total_pages'] as num?)?.toInt(),
+        total: (json['total'] as num?)?.toInt(),
+      );
+
+  final List<ToneCard> tones;
+  final int page;
+  final int? totalPages;
+  final int? total;
+}
+
+class ToneVariant {
+  const ToneVariant({required this.id, required this.name, this.localPath});
+
+  factory ToneVariant.fromJson(Map<String, dynamic> json) => ToneVariant(
+        id: '${json['id']}',
+        name: json['name'] as String? ?? '',
+        localPath: json['local_path'] as String?,
+      );
+
+  final String id;
+  final String name;
+  final String? localPath;
+}
+
+class ToneLoadResult {
+  const ToneLoadResult({required this.kind, required this.model});
+
+  factory ToneLoadResult.fromJson(Map<String, dynamic> json) => ToneLoadResult(
+        kind: json['kind'] as String? ?? 'nam',
+        model: CatalogModel.fromJson(json['model'] as Map<String, dynamic>),
+      );
+
+  final String kind;
+  final CatalogModel model;
+}
+
+class DeviceAuth {
+  const DeviceAuth({
+    required this.userCode,
+    required this.verificationUri,
+    this.verificationUriComplete,
+    this.expiresIn = 600,
+    this.interval = 5,
+  });
+
+  factory DeviceAuth.fromJson(Map<String, dynamic> json) => DeviceAuth(
+        userCode: json['user_code'] as String? ?? '',
+        verificationUri: json['verification_uri'] as String? ?? '',
+        verificationUriComplete: json['verification_uri_complete'] as String?,
+        expiresIn: (json['expires_in'] as num?)?.toInt() ?? 600,
+        interval: (json['interval'] as num?)?.toInt() ?? 5,
+      );
+
+  final String userCode;
+  final String verificationUri;
+  final String? verificationUriComplete;
+  final int expiresIn;
+  final int interval;
 }

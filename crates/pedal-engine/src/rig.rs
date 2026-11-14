@@ -39,12 +39,15 @@ impl RigControls {
                 PedalParameters::new(s.pedal_drive_db, s.pedal_mix, s.pedal_level_db)
                     .with_alignment(s.pedal_align_enabled),
             ),
-            amp: Arc::new(AmpParameters::new(
-                s.amp_bass_db,
-                s.amp_mid_db,
-                s.amp_treble_db,
-                s.amp_volume_db,
-            )),
+            amp: Arc::new(
+                AmpParameters::new(
+                    s.amp_bass_db,
+                    s.amp_mid_db,
+                    s.amp_treble_db,
+                    s.amp_volume_db,
+                )
+                .with_tight(s.amp_tight_hz),
+            ),
             cabinet: Arc::new(CabinetParameters::new(
                 s.cabinet_enabled,
                 s.cabinet_gain_db,
@@ -71,8 +74,10 @@ pub fn build<P: MonoProcessor, A: MonoProcessor>(
 ) -> impl MonoProcessor {
     // Inside the slot trim/mix wrappers: pre EQ follows input gain; post EQ
     // affects only the model's wet path, never the pedal's parallel dry share.
-    let pre = crate::nam_eq::NamEqProcessor::new(pre, controls.pedal_eq, rate);
-    let amp = crate::nam_eq::NamEqProcessor::new(amp, controls.amp_eq, rate);
+    let pre = crate::nam_eq::NamEqProcessor::new(pre, controls.pedal_eq, rate)
+        .with_normalization(Arc::clone(&controls.calibration), true);
+    let amp = crate::nam_eq::NamEqProcessor::new(amp, controls.amp_eq, rate)
+        .with_normalization(Arc::clone(&controls.calibration), false);
     let pre = PedalControlProcessor::new(pre, controls.pedal, max_frames, rate);
     let pre = BypassProcessor::new(pre, controls.pre_bypass, rate);
     let amp = AmpControlProcessor::new(amp, controls.amp, rate);

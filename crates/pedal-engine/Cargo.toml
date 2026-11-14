@@ -15,6 +15,7 @@ nam-bridge = { path = "../nam-bridge" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hound = "3.5"
+libc = "0.2"
 rustfft = "6.4"
 rubato = "0.16.2"
 crossbeam-queue = "0.3"
@@ -29,6 +30,10 @@ required-features = ["alsa-backend"]
 name = "pedal-audio-loopback"
 path = "src/bin/audio_loopback.rs"
 required-features = ["alsa-backend"]
+
+[[bin]]
+name = "pedal-capture-info"
+path = "src/bin/capture_info.rs"
 
 [[bin]]
 name = "pedal-dsp-soak"

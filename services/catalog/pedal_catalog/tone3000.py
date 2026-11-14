@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +16,7 @@ from typing import Callable, Mapping, Protocol
 
 
 DEFAULT_BASE_URL = "https://www.tone3000.com"
+USER_AGENT = "AERO-DSP/0.1.0 (+https://github.com/vlvcDev/aero-dsp)"
 SUPPORTED_ARCHITECTURE = 2
 SUPPORTED_FORMAT = "nam"
 IR_FORMAT = "ir"
@@ -22,6 +24,12 @@ IR_FORMAT = "ir"
 
 class Tone3000Error(RuntimeError):
     """Raised when TONE3000 rejects a request or returns invalid data."""
+
+    code: str | None = None  # OAuth error code (e.g. authorization_pending) when known
+
+
+class NotConnectedError(Tone3000Error):
+    """Raised when an operation needs a signed-in TONE3000 account."""
 
 
 @dataclass(frozen=True)
@@ -69,11 +77,18 @@ class UrllibTransport:
         self._opener = urllib.request.build_opener(_SafeRedirectHandler())
 
     def send(self, request: urllib.request.Request) -> HttpResponse:
+        # Identify the application, including on file-host redirects. The
+        # default Python-urllib agent is rejected by Cloudflare's file service
+        # checks (1010); no browser impersonation or credential forwarding.
+        if not request.has_header("User-agent"):
+            request.add_header("User-Agent", USER_AGENT)
         try:
             with self._opener.open(request, timeout=self.timeout_seconds) as response:
                 return HttpResponse(response.status, response.read(), dict(response.headers.items()))
         except urllib.error.HTTPError as error:
             return HttpResponse(error.code, error.read(), dict(error.headers.items()))
+        except OSError as error:  # URLError, timeouts, resets: never crash the catalog
+            raise Tone3000Error(f"TONE3000 is unreachable: {error}") from error
 
 
 def _base64url(value: bytes) -> str:
@@ -137,6 +152,7 @@ class Tone3000Client:
         self.base_url = base_url.rstrip("/")
         self.transport = transport or UrllibTransport()
         self.clock = clock
+        self._refresh_lock = threading.Lock()
 
     def exchange_code(self, code: str, verifier: str, redirect_uri: str) -> Tokens:
         return self._token_request(
@@ -162,7 +178,7 @@ class Tone3000Client:
 
     def refresh(self) -> Tokens:
         if self.tokens is None:
-            raise Tone3000Error("TONE3000 account is not connected")
+            raise NotConnectedError("TONE3000 account is not connected")
         return self._token_request(
             {
                 "grant_type": "refresh_token",
@@ -233,6 +249,78 @@ class Tone3000Client:
             parameters,
         )
 
+    def browse_tones(
+        self,
+        *,
+        query: str = "",
+        gears: str = "",
+        sort: str | None = None,
+        format: str | None = None,
+        tags: tuple[str, ...] = (),
+        makes: tuple[str, ...] = (),
+        verified: bool = False,
+        calibrated: bool = False,
+        page: int = 1,
+        page_size: int = 12,
+    ) -> dict:
+        """Search for the Tone Browser; works signed out."""
+        parameters: dict[str, int | str] = {"page": page, "page_size": page_size}
+        if query.strip():
+            parameters["query"] = query.strip()[:160]
+        if sort and (sort != "best-match" or query.strip()):
+            parameters["sort"] = sort
+        if gears:
+            parameters["gears"] = gears
+        if format:
+            parameters["format"] = format
+        if tags:
+            parameters["tags"] = "_".join(tags)
+        if makes:
+            parameters["makes"] = "_".join(makes)
+        if calibrated:
+            parameters["calibrated"] = "true"
+        if verified:
+            parameters["verified"] = "true"
+        if format == SUPPORTED_FORMAT:
+            parameters["architecture"] = SUPPORTED_ARCHITECTURE
+        return self._get_json("/api/v1/tones/search", parameters, optional_auth=True)
+
+    def list_tone_stream(
+        self, stream: str, *, query: str = "", gear: str = "", page: int = 1, page_size: int = 12
+    ) -> dict:
+        """The signed-in user's downloaded/favorited/created tones."""
+        parameters: dict[str, int | str] = {"page": page, "page_size": page_size}
+        if query.strip():
+            parameters["query"] = query.strip()[:160]
+        if gear:
+            parameters["gear"] = gear
+        return self._get_json(f"/api/v1/tones/{stream}", parameters)
+
+    def trending_tones(self, gear: str = "") -> dict:
+        return self._get_json(
+            "/api/v1/tones/trending", {"gear": gear} if gear else None, optional_auth=True
+        )
+
+    def set_favorite(self, tone_id: int | str, favorite: bool) -> None:
+        url = f"{self.base_url}/api/v1/tones/{urllib.parse.quote(str(tone_id), safe='')}/favorite"
+        response = self._send("PUT" if favorite else "DELETE", url, data=b"")
+        self._require_success(response, "favorite")
+
+    def request_device_authorization(self) -> dict:
+        response = self._post_form("/api/v1/oauth/device_authorization", {"client_id": self.publishable_key})
+        self._require_success(response, "device authorization")
+        return self._decode_json(response, "device authorization")
+
+    def poll_device_token(self, device_code: str) -> Tokens:
+        """Raises Tone3000Error with .code set while the user has not approved yet."""
+        return self._token_request(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+                "client_id": self.publishable_key,
+            }
+        )
+
     def download_model(
         self,
         model_url: str,
@@ -266,16 +354,25 @@ class Tone3000Client:
             temporary.unlink(missing_ok=True)
         return actual_sha256
 
-    def _token_request(self, values: Mapping[str, str]) -> Tokens:
-        body = urllib.parse.urlencode(values).encode("ascii")
+    def _post_form(self, path: str, values: Mapping[str, str]) -> HttpResponse:
         request = urllib.request.Request(
-            f"{self.base_url}/api/v1/oauth/token",
-            data=body,
+            f"{self.base_url}{path}",
+            data=urllib.parse.urlencode(values).encode("ascii"),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             method="POST",
         )
-        response = self.transport.send(request)
-        self._require_success(response, "token request")
+        return self.transport.send(request)
+
+    def _token_request(self, values: Mapping[str, str]) -> Tokens:
+        response = self._post_form("/api/v1/oauth/token", values)
+        try:
+            self._require_success(response, "token request")
+        except Tone3000Error as error:
+            try:
+                error.code = json.loads(response.body).get("error")
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                pass
+            raise
         payload = self._decode_json(response, "token request")
         try:
             tokens = Tokens(
@@ -288,36 +385,58 @@ class Tone3000Client:
         self.tokens = tokens
         return tokens
 
-    def _get_json(self, path: str, params: Mapping[str, str | int] | None = None) -> dict:
+    def _get_json(
+        self,
+        path: str,
+        params: Mapping[str, str | int] | None = None,
+        *,
+        optional_auth: bool = False,
+    ) -> dict:
         url = f"{self.base_url}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
-        response = self._send("GET", url)
+        response = self._send("GET", url, optional_auth=optional_auth)
         self._require_success(response, path)
         payload = self._decode_json(response, path)
         if not isinstance(payload, dict):
             raise Tone3000Error(f"{path} returned a non-object JSON response")
         return payload
 
-    def _send(self, method: str, url: str) -> HttpResponse:
+    def _refresh_once(self, seen: Tokens) -> None:
+        """Single-flight refresh: skip if another thread already replaced `seen`."""
+        with self._refresh_lock:
+            if self.tokens is seen:
+                self.refresh()
+
+    def _send(
+        self, method: str, url: str, *, data: bytes | None = None, optional_auth: bool = False
+    ) -> HttpResponse:
         if self.tokens is None:
-            raise Tone3000Error("TONE3000 account is not connected")
+            if optional_auth:
+                response = self.transport.send(
+                    urllib.request.Request(url, method=method, data=data)
+                )
+                # Some endpoints (e.g. search) need an account even though
+                # others (trending) don't: report that as "sign in" so the
+                # app can offer it instead of a generic error.
+                if response.status == 401:
+                    raise NotConnectedError("TONE3000 sign-in is required for this request")
+                return response
+            raise NotConnectedError("TONE3000 account is not connected")
         if self.clock() > self.tokens.expires_at - 60:
-            self.refresh()
-        request = urllib.request.Request(
-            url,
-            headers={"Authorization": f"Bearer {self.tokens.access_token}"},
-            method=method,
-        )
-        response = self.transport.send(request)
-        if response.status == 401:
-            self.refresh()
+            self._refresh_once(self.tokens)
+        for attempt in (0, 1):
+            tokens = self.tokens
             request = urllib.request.Request(
                 url,
-                headers={"Authorization": f"Bearer {self.tokens.access_token}"},
+                data=data,
+                headers={"Authorization": f"Bearer {tokens.access_token}"},
                 method=method,
             )
             response = self.transport.send(request)
+            if response.status != 401 or attempt:
+                return response
+            self._refresh_once(tokens)
         return response
 
     @staticmethod
@@ -325,6 +444,12 @@ class Tone3000Client:
         if 200 <= response.status < 300:
             return
         detail = ""
+        if response.status == 403 and response.body.strip() == b"error code: 1010":
+            raise Tone3000Error(
+                f"TONE3000 {operation} failed (403): Cloudflare 1010 rejected "
+                "the download client. Restart the catalog after updating AERO-DSP. "
+                "If this persists, contact TONE3000 support with error code 1010."
+            )
         try:
             payload = json.loads(response.body)
             detail = str(payload.get("error") or payload.get("message") or "")

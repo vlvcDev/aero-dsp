@@ -214,8 +214,34 @@ Iterable<_Control> _macroTargets(PatchDocument doc) sync* {
     if (target == null) continue;
     final type = target['type'] as String;
     final List<(String, String, double, double, bool)> specs = switch (type) {
+      'transpose' => [('semitones', 'Shift (semitones)', -12, 12, false)],
+      'envelope_filter' => [
+          ('sensitivity', 'Sensitivity', 0, 1, true),
+          ('base_hz', 'Base frequency (Hz)', 80, 2000, false),
+          ('resonance', 'Resonance', .5, 8, false),
+          ('decay_ms', 'Decay (ms)', 20, 1000, false),
+          ('mix', 'Mix', 0, 1, true)
+        ],
+      'ring_mod' => [
+          ('frequency_hz', 'Frequency (Hz)', 1, 4000, false),
+          ('mix', 'Mix', 0, 1, true)
+        ],
+      'slicer' => [
+          ('bpm', 'Tempo (BPM)', 30, 300, false),
+          ('depth', 'Depth', 0, 1, true)
+        ],
+      'bitcrusher' => [
+          ('bits', 'Bit depth', 4, 16, false),
+          ('rate_hz', 'Sample rate (Hz)', 1000, 48000, false),
+          ('mix', 'Mix', 0, 1, true)
+        ],
       'gain' => [('db', 'Gain (dB)', -80, 24, false)],
-      'edge_amp' => [('drive_db','Preamp drive (dB)',0,30,false),('tone','Tone',0,1,true),('touch','Touch compression',0,1,true),('master_db','Master (dB)',-36,6,false)],
+      'edge_amp' => [
+          ('drive_db', 'Preamp drive (dB)', 0, 30, false),
+          ('tone', 'Tone', 0, 1, true),
+          ('touch', 'Touch compression', 0, 1, true),
+          ('master_db', 'Master (dB)', -36, 6, false)
+        ],
       'reverb' => [('decay_seconds', 'Decay (s)', .3, 12, false)],
       'cabinet' => [('duration_seconds', 'Impulse length (s)', .02, 1, false)],
       'fuzz' => [
@@ -319,7 +345,9 @@ Iterable<Widget> macroSliders(Map native, MacroNumberBuilder number) sync* {
   for (final m in readNodeMacros(native, child)) {
     final c = controls[m.target]!;
     yield number(c.settings, c.parameter, m.label, c.min, c.max,
-        integer: false, percent: c.percent);
+        integer: (c.type == 'transpose' && c.parameter == 'semitones') ||
+            (c.type == 'bitcrusher' && c.parameter == 'bits'),
+        percent: c.percent);
   }
 }
 

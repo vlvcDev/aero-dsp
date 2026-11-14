@@ -55,13 +55,10 @@ fn command_renders_saved_nam_rig_and_refuses_overwrite() {
     let wav = pedal_engine::audio_file::AudioFile::load(&output).unwrap();
     assert_eq!(wav.channels, 2);
     assert_eq!(wav.samples.len(), 1026);
-    assert!(
-        wav.samples
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .all(|x| (x[0] - 0.1).abs() < 1e-6 && (x[1] + 0.05).abs() < 1e-6)
-    );
+    let cabinet_pad = 10.0_f32.powf(pedal_engine::cabinet::CABINET_PAD_DB / 20.0);
+    assert!(wav.samples.as_chunks::<2>().0.iter().all(
+        |x| (x[0] - 0.1 * cabinet_pad).abs() < 1e-6 && (x[1] + 0.05 * cabinet_pad).abs() < 1e-6
+    ));
     let bytes = std::fs::read(&output).unwrap();
     assert!(!run().status.success());
     assert_eq!(std::fs::read(&output).unwrap(), bytes);

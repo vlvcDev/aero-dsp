@@ -7,6 +7,10 @@ use std::path::Path;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PresetRig {
+    #[serde(default)]
+    pub pedal_normalize_enabled: bool,
+    #[serde(default)]
+    pub amp_normalize_enabled: bool,
     pub pedal_align_enabled: bool,
     pub pedal_eq: crate::nam_eq::NamEqSettings,
     pub amp_eq: crate::nam_eq::NamEqSettings,
@@ -21,6 +25,7 @@ pub struct PresetRig {
     pub amp_bass_db: f32,
     pub amp_mid_db: f32,
     pub amp_treble_db: f32,
+    pub amp_tight_hz: f32,
     pub amp_volume_db: f32,
     pub cabinet_enabled: bool,
     pub cabinet_ir: Option<String>,
@@ -28,13 +33,23 @@ pub struct PresetRig {
     pub cabinet_low_cut_hz: f32,
     pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
+    pub dehiss_enabled: bool,
+    pub dehiss_threshold_db: f32,
+    pub dehiss_frequency_hz: f32,
+    pub dehiss_range_db: f32,
     pub gate_threshold_db: f32,
+    pub gate_hysteresis_db: f32,
     pub gate_hold_ms: f32,
     pub gate_release_ms: f32,
     pub gate_range_db: f32,
     pub compressor_enabled: bool,
     pub compressor_threshold_db: f32,
     pub compressor_ratio: f32,
+    pub compressor_attack_ms: f32,
+    pub compressor_release_ms: f32,
+    pub compressor_level_db: f32,
+    pub compressor_auto_makeup: bool,
+    pub compressor_mix: f32,
     pub eq_enabled: bool,
     pub eq_visible: bool,
     pub eq_low_db: f32,
@@ -57,6 +72,7 @@ pub struct PresetRig {
     pub tremolo_depth: f32,
     pub octaver_enabled: bool,
     pub octaver_visible: bool,
+    pub dehiss_visible: bool,
     pub octaver_mix: f32,
     pub octaver_clean: bool,
     pub delay_enabled: bool,
@@ -80,6 +96,8 @@ impl Default for PresetRig {
 impl PresetRig {
     pub fn from_state(state: &EngineState) -> Self {
         Self {
+            pedal_normalize_enabled: state.pedal_normalize_enabled,
+            amp_normalize_enabled: state.amp_normalize_enabled,
             pedal_align_enabled: state.pedal_align_enabled,
             pedal_eq: state.pedal_eq,
             amp_eq: state.amp_eq,
@@ -94,6 +112,7 @@ impl PresetRig {
             amp_bass_db: state.amp_bass_db,
             amp_mid_db: state.amp_mid_db,
             amp_treble_db: state.amp_treble_db,
+            amp_tight_hz: state.amp_tight_hz,
             amp_volume_db: state.amp_volume_db,
             cabinet_enabled: state.cabinet_enabled,
             cabinet_ir: state.cabinet_ir.clone(),
@@ -101,13 +120,23 @@ impl PresetRig {
             cabinet_low_cut_hz: state.cabinet_low_cut_hz,
             cabinet_high_cut_hz: state.cabinet_high_cut_hz,
             gate_enabled: state.gate_enabled,
+            dehiss_enabled: state.dehiss_enabled,
+            dehiss_threshold_db: state.dehiss_threshold_db,
+            dehiss_frequency_hz: state.dehiss_frequency_hz,
+            dehiss_range_db: state.dehiss_range_db,
             gate_threshold_db: state.gate_threshold_db,
+            gate_hysteresis_db: state.gate_hysteresis_db,
             gate_hold_ms: state.gate_hold_ms,
             gate_release_ms: state.gate_release_ms,
             gate_range_db: state.gate_range_db,
             compressor_enabled: state.compressor_enabled,
             compressor_threshold_db: state.compressor_threshold_db,
             compressor_ratio: state.compressor_ratio,
+            compressor_attack_ms: state.compressor_attack_ms,
+            compressor_release_ms: state.compressor_release_ms,
+            compressor_level_db: state.compressor_level_db,
+            compressor_auto_makeup: state.compressor_auto_makeup,
+            compressor_mix: state.compressor_mix,
             eq_enabled: state.eq_enabled,
             eq_visible: state.eq_visible,
             eq_low_db: state.eq_low_db,
@@ -130,6 +159,7 @@ impl PresetRig {
             tremolo_depth: state.tremolo_depth,
             octaver_enabled: state.octaver_enabled,
             octaver_visible: state.octaver_visible,
+            dehiss_visible: state.dehiss_visible,
             octaver_mix: state.octaver_mix,
             octaver_clean: state.octaver_clean,
             delay_enabled: state.delay_enabled,
@@ -146,6 +176,8 @@ impl PresetRig {
     }
 
     pub fn apply_to(&self, state: &mut EngineState) {
+        state.pedal_normalize_enabled = self.pedal_normalize_enabled;
+        state.amp_normalize_enabled = self.amp_normalize_enabled;
         state.pedal_align_enabled = self.pedal_align_enabled;
         state.pedal_eq = self.pedal_eq;
         state.amp_eq = self.amp_eq;
@@ -160,6 +192,7 @@ impl PresetRig {
         state.amp_bass_db = self.amp_bass_db;
         state.amp_mid_db = self.amp_mid_db;
         state.amp_treble_db = self.amp_treble_db;
+        state.amp_tight_hz = self.amp_tight_hz;
         state.amp_volume_db = self.amp_volume_db;
         state.cabinet_enabled = self.cabinet_enabled;
         state.cabinet_ir.clone_from(&self.cabinet_ir);
@@ -167,13 +200,23 @@ impl PresetRig {
         state.cabinet_low_cut_hz = self.cabinet_low_cut_hz;
         state.cabinet_high_cut_hz = self.cabinet_high_cut_hz;
         state.gate_enabled = self.gate_enabled;
+        state.dehiss_enabled = self.dehiss_enabled;
+        state.dehiss_threshold_db = self.dehiss_threshold_db;
+        state.dehiss_frequency_hz = self.dehiss_frequency_hz;
+        state.dehiss_range_db = self.dehiss_range_db;
         state.gate_threshold_db = self.gate_threshold_db;
+        state.gate_hysteresis_db = self.gate_hysteresis_db;
         state.gate_hold_ms = self.gate_hold_ms;
         state.gate_release_ms = self.gate_release_ms;
         state.gate_range_db = self.gate_range_db;
         state.compressor_enabled = self.compressor_enabled;
         state.compressor_threshold_db = self.compressor_threshold_db;
         state.compressor_ratio = self.compressor_ratio;
+        state.compressor_attack_ms = self.compressor_attack_ms;
+        state.compressor_release_ms = self.compressor_release_ms;
+        state.compressor_level_db = self.compressor_level_db;
+        state.compressor_auto_makeup = self.compressor_auto_makeup;
+        state.compressor_mix = self.compressor_mix;
         state.eq_enabled = self.eq_enabled;
         state.eq_visible = self.eq_visible;
         state.eq_low_db = self.eq_low_db;
@@ -196,6 +239,7 @@ impl PresetRig {
         state.tremolo_depth = self.tremolo_depth;
         state.octaver_enabled = self.octaver_enabled;
         state.octaver_visible = self.octaver_visible;
+        state.dehiss_visible = self.dehiss_visible;
         state.octaver_mix = self.octaver_mix;
         state.octaver_clean = self.octaver_clean;
         state.delay_enabled = self.delay_enabled;
@@ -308,6 +352,41 @@ pub fn save_atomic(path: &Path, store: &PresetStore) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn cabinet_cut_defaults_and_saved_values_round_trip() {
+        let mut state = crate::EngineState::default();
+        assert_eq!(
+            (
+                state.cabinet_gain_db,
+                state.cabinet_low_cut_hz,
+                state.cabinet_high_cut_hz
+            ),
+            (0.0, 0.0, 0.0)
+        );
+        let legacy: super::PresetRig =
+            serde_json::from_str(r#"{"cabinet_low_cut_hz":80.0,"cabinet_high_cut_hz":8000.0}"#)
+                .unwrap();
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+        let legacy_restored: super::PresetRig = serde_json::from_str(&legacy_json).unwrap();
+        assert_eq!(
+            (
+                legacy_restored.cabinet_low_cut_hz,
+                legacy_restored.cabinet_high_cut_hz
+            ),
+            (80.0, 8000.0)
+        );
+        for (low, high) in [(0.0, 0.0), (80.0, 8000.0)] {
+            state.cabinet_low_cut_hz = low;
+            state.cabinet_high_cut_hz = high;
+            let serialized = serde_json::to_string(&super::PresetRig::from_state(&state)).unwrap();
+            let restored: super::PresetRig = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(
+                (restored.cabinet_low_cut_hz, restored.cabinet_high_cut_hz),
+                (low, high)
+            );
+        }
+    }
+
+    #[test]
     fn gate_controls_round_trip_and_legacy_presets_get_defaults() {
         assert_eq!(crate::EngineState::default().gate_threshold_db, -80.0);
         let empty: super::PresetRig = serde_json::from_str("{}").unwrap();
@@ -315,6 +394,7 @@ mod tests {
         let empty_state: crate::EngineState = serde_json::from_str("{}").unwrap();
         assert_eq!(empty_state.gate_threshold_db, -80.0);
         let state = crate::EngineState {
+            gate_hysteresis_db: 20.0,
             gate_hold_ms: 75.0,
             gate_release_ms: 225.0,
             gate_range_db: 35.0,
@@ -325,12 +405,14 @@ mod tests {
         let restored: super::PresetRig = serde_json::from_str(&encoded).unwrap();
         let mut applied = crate::EngineState::default();
         restored.apply_to(&mut applied);
+        assert_eq!(applied.gate_hysteresis_db, 20.0);
         assert_eq!(applied.gate_hold_ms, 75.0);
         assert_eq!(applied.gate_release_ms, 225.0);
         assert_eq!(applied.gate_range_db, 35.0);
         let legacy: super::PresetRig =
             serde_json::from_str(r#"{"gate_threshold_db":-42}"#).unwrap();
         assert_eq!(legacy.gate_threshold_db, -42.0);
+        assert_eq!(legacy.gate_hysteresis_db, 12.0);
         assert_eq!(legacy.gate_hold_ms, 20.0);
         assert_eq!(legacy.gate_release_ms, 50.0);
         assert_eq!(legacy.gate_range_db, 80.0);

@@ -40,28 +40,6 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-      'capture download permits a subset and skips already cached captures',
-      (tester) async {
-    final catalog = CaptureTestCatalog();
-    await tester.pumpWidget(PedalAppTestShell(
-        child: Tone3000BrowserSheet(
-      catalog: catalog,
-      engineConnected: false,
-      onSelected: (_, __) async {},
-    )));
-    await tester.pumpAndSettle();
-    expect(find.text('Download 3 captures'), findsOneWidget);
-    await tester.tap(find.text('Skip me'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Download 2 captures'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Download'));
-    await tester.pumpAndSettle();
-    expect(catalog.downloads, ['2']);
-    expect(tester.takeException(), isNull);
-  });
-
   testWidgets('tab edits are protected when closing the control bay',
       (tester) async {
     tester.view.physicalSize = const Size(1000, 900);
@@ -505,54 +483,6 @@ Audio
     expect(outputs.first.name, 'Laptop Speakers');
     expect(outputs.first.isDefault, isTrue);
     expect(outputs.last.isBluetooth, isTrue);
-  });
-
-  testWidgets('online tone browser fits the target touchscreen',
-      (tester) async {
-    tester.view.physicalSize = const Size(480, 320);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(
-      PedalAppTestShell(
-        child: Tone3000BrowserSheet(
-          catalog: FakeCatalogClient(),
-          engineConnected: false,
-          onSelected: (_, __) async {},
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('TONE3000'), findsOneWidget);
-    expect(find.text('Clean Combo'), findsOneWidget);
-    expect(find.text('Bright'), findsOneWidget);
-    expect(find.text('NAM A2'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('online tone browser clearly explains missing configuration',
-      (tester) async {
-    tester.view.physicalSize = const Size(480, 320);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      PedalAppTestShell(
-        child: Tone3000BrowserSheet(
-          catalog: UnconfiguredCatalogClient(),
-          engineConnected: false,
-          onSelected: (_, __) async {},
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('TONE3000'), findsOneWidget);
-    expect(find.textContaining('not configured'), findsOneWidget);
-    expect(find.textContaining('still work offline'), findsOneWidget);
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('AI Tone Maker fits the target touchscreen', (tester) async {

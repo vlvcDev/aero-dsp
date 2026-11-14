@@ -6,6 +6,59 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pedal_ui/main.dart';
 
 void main() {
+  test('new effects validate strict types, ranges and serialization', () {
+    final effects = <Map<String, dynamic>>[
+      {'type': 'transpose', 'semitones': -2, 'quality': 'fast'},
+      {
+        'type': 'envelope_filter',
+        'sensitivity': .5,
+        'base_hz': 300,
+        'resonance': 2,
+        'decay_ms': 200,
+        'mix': 1
+      },
+      {'type': 'ring_mod', 'frequency_hz': 80, 'mix': .5},
+      {
+        'type': 'slicer',
+        'bpm': 120,
+        'division': 2,
+        'pattern': 'pulse',
+        'depth': 1
+      },
+      {'type': 'bitcrusher', 'bits': 8, 'rate_hz': 12000, 'mix': .5},
+    ];
+    for (final effect in effects) {
+      final doc = PatchDocument();
+      doc.nodes[1]['inputs'] = [3];
+      doc.nodes.add({
+        'id': 3,
+        'inputs': [1],
+        'processor': {'type': 'external'}
+      });
+      doc.processors['3'] = effect;
+      expect(doc.validate(), isNull, reason: effect['type']);
+      final restored = PatchDocument()..importJson(doc.encode());
+      expect(restored.processors['3'], effect);
+      effect['unexpected'] = 1;
+      expect(doc.validate(), isNotNull);
+      effect.remove('unexpected');
+    }
+    effects[0]['semitones'] = 1.0;
+    effects[3]['division'] = 3;
+    effects[4]['bits'] = 8.0;
+    for (final effect in [effects[0], effects[3], effects[4]]) {
+      final doc = PatchDocument();
+      doc.nodes[1]['inputs'] = [3];
+      doc.nodes.add({
+        'id': 3,
+        'inputs': [1],
+        'processor': {'type': 'external'}
+      });
+      doc.processors['3'] = effect;
+      expect(doc.validate(), isNotNull);
+    }
+  });
+
   test('new cables reject feedback and preserve mixer capacity', () {
     final doc = PatchDocument();
     doc.nodes.add({

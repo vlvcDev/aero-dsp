@@ -1,15 +1,215 @@
 part of 'main.dart';
 
-class PatchAudioControls extends StatefulWidget {
-  const PatchAudioControls(
-      {super.key, required this.document, required this.client});
+// Owns the revision for this editor even while the audio panel is closed.
+class PatchLiveController extends ChangeNotifier {
+  PatchLiveController(this.document, this.client) {
+    document.addListener(changed);
+    timer = Timer.periodic(const Duration(seconds: 1), (_) => poll());
+  }
   final PatchDocument document;
   final ControlClient client;
+  Timer? timer, debounce;
+  String? revision, pendingRevision, baseline, directory;
+  bool inFlight = false, polling = false, disposed = false;
+  DateTime? pendingSince;
+  int generation = 0;
+  String? error;
+  String get draft => document.encode();
+  bool get dirty =>
+      baseline != null &&
+      (draft != baseline || directory != document.assetDirectory);
+  String get label => error != null
+      ? 'Live update failed: $error'
+      : pendingRevision != null
+          ? 'Activating rig…'
+          : revision == null
+              ? 'Unapplied changes'
+              : !dirty
+                  ? 'Tuning live'
+                  : compatible()
+                      ? 'Tuning live'
+                      : 'Reapply rig to hear structural changes';
+  static const fields = <String, Set<String>>{
+    'gain': {'db'},
+    'fuzz': {'drive_db', 'bias', 'tone', 'mix', 'output_db'},
+    'overdrive': {'drive_db', 'tone', 'mix', 'output_db'},
+    'edge_amp': {'drive_db', 'tone', 'touch', 'master_db'},
+    'chorus': {'rate_hz', 'depth', 'mix'},
+    'flanger': {'rate_hz', 'depth', 'feedback', 'mix'},
+    'tremolo': {'rate_hz', 'depth'},
+    'octaver': {'mix'},
+    'reverb': {'decay_seconds'},
+    'envelope_filter': {
+      'sensitivity',
+      'base_hz',
+      'resonance',
+      'decay_ms',
+      'mix'
+    },
+    'ring_mod': {'frequency_hz', 'mix'},
+    'slicer': {'bpm', 'depth'},
+    'bitcrusher': {'rate_hz', 'mix'},
+  };
+  bool compatible() {
+    if (baseline == null || directory != document.assetDirectory) return false;
+    bool same(dynamic a, dynamic b, [String? kind]) {
+      if (a is Map && b is Map) {
+        if (a.length != b.length || a.keys.any((k) => !b.containsKey(k))) {
+          return false;
+        }
+        final type = a['type'] is String ? a['type'] as String : kind;
+        for (final key in a.keys) {
+          if (fields[type]?.contains(key) == true &&
+              a[key] is num &&
+              b[key] is num) {
+            continue;
+          }
+          if (!same(a[key], b[key], type)) return false;
+        }
+        return true;
+      }
+      if (a is List && b is List) {
+        return a.length == b.length &&
+            List.generate(a.length, (i) => i)
+                .every((i) => same(a[i], b[i], kind));
+      }
+      return a == b;
+    }
+
+    return same(jsonDecode(baseline!), document.data);
+  }
+
+  void changed() {
+    if (disposed) return;
+    notifyListeners();
+    if (revision != null &&
+        dirty &&
+        compatible() &&
+        !(debounce?.isActive ?? false)) {
+      debounce = Timer(const Duration(milliseconds: 34), () {
+        debounce = null;
+        flush();
+      });
+    }
+  }
+
+  void beginApply() {
+    generation++;
+    revision = null;
+    pendingRevision = null;
+    error = null;
+    changed();
+  }
+
+  void applied(String rev, String snapshot, String folder) {
+    if (disposed) return;
+    generation++;
+    revision = null;
+    pendingRevision = rev;
+    pendingSince = DateTime.now();
+    baseline = snapshot;
+    directory = folder;
+    notifyListeners();
+    unawaited(poll());
+  }
+
+  Future<void> poll() async {
+    if (polling || disposed) return;
+    polling = true;
+    final requestGeneration = generation;
+    try {
+      final status = await client.patchRequest('patch_status');
+      if (disposed || generation != requestGeneration) return;
+      final current = status['revision'];
+      if (pendingRevision != null) {
+        if (status['active'] == true &&
+            status['switching'] != true &&
+            status['faulted'] != true &&
+            current == pendingRevision) {
+          revision = pendingRevision;
+          pendingRevision = null;
+          changed();
+        } else if (status['switching'] != true &&
+            pendingSince != null &&
+            DateTime.now().difference(pendingSince!) >
+                const Duration(seconds: 3)) {
+          pendingRevision = null;
+          revision = null;
+          notifyListeners();
+        }
+      } else if (revision != null &&
+          (status['available'] != true ||
+              status['faulted'] == true ||
+              status['active'] != true ||
+              current != revision)) {
+        revision = null;
+        notifyListeners();
+      }
+    } catch (_) {
+      if (!disposed && generation == requestGeneration) {
+        revision = null;
+        pendingRevision = null;
+        notifyListeners();
+      }
+    } finally {
+      polling = false;
+    }
+  }
+
+  Future<void> flush() async {
+    if (disposed || inFlight || revision == null || !dirty || !compatible()) {
+      return;
+    }
+    final rev = revision!, sent = draft, folder = document.assetDirectory;
+    final requestGeneration = generation;
+    inFlight = true;
+    try {
+      final response = await client.patchRequest('update_patch',
+          {'revision': rev, 'document': jsonDecode(sent), 'directory': folder});
+      if (disposed || generation != requestGeneration) return;
+      if (revision == rev &&
+          response['updated'] == true &&
+          response['revision'] == rev) {
+        baseline = sent;
+        directory = folder;
+      } else {
+        revision = null;
+        error = 'The engine did not accept this revision. Apply the rig again.';
+      }
+    } catch (e) {
+      if (!disposed && generation == requestGeneration) {
+        revision = null;
+        error = e.toString();
+      }
+    } finally {
+      inFlight = false;
+      if (!disposed) changed();
+    }
+  }
+
+  @override
+  void dispose() {
+    disposed = true;
+    timer?.cancel();
+    debounce?.cancel();
+    document.removeListener(changed);
+    super.dispose();
+  }
+}
+
+class PatchAudioControls extends StatefulWidget {
+  const PatchAudioControls(
+      {super.key, required this.document, required this.client, this.live});
+  final PatchDocument document;
+  final ControlClient client;
+  final PatchLiveController? live;
   @override
   State<PatchAudioControls> createState() => _PatchAudioControlsState();
 }
 
 class _PatchAudioControlsState extends State<PatchAudioControls> {
+  late final PatchLiveController live =
+      widget.live ?? PatchLiveController(widget.document, widget.client);
   Timer? _timer;
   bool _polling = false,
       _busy = false,
@@ -30,6 +230,7 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
   @override
   void dispose() {
     _timer?.cancel();
+    if (widget.live == null) live.dispose();
     _player?.kill();
     super.dispose();
   }
@@ -52,7 +253,11 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
                 : _active
                     ? status['bypassed'] == true
                         ? 'Patch selected • global bypass is ON (main power button)'
-                        : 'PATCH LIVE • ${_rate ?? 0} Hz • ${status['latency_samples'] ?? 0} samples added'
+                        : _rate != null &&
+                                _rate! > 0 &&
+                                status['latency_samples'] is num
+                            ? 'PATCH LIVE • $_rate Hz • ${((status['latency_samples'] as num) * 1000 / _rate!).toStringAsFixed(1)} ms added'
+                            : 'PATCH LIVE • latency unavailable'
                     : _available
                         ? 'Pedalboard live • ${_rate ?? 0} Hz'
                         : 'Live audio unavailable • clip preview still available';
@@ -83,8 +288,23 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
       if (widget.document.previewPath.trim().isNotEmpty)
         'path': widget.document.previewPath.trim(),
     };
+    if (command == 'apply_patch' || command == 'deactivate_patch') {
+      live.beginApply();
+    }
+    final requestGeneration = live.generation;
     try {
       final response = await widget.client.patchRequest(command, payload);
+      // Activation belongs to the editor controller, which outlives this panel.
+      // Dismissing the panel while models load must not lose live-control ownership.
+      if (!live.disposed &&
+          live.generation == requestGeneration &&
+          command == 'apply_patch' &&
+          response['revision'] is String) {
+        live.applied(
+            response['revision'] as String,
+            const JsonEncoder.withIndent('  ').convert(payload['document']),
+            payload['directory'] as String);
+      }
       if (!mounted) return;
       if (command == 'render_patch') {
         final player =
@@ -116,6 +336,12 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
         await refresh();
       }
     } catch (error) {
+      if (!live.disposed &&
+          live.generation == requestGeneration &&
+          (command == 'apply_patch' || command == 'deactivate_patch')) {
+        live.error = error.toString();
+        live.changed();
+      }
       if (mounted) setState(() => _message = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -159,6 +385,7 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
                       setState(() {
                         widget.document.assetDirectory = root.text.trim();
                         widget.document.previewPath = wav.text.trim();
+                        widget.document.changed();
                       });
                       Navigator.pop(context);
                     },
@@ -220,6 +447,8 @@ class _PatchAudioControlsState extends State<PatchAudioControls> {
           Text(_status,
               style:
                   TextStyle(color: _active ? LostChrome.lime : LostChrome.ice)),
+          ListenableBuilder(
+              listenable: live, builder: (context, _) => Text(live.label)),
           if (_message != null)
             Text(_message!, maxLines: 3, overflow: TextOverflow.ellipsis),
         ]));

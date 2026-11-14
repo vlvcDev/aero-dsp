@@ -170,6 +170,45 @@ fn preview_runs_through_real_control_socket_without_audio_hardware() {
     .unwrap();
     assert!(rendered.samples.iter().all(|x| x.is_finite()));
     assert!(rendered.samples.iter().any(|x| x.abs() > 0.001));
+    // Exercise the creative nodes through JSON and the preview socket, including
+    // an embedded processor map inside a Custom Node (Serde's tagged-enum path).
+    let chord_path = root.join("chord.wav");
+    pedal_engine::audio_file::write_float_wav(
+        &chord_path,
+        1,
+        48000,
+        (0..48000).map(|i| {
+            let t = std::f32::consts::TAU * i as f32 / 48000.0;
+            0.1 * ((110.0 * t).sin() + (220.0 * t).sin())
+        }),
+    )
+    .unwrap();
+    for processor in [
+        serde_json::json!({"type":"transpose","semitones":-2,"quality":"fast"}),
+        serde_json::json!({"type":"envelope_filter","sensitivity":0.5,"base_hz":300,"resonance":2,"decay_ms":200,"mix":1}),
+        serde_json::json!({"type":"ring_mod","frequency_hz":80,"mix":0.5}),
+        serde_json::json!({"type":"slicer","bpm":120,"division":2,"pattern":"gallop","depth":1}),
+        serde_json::json!({"type":"bitcrusher","bits":8,"rate_hz":12000,"mix":0.5}),
+    ] {
+        let mut child = fuzz.clone();
+        child["processors"]["3"] = processor;
+        let mut outer = child.clone();
+        outer["processors"]["3"] = serde_json::json!({"type":"custom","name":"Effect",
+            "library_id":"effect","revision":1,"asset_directory":root,"document":child});
+        let response = request(
+            "render_patch",
+            serde_json::json!({
+            "document":outer,"directory":root,"path":chord_path}),
+        );
+        assert_eq!(response["type"], "patch", "{response}");
+        let result = pedal_engine::audio_file::AudioFile::load(std::path::Path::new(
+            response["payload"]["path"].as_str().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(result.samples.len(), 48000 * 4 * 2);
+        assert!(result.samples.iter().all(|x| x.is_finite()));
+        assert!(result.samples.iter().any(|x| x.abs() > 0.001));
+    }
     assert_eq!(
         request(
             "render_patch",
