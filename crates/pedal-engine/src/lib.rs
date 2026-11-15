@@ -12,6 +12,7 @@ pub mod compressor;
 pub mod convolution;
 pub mod creative_effects;
 pub mod dehiss;
+pub mod demud;
 mod dry_alignment;
 pub mod dsp;
 pub mod edge_amp;
@@ -120,6 +121,12 @@ pub struct EngineState {
     /// Device setting: zero the clean input at the interface noise floor.
     pub squelch_enabled: bool,
     pub squelch_threshold_db: f32,
+    /// Dynamic low-mid cut after the amp/cab (see `demud`).
+    pub demud_enabled: bool,
+    pub demud_visible: bool,
+    pub demud_threshold_db: f32,
+    pub demud_frequency_hz: f32,
+    pub demud_range_db: f32,
     /// High-band downward expander after the amp/cab (see `dehiss`).
     pub dehiss_enabled: bool,
     pub dehiss_threshold_db: f32,
@@ -230,6 +237,11 @@ impl Default for EngineState {
             gate_enabled: false,
             squelch_enabled: true,
             squelch_threshold_db: crate::squelch::DEFAULT_THRESHOLD_DB,
+            demud_enabled: false,
+            demud_visible: false,
+            demud_threshold_db: crate::demud::DEFAULT_THRESHOLD_DB,
+            demud_frequency_hz: 250.0,
+            demud_range_db: 6.0,
             dehiss_enabled: false,
             dehiss_threshold_db: -70.0,
             dehiss_frequency_hz: 3_000.0,
@@ -405,6 +417,11 @@ impl EngineState {
         snapshot["compressor_mix"] = json!(self.compressor_mix);
         snapshot["squelch_enabled"] = json!(self.squelch_enabled);
         snapshot["squelch_threshold_db"] = json!(self.squelch_threshold_db);
+        snapshot["demud_enabled"] = json!(self.demud_enabled);
+        snapshot["demud_visible"] = json!(self.demud_visible);
+        snapshot["demud_threshold_db"] = json!(self.demud_threshold_db);
+        snapshot["demud_frequency_hz"] = json!(self.demud_frequency_hz);
+        snapshot["demud_range_db"] = json!(self.demud_range_db);
         snapshot["dehiss_enabled"] = json!(self.dehiss_enabled);
         snapshot["dehiss_visible"] = json!(self.dehiss_visible);
         snapshot["dehiss_threshold_db"] = json!(self.dehiss_threshold_db);

@@ -1583,6 +1583,7 @@ class _RigScreenState extends State<RigScreen> {
       EffectKind.tremolo => OptionalPedal.tremolo,
       EffectKind.octaver => OptionalPedal.octaver,
       EffectKind.dehiss => OptionalPedal.dehiss,
+      EffectKind.demud => OptionalPedal.demud,
       EffectKind.delay => OptionalPedal.delay,
       EffectKind.reverb => OptionalPedal.reverb,
       EffectKind.gate || EffectKind.compressor => null,
@@ -1600,7 +1601,9 @@ class _RigScreenState extends State<RigScreen> {
         onRemove:
             optionalPedal == null ? null : () => _removePedal(optionalPedal),
         onLearn: effect == EffectKind.dehiss ? _client.dehissLearn : null,
-        meters: effect == EffectKind.compressor ? _client.meters : null,
+        meters: effect == EffectKind.compressor || effect == EffectKind.demud
+            ? _client.meters
+            : null,
       ),
     );
   }
@@ -1759,6 +1762,7 @@ class _RigScreenState extends State<RigScreen> {
 enum EffectKind {
   gate,
   dehiss,
+  demud,
   compressor,
   eq,
   chorus,
@@ -1778,12 +1782,14 @@ enum OptionalPedal {
   octaver,
   delay,
   reverb,
+  demud,
   looper,
 }
 
 extension OptionalPedalDetails on OptionalPedal {
   String get label => switch (this) {
         OptionalPedal.dehiss => 'DEHISS',
+        OptionalPedal.demud => 'DE-MUD',
         OptionalPedal.eq => 'EQ',
         OptionalPedal.chorus => 'CHORUS',
         OptionalPedal.flanger => 'FLANGER',
@@ -1796,6 +1802,7 @@ extension OptionalPedalDetails on OptionalPedal {
 
   String get description => switch (this) {
         OptionalPedal.dehiss => 'Remove amp hiss as notes fade',
+        OptionalPedal.demud => 'Tame low-mid boom on palm mutes',
         OptionalPedal.eq => 'Shape low, mid, and high frequencies',
         OptionalPedal.chorus => 'Add width and movement',
         OptionalPedal.flanger => 'Sweep a metallic moving comb filter',
@@ -1809,6 +1816,7 @@ extension OptionalPedalDetails on OptionalPedal {
 
   IconData get icon => switch (this) {
         OptionalPedal.dehiss => Icons.noise_control_off,
+        OptionalPedal.demud => Icons.graphic_eq,
         OptionalPedal.eq => Icons.equalizer,
         OptionalPedal.chorus => Icons.waves,
         OptionalPedal.flanger => Icons.waterfall_chart,
@@ -1825,6 +1833,7 @@ extension OptionalPedalDetails on OptionalPedal {
 
   EffectKind? get effect => switch (this) {
         OptionalPedal.dehiss => EffectKind.dehiss,
+        OptionalPedal.demud => EffectKind.demud,
         OptionalPedal.eq => EffectKind.eq,
         OptionalPedal.chorus => EffectKind.chorus,
         OptionalPedal.flanger => EffectKind.flanger,
@@ -1867,6 +1876,7 @@ extension EffectKindDetails on EffectKind {
   String get label => switch (this) {
         EffectKind.gate => 'GATE',
         EffectKind.dehiss => 'DEHISS',
+        EffectKind.demud => 'DE-MUD',
         EffectKind.compressor => 'COMP',
         EffectKind.eq => 'EQ',
         EffectKind.chorus => 'CHORUS',
@@ -1880,6 +1890,7 @@ extension EffectKindDetails on EffectKind {
   IconData get icon => switch (this) {
         EffectKind.gate => Icons.graphic_eq,
         EffectKind.dehiss => Icons.noise_control_off,
+        EffectKind.demud => Icons.graphic_eq,
         EffectKind.compressor => Icons.compress,
         EffectKind.eq => Icons.equalizer,
         EffectKind.chorus => Icons.waves,
@@ -1893,6 +1904,7 @@ extension EffectKindDetails on EffectKind {
   Color get color => switch (this) {
         EffectKind.gate => const Color(0xff1c5cc4),
         EffectKind.dehiss => const Color(0xff2a74d6),
+        EffectKind.demud => const Color(0xff3c8ee0),
         EffectKind.compressor => const Color(0xff1d8ccf),
         EffectKind.eq => const Color(0xff18b1be),
         EffectKind.chorus => const Color(0xff315ccf),
@@ -2084,6 +2096,7 @@ class Pedalboard extends StatelessWidget {
                 label: effect.label,
                 category: effect == EffectKind.gate ||
                         effect == EffectKind.dehiss ||
+                        effect == EffectKind.demud ||
                         effect == EffectKind.compressor
                     ? PedalCategory.utility
                     : PedalCategory.effect,
@@ -2100,6 +2113,7 @@ class Pedalboard extends StatelessWidget {
               .where((pedal) =>
                   pedal != OptionalPedal.octaver &&
                   pedal != OptionalPedal.dehiss &&
+                  pedal != OptionalPedal.demud &&
                   snapshot.pedalVisible(pedal))
               .toList(growable: false);
           return ClipRRect(
@@ -2178,6 +2192,10 @@ class Pedalboard extends StatelessWidget {
                               if (snapshot.dehissVisible) ...[
                                 const _SignalArrow(),
                                 effectTile(EffectKind.dehiss),
+                              ],
+                              if (snapshot.demudVisible) ...[
+                                const _SignalArrow(),
+                                effectTile(EffectKind.demud),
                               ],
                               const _SignalArrow(),
                               effectTile(EffectKind.compressor),
@@ -5520,6 +5538,13 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                 logarithmic: true),
             _ControlDefinition('dehiss_range_db', 'REDUCTION', 0, 40, 40, 'dB'),
           ],
+        EffectKind.demud => const [
+            _ControlDefinition(
+                'demud_threshold_db', 'THRESHOLD', -12, 6, 36, 'dB'),
+            _ControlDefinition('demud_frequency_hz', 'FREQ', 120, 500, 60, 'Hz',
+                logarithmic: true),
+            _ControlDefinition('demud_range_db', 'MAX CUT', 0, 12, 12, 'dB'),
+          ],
         EffectKind.compressor => const [
             _ControlDefinition(
                 'compressor_threshold_db', 'THRESHOLD', -48, 0, 48, 'dB'),
@@ -5673,6 +5698,8 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
   @override
   Widget build(BuildContext context) {
     final detail = widget.effect;
+    const demudHelp =
+        'Cuts the low-mid band only while palm mutes and low chords boom, so notes stay separate. THRESHOLD is how far the low-mids may stand out from the rest of the tone, so it works the same on any capture. LOWER it for more cut: aim for CUT 3–6 dB on chugs and ~0 on single notes.';
     return LayoutBuilder(builder: (context, constraints) {
       final compactGate =
           detail == EffectKind.gate && constraints.maxHeight < 440;
@@ -5680,6 +5707,8 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
           detail == EffectKind.dehiss && constraints.maxHeight < 440;
       final compactCompressor =
           detail == EffectKind.compressor && constraints.maxHeight < 440;
+      final compactDemud =
+          detail == EffectKind.demud && constraints.maxHeight < 440;
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -5691,7 +5720,10 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                       color: detail.color,
                       fontWeight: FontWeight.w900,
                       letterSpacing: .9)),
-              if (!compactGate && !compactDehiss && !compactCompressor)
+              if (!compactGate &&
+                  !compactDehiss &&
+                  !compactCompressor &&
+                  !compactDemud)
                 const Text(
                     'Settings are saved with your preset. Drag vertically.',
                     style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
@@ -5823,6 +5855,33 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                         : 'Analog: single notes, no added buffering. Clean voice: +${widget.snapshot.octaverCleanLatencyMs.toStringAsFixed(1)} ms.',
                     style:
                         const TextStyle(color: LostChrome.ice, fontSize: 12)),
+              ],
+              if (detail == EffectKind.demud) ...[
+                const SizedBox(height: 8),
+                Row(children: [
+                  if (widget.meters != null)
+                    StreamBuilder<MeterSnapshot>(
+                      stream: widget.meters,
+                      builder: (context, snapshot) {
+                        final cut = snapshot.data?.demudReductionDb ?? 0;
+                        return Text(
+                          'CUT ${cut.toStringAsFixed(1)} dB',
+                          style: Theme.of(context).textTheme.labelSmall,
+                        );
+                      },
+                    ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Tooltip(
+                      message: demudHelp,
+                      child: Text(demudHelp,
+                          maxLines: compactDemud ? 1 : 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              color: LostChrome.ice, fontSize: 12)),
+                    ),
+                  ),
+                ]),
               ],
               if (detail == EffectKind.dehiss && widget.onLearn != null) ...[
                 const SizedBox(height: 8),
@@ -14153,6 +14212,7 @@ class MeterSnapshot {
     this.audioRealtimePriority = 0,
     this.dspWorkerRealtimePriority = 0,
     this.compressorReductionDb = 0,
+    this.demudReductionDb = 0,
   });
 
   const MeterSnapshot.silent()
@@ -14172,7 +14232,8 @@ class MeterSnapshot {
         deadlineMisses = 0,
         audioRealtimePriority = 0,
         dspWorkerRealtimePriority = 0,
-        compressorReductionDb = 0;
+        compressorReductionDb = 0,
+        demudReductionDb = 0;
 
   factory MeterSnapshot.fromJson(Map<String, dynamic> json) => MeterSnapshot(
         patchActive: json['patch_active'] as bool? ?? false,
@@ -14197,10 +14258,14 @@ class MeterSnapshot {
             (json['dsp_worker_realtime_priority'] as num?)?.toInt() ?? 0,
         compressorReductionDb:
             (json['compressor_reduction_db'] as num?)?.toDouble() ?? 0,
+        demudReductionDb: (json['demud_reduction_db'] as num?)?.toDouble() ?? 0,
       );
 
   /// Peak compressor gain reduction in dB since the last meter poll (>= 0).
   final double compressorReductionDb;
+
+  /// Deepest DE-MUD low-mid cut in dB since the last meter poll (>= 0).
+  final double demudReductionDb;
   final double? rigLimiterReductionDb;
   final double? outputLimiterReductionDb;
   final double inputDb;
@@ -14265,6 +14330,11 @@ class EngineSnapshot {
     this.dehissThresholdDb = -70,
     this.dehissFrequencyHz = 3000,
     this.dehissRangeDb = 24,
+    this.demudEnabled = false,
+    this.demudVisible = false,
+    this.demudThresholdDb = -4,
+    this.demudFrequencyHz = 250,
+    this.demudRangeDb = 6,
     this.preIncludesCab = false,
     this.ampIncludesCab = false,
     required this.compressorEnabled,
@@ -14355,6 +14425,11 @@ class EngineSnapshot {
         dehissThresholdDb = -70,
         dehissFrequencyHz = 3000,
         dehissRangeDb = 24,
+        demudEnabled = false,
+        demudVisible = false,
+        demudThresholdDb = -4,
+        demudFrequencyHz = 250,
+        demudRangeDb = 6,
         preIncludesCab = false,
         ampIncludesCab = false,
         compressorEnabled = false,
@@ -14449,6 +14524,11 @@ class EngineSnapshot {
       dehissFrequencyHz:
           (json['dehiss_frequency_hz'] as num?)?.toDouble() ?? 3000,
       dehissRangeDb: (json['dehiss_range_db'] as num?)?.toDouble() ?? 24,
+      demudEnabled: json['demud_enabled'] as bool? ?? false,
+      demudVisible: json['demud_visible'] as bool? ?? false,
+      demudThresholdDb: (json['demud_threshold_db'] as num?)?.toDouble() ?? -4,
+      demudFrequencyHz: (json['demud_frequency_hz'] as num?)?.toDouble() ?? 250,
+      demudRangeDb: (json['demud_range_db'] as num?)?.toDouble() ?? 6,
       compressorEnabled: json['compressor_enabled'] as bool? ?? false,
       compressorThresholdDb:
           (json['compressor_threshold_db'] as num?)?.toDouble() ?? -18,
@@ -14543,6 +14623,11 @@ class EngineSnapshot {
   final double dehissThresholdDb;
   final double dehissFrequencyHz;
   final double dehissRangeDb;
+  final bool demudEnabled;
+  final bool demudVisible;
+  final double demudThresholdDb;
+  final double demudFrequencyHz;
+  final double demudRangeDb;
   final bool compressorEnabled;
   final double compressorThresholdDb;
   final double compressorRatio;
@@ -14598,6 +14683,7 @@ class EngineSnapshot {
   bool effectEnabled(EffectKind effect) => switch (effect) {
         EffectKind.gate => gateEnabled,
         EffectKind.dehiss => dehissEnabled,
+        EffectKind.demud => demudEnabled,
         EffectKind.compressor => compressorEnabled,
         EffectKind.eq => eqEnabled,
         EffectKind.chorus => chorusEnabled,
@@ -14610,6 +14696,7 @@ class EngineSnapshot {
 
   bool pedalVisible(OptionalPedal pedal) => switch (pedal) {
         OptionalPedal.dehiss => dehissVisible,
+        OptionalPedal.demud => demudVisible,
         OptionalPedal.eq => eqVisible,
         OptionalPedal.chorus => chorusVisible,
         OptionalPedal.flanger => flangerVisible,
@@ -14625,6 +14712,11 @@ class EngineSnapshot {
             'dehiss_threshold_db': dehissThresholdDb,
             'dehiss_frequency_hz': dehissFrequencyHz,
             'dehiss_range_db': dehissRangeDb,
+          },
+        EffectKind.demud => {
+            'demud_threshold_db': demudThresholdDb,
+            'demud_frequency_hz': demudFrequencyHz,
+            'demud_range_db': demudRangeDb,
           },
         EffectKind.gate => {
             'gate_threshold_db': gateThresholdDb,
@@ -15374,6 +15466,16 @@ class EngineException implements Exception {
   String toString() => message;
 }
 
+/// Catalog timestamps are ISO-8601 strings; tolerate epoch numbers too so a
+/// format change can never crash list parsing.
+DateTime? _parseTimestamp(Object? value) => switch (value) {
+      final String text => DateTime.tryParse(text),
+      final num seconds => DateTime.fromMillisecondsSinceEpoch(
+          (seconds * 1000).round(),
+          isUtc: true),
+      _ => null,
+    };
+
 class CatalogModel {
   const CatalogModel({
     required this.name,
@@ -15412,7 +15514,7 @@ class CatalogModel {
         gainDb: (json['gain_db'] as num?)?.toDouble(),
         includesCab: json['includes_cab'] as bool?,
         kind: json['kind'] as String? ?? 'nam',
-        lastUsed: (json['last_used'] as num?)?.toDouble(),
+        lastUsed: _parseTimestamp(json['last_used']),
       );
 
   final String name;
@@ -15428,7 +15530,7 @@ class CatalogModel {
   final double? gainDb;
   final bool? includesCab;
   final String kind;
-  final double? lastUsed;
+  final DateTime? lastUsed;
 
   CatalogModel withFavorite(bool value) => CatalogModel(
         name: name,

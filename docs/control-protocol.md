@@ -137,6 +137,9 @@ The supported controls and ranges are:
 | `gate_hold_ms` | 0 to 500 ms | Consecutive time below the closing threshold before release |
 | `gate_release_ms` | 5 to 1000 ms | Gate gain-release time constant |
 | `gate_range_db` | 0 to 90 dB | Maximum closed-gate attenuation; 0 leaves unity gain |
+| `demud_threshold_db` | -12 to 6 dB | DE-MUD (optional pedal `demud`): how far the low-mid band may stand out from the rest of the signal (band vs everything else, so independent of capture level) before it is cut, 2 dB per 3 dB over. Never cuts below -60 dBFS. Default -4: on real high-gain riffs at 250 Hz the band runs about -5 dB on bright notes to +4 dB on heavy chugs |
+| `demud_frequency_hz` | 120 to 500 Hz | DE-MUD band centre (Q 1.2, after the amp/cab); default 250 |
+| `demud_range_db` | 0 to 12 dB | DE-MUD maximum cut; default 6. Exact passthrough while not cutting; `meters` reports `demud_reduction_db` |
 | `dehiss_threshold_db` | -100 to -30 dB | DEHISS: high-band level below which the band above `dehiss_frequency_hz` is reduced (2 dB per dB below). Set with LEARN; default -70 |
 | `dehiss_frequency_hz` | 1500 to 8000 Hz | DEHISS crossover: only content above it is reduced, so decaying notes keep their body; default 3000 |
 | `dehiss_range_db` | 0 to 40 dB | DEHISS maximum high-band reduction; default 24 |

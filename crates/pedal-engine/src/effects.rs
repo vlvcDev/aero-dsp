@@ -83,6 +83,12 @@ pub struct EffectsParameters {
     pub input_floor_meter: crate::squelch::FloorMeter,
     pub gate_floor_meter: crate::squelch::FloorMeter,
     floor_learning: AtomicBool,
+    demud_enabled: AtomicBool,
+    demud_threshold_db: AtomicFloat,
+    demud_frequency_hz: AtomicFloat,
+    demud_range_db: AtomicFloat,
+    /// Deepest DE-MUD cut (dB, f32 bits) since the meter last read it.
+    demud_reduction_db: AtomicU32,
     dehiss_enabled: AtomicBool,
     dehiss_threshold_db: AtomicFloat,
     dehiss_frequency_hz: AtomicFloat,
@@ -147,6 +153,11 @@ impl EffectsParameters {
             input_floor_meter: crate::squelch::FloorMeter::default(),
             gate_floor_meter: crate::squelch::FloorMeter::default(),
             floor_learning: AtomicBool::new(false),
+            demud_enabled: AtomicBool::new(state.demud_enabled),
+            demud_threshold_db: AtomicFloat::new(state.demud_threshold_db),
+            demud_frequency_hz: AtomicFloat::new(state.demud_frequency_hz),
+            demud_range_db: AtomicFloat::new(state.demud_range_db),
+            demud_reduction_db: AtomicU32::new(0),
             dehiss_enabled: AtomicBool::new(state.dehiss_enabled),
             dehiss_threshold_db: AtomicFloat::new(state.dehiss_threshold_db),
             dehiss_frequency_hz: AtomicFloat::new(state.dehiss_frequency_hz),
@@ -205,6 +216,11 @@ impl EffectsParameters {
         self.squelch_enabled
             .store(state.squelch_enabled, Ordering::Relaxed);
         self.squelch_threshold_db.store(state.squelch_threshold_db);
+        self.demud_enabled
+            .store(state.demud_enabled, Ordering::Relaxed);
+        self.demud_threshold_db.store(state.demud_threshold_db);
+        self.demud_frequency_hz.store(state.demud_frequency_hz);
+        self.demud_range_db.store(state.demud_range_db);
         self.dehiss_enabled
             .store(state.dehiss_enabled, Ordering::Relaxed);
         self.dehiss_threshold_db.store(state.dehiss_threshold_db);
@@ -284,6 +300,20 @@ impl EffectsParameters {
             auto_makeup: self.compressor_auto_makeup.load(Ordering::Relaxed),
             mix: self.compressor_mix.load(),
         }
+    }
+
+    fn demud_settings(&self) -> crate::demud::DemudSettings {
+        crate::demud::DemudSettings {
+            enabled: self.demud_enabled.load(Ordering::Relaxed),
+            threshold_db: self.demud_threshold_db.load(),
+            frequency_hz: self.demud_frequency_hz.load(),
+            range_db: self.demud_range_db.load(),
+        }
+    }
+
+    /// Deepest DE-MUD cut (dB) since the previous call (meters).
+    pub fn take_demud_reduction_db(&self) -> f32 {
+        f32::from_bits(self.demud_reduction_db.swap(0, Ordering::Relaxed))
     }
 
     /// Peak compressor gain reduction (dB) since the previous call (meters).
@@ -372,6 +402,7 @@ pub struct EffectChainProcessor<P> {
     gate: crate::gate::Gate,
     gate_gains: Vec<f32>,
     squelch: crate::squelch::Squelch,
+    demud: crate::demud::Demud,
     dehiss: crate::dehiss::Dehiss,
     compressor: crate::compressor::Compressor,
     eq: crate::tone_eq::ToneEq,
@@ -440,6 +471,7 @@ impl<P> EffectChainProcessor<P> {
             gate,
             gate_gains: vec![1.0; 1024],
             squelch: crate::squelch::Squelch::new(sample_rate),
+            demud: crate::demud::Demud::new(sample_rate),
             dehiss: crate::dehiss::Dehiss::new(sample_rate),
             compressor: crate::compressor::Compressor::new(sample_rate),
             eq: crate::tone_eq::ToneEq::new(sample_rate, [0.0; 3]),
@@ -769,6 +801,12 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
             }
             let left = &mut left[..input.len()];
             let right = &mut right[..input.len()];
+            let cut = self
+                .demud
+                .process(self.parameters.demud_settings(), left, Some(right));
+            self.parameters
+                .demud_reduction_db
+                .fetch_max(cut.to_bits(), Ordering::Relaxed);
             let settings = self.parameters.dehiss_settings();
             self.dehiss
                 .process(settings, &self.parameters.dehiss_meter, left, Some(right));
@@ -803,6 +841,12 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
             self.process_compressor(samples);
             self.process_octaver(samples);
             self.source.process(samples);
+            let cut = self
+                .demud
+                .process(self.parameters.demud_settings(), samples, None);
+            self.parameters
+                .demud_reduction_db
+                .fetch_max(cut.to_bits(), Ordering::Relaxed);
             let settings = self.parameters.dehiss_settings();
             self.dehiss
                 .process(settings, &self.parameters.dehiss_meter, samples, None);

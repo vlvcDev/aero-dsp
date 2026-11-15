@@ -10,9 +10,12 @@ void main() {
       'size_bytes': 1024,
       'gain_db': 64,
       'includes_cab': true,
+      // The catalog sends ISO-8601 strings (regression: this crashed lists).
+      'last_used': '2026-11-13T18:04:05.123456+00:00',
     });
     expect(tagged.gainDb, 64);
     expect(tagged.includesCab, isTrue);
+    expect(tagged.lastUsed, DateTime.utc(2026, 11, 13, 18, 4, 5, 123, 456));
     final plain = CatalogModel.fromJson({
       'name': 'Plain.nam',
       'path': '/plain.nam',

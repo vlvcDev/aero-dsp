@@ -33,6 +33,11 @@ pub struct PresetRig {
     pub cabinet_low_cut_hz: f32,
     pub cabinet_high_cut_hz: f32,
     pub gate_enabled: bool,
+    pub demud_enabled: bool,
+    pub demud_visible: bool,
+    pub demud_threshold_db: f32,
+    pub demud_frequency_hz: f32,
+    pub demud_range_db: f32,
     pub dehiss_enabled: bool,
     pub dehiss_threshold_db: f32,
     pub dehiss_frequency_hz: f32,
@@ -120,6 +125,11 @@ impl PresetRig {
             cabinet_low_cut_hz: state.cabinet_low_cut_hz,
             cabinet_high_cut_hz: state.cabinet_high_cut_hz,
             gate_enabled: state.gate_enabled,
+            demud_enabled: state.demud_enabled,
+            demud_visible: state.demud_visible,
+            demud_threshold_db: state.demud_threshold_db,
+            demud_frequency_hz: state.demud_frequency_hz,
+            demud_range_db: state.demud_range_db,
             dehiss_enabled: state.dehiss_enabled,
             dehiss_threshold_db: state.dehiss_threshold_db,
             dehiss_frequency_hz: state.dehiss_frequency_hz,
@@ -200,6 +210,11 @@ impl PresetRig {
         state.cabinet_low_cut_hz = self.cabinet_low_cut_hz;
         state.cabinet_high_cut_hz = self.cabinet_high_cut_hz;
         state.gate_enabled = self.gate_enabled;
+        state.demud_enabled = self.demud_enabled;
+        state.demud_visible = self.demud_visible;
+        state.demud_threshold_db = self.demud_threshold_db;
+        state.demud_frequency_hz = self.demud_frequency_hz;
+        state.demud_range_db = self.demud_range_db;
         state.dehiss_enabled = self.dehiss_enabled;
         state.dehiss_threshold_db = self.dehiss_threshold_db;
         state.dehiss_frequency_hz = self.dehiss_frequency_hz;

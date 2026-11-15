@@ -305,6 +305,8 @@ fn serve_client(stream: UnixStream, context: ControlContext) -> std::io::Result<
                     .effects
                     .take_compressor_reduction_db()
             );
+            response.payload["demud_reduction_db"] =
+                serde_json::json!(context.dsp_parameters.effects.take_demud_reduction_db());
             response.payload["patch_active"] = serde_json::json!(
                 context
                     .patch
@@ -1404,6 +1406,7 @@ fn handle_control_line(
         match effect {
             "gate" => state.gate_enabled = enabled,
             "dehiss" => state.dehiss_enabled = enabled,
+            "demud" => state.demud_enabled = enabled,
             "compressor" => state.compressor_enabled = enabled,
             "eq" => state.eq_enabled = enabled,
             "chorus" => state.chorus_enabled = enabled,
@@ -1444,6 +1447,7 @@ fn handle_control_line(
             "tremolo" => state.tremolo_visible = visible,
             "octaver" => state.octaver_visible = visible,
             "dehiss" => state.dehiss_visible = visible,
+            "demud" => state.demud_visible = visible,
             "delay" => state.delay_visible = visible,
             "reverb" => state.reverb_visible = visible,
             "looper" => state.looper_visible = visible,
@@ -1954,6 +1958,21 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
             &mut state.squelch_threshold_db,
             pedal_engine::squelch::THRESHOLD_RANGE_DB.0,
             pedal_engine::squelch::THRESHOLD_RANGE_DB.1,
+        ),
+        "demud_threshold_db" => (
+            &mut state.demud_threshold_db,
+            pedal_engine::demud::THRESHOLD_RANGE_DB.0,
+            pedal_engine::demud::THRESHOLD_RANGE_DB.1,
+        ),
+        "demud_frequency_hz" => (
+            &mut state.demud_frequency_hz,
+            pedal_engine::demud::FREQUENCY_RANGE_HZ.0,
+            pedal_engine::demud::FREQUENCY_RANGE_HZ.1,
+        ),
+        "demud_range_db" => (
+            &mut state.demud_range_db,
+            pedal_engine::demud::RANGE_RANGE_DB.0,
+            pedal_engine::demud::RANGE_RANGE_DB.1,
         ),
         "dehiss_threshold_db" => (
             &mut state.dehiss_threshold_db,
