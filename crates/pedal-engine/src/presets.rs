@@ -91,6 +91,14 @@ pub struct PresetRig {
     pub looper_visible: bool,
     pub reverb_decay_seconds: f32,
     pub reverb_mix: f32,
+    pub delay_duck: f32,
+    pub reverb_duck: f32,
+    pub harmonizer_enabled: bool,
+    pub harmonizer_visible: bool,
+    pub harmonizer_key: f32,
+    pub harmonizer_scale: f32,
+    pub harmonizer_interval: f32,
+    pub harmonizer_mix: f32,
 }
 
 impl Default for PresetRig {
@@ -184,6 +192,14 @@ impl PresetRig {
             looper_visible: state.looper_visible,
             reverb_decay_seconds: state.reverb_decay_seconds,
             reverb_mix: state.reverb_mix,
+            delay_duck: state.delay_duck,
+            reverb_duck: state.reverb_duck,
+            harmonizer_enabled: state.harmonizer_enabled,
+            harmonizer_visible: state.harmonizer_visible,
+            harmonizer_key: state.harmonizer_key,
+            harmonizer_scale: state.harmonizer_scale,
+            harmonizer_interval: state.harmonizer_interval,
+            harmonizer_mix: state.harmonizer_mix,
         }
     }
 
@@ -270,6 +286,14 @@ impl PresetRig {
         state.looper_visible = self.looper_visible;
         state.reverb_decay_seconds = self.reverb_decay_seconds;
         state.reverb_mix = self.reverb_mix;
+        state.delay_duck = self.delay_duck;
+        state.reverb_duck = self.reverb_duck;
+        state.harmonizer_enabled = self.harmonizer_enabled;
+        state.harmonizer_visible = self.harmonizer_visible;
+        state.harmonizer_key = self.harmonizer_key;
+        state.harmonizer_scale = self.harmonizer_scale;
+        state.harmonizer_interval = self.harmonizer_interval;
+        state.harmonizer_mix = self.harmonizer_mix;
     }
 }
 

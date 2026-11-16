@@ -82,7 +82,7 @@ Authoritative state changes are persisted by the engine outside the audio callba
 The state response includes `pre_model` and `model` (the amp slot). At startup, both are restored locally and processed in this fixed order:
 
 ```text
-input -> gate -> compressor -> pre/pedal NAM -> amp NAM -> EQ -> chorus -> delay -> reverb -> looper -> output
+input -> gate -> compressor -> pre/pedal NAM -> amp NAM -> harmonizer -> EQ -> chorus -> delay -> reverb -> looper -> output
 ```
 
 ## Control or clear one slot
@@ -159,12 +159,19 @@ The compressor's detector ignores content below ~100 Hz (12 dB/oct) so low strin
 | `delay_feedback`, `delay_mix` | 0.0 to 0.92 / 1.0 | Delay repeats and blend |
 | `reverb_decay_seconds` | 0.3 to 12 s | Reverb decay |
 | `reverb_mix` | 0.0 to 1.0 | Reverb blend |
+| `delay_duck`, `reverb_duck` | 0.0 to 1.0 | Ducking: the wet signal drops up to 24 dB while you play and swells back in ~0.35 s after you stop; 0 = off (default) |
+| `harmonizer_key` | 0 (C) to 11 (B) | Harmonizer key root; whole numbers |
+| `harmonizer_scale` | 0 to 5 | Minor, major, harmonic minor, Phrygian, Dorian, Phrygian dominant |
+| `harmonizer_interval` | -7 to 7 | Scale steps from the played note (2 = third up, 4 = fifth up, -2 = third down, 7 = octave) |
+| `harmonizer_mix` | 0.0 to 1.0 | Harmony voice level, added on top of the dry tone |
+
+The harmonizer tracks the played note on the clean input (monophonic) and pitch-shifts the post-cab tone to the scale note `harmonizer_interval` steps away, so a third is minor or major as the key requires. The voice trails the dry signal by `harmonizer_latency_ms` (state, ~21 ms).
 
 The response contains the updated state. Invalid names, non-finite values, and out-of-range values are rejected without changing state. The engine converts dB to linear gain on the control thread, publishes the fixed-size values atomically, and ramps changes across an audio block to avoid a hard discontinuity. Controls persist with the rig for offline restart.
 
 ## Switch an effect or operate the looper
 
-Each built-in effect is independently bypassable. `effect` is one of `gate`, `compressor`, `eq`, `chorus`, `delay`, or `reverb`.
+Each built-in effect is independently bypassable. `effect` is one of `gate`, `compressor`, `eq`, `chorus`, `delay`, `reverb`, or `harmonizer`.
 
 ```json
 {"api":1,"id":"ui-7","type":"set_effect_bypass","payload":{"effect":"delay","bypassed":false}}

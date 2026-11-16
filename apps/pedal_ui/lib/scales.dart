@@ -20,6 +20,18 @@ const pentatonicDegreeNames = ['1', '♭3', '4', '5', '♭7'];
 const scaleKeyNames = [
   'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B' //
 ];
+
+/// Matches `harmonizer::SCALES` in the engine.
+const harmonizerScaleNames = [
+  'MINOR', 'MAJOR', 'HARM MINOR', 'PHRYGIAN', 'DORIAN', 'PHRYG DOM' //
+];
+
+/// Index = interval + 7 (scale steps from the played note).
+const harmonizerIntervalNames = [
+  'OCT DOWN', '7TH DOWN', '6TH DOWN', '5TH DOWN', '4TH DOWN', '3RD DOWN', //
+  '2ND DOWN', 'UNISON', '2ND UP', '3RD UP', '4TH UP', '5TH UP', '6TH UP',
+  '7TH UP', 'OCT UP',
+];
 const scaleMaxFret = 24;
 const _scaleStringNames = ['E', 'A', 'D', 'G', 'B', 'e'];
 const _groupColors = [
@@ -323,8 +335,10 @@ class TheoryWorkspace extends StatefulWidget {
       required this.meters,
       required this.onMetronomeChanged,
       required this.active,
+      this.onHarmonyKey,
       super.key});
   final Widget Function(bool active) chords;
+  final Future<void> Function(int root)? onHarmonyKey;
   final Stream<MeterSnapshot> meters;
   final Future<void> Function(bool enabled, int bpm)? onMetronomeChanged;
   final bool active;
@@ -367,7 +381,8 @@ class _TheoryWorkspaceState extends State<TheoryWorkspace> {
                 widget.chords(widget.active && !_scales),
                 ScaleWorkspace(
                     meters: widget.meters,
-                    onMetronomeChanged: widget.onMetronomeChanged),
+                    onMetronomeChanged: widget.onMetronomeChanged,
+                    onHarmonyKey: widget.onHarmonyKey),
               ],
             ),
           ),
@@ -379,8 +394,14 @@ enum ScaleView { groups, shapes, navigate, shred }
 
 class ScaleWorkspace extends StatefulWidget {
   const ScaleWorkspace(
-      {required this.meters, this.onMetronomeChanged, super.key});
+      {required this.meters,
+      this.onMetronomeChanged,
+      this.onHarmonyKey,
+      super.key});
   final Stream<MeterSnapshot> meters;
+
+  /// Sets the HARMONY pedal to this minor key.
+  final Future<void> Function(int root)? onHarmonyKey;
   final Future<void> Function(bool enabled, int bpm)? onMetronomeChanged;
 
   @override
@@ -668,6 +689,24 @@ class _ScaleWorkspaceState extends State<ScaleWorkspace> {
                 selected: _noteNames,
                 onSelected: (v) => setState(() => _noteNames = v),
               ),
+              if (widget.onHarmonyKey case final setHarmony?)
+                ActionChip(
+                  avatar: const Icon(Icons.queue_music, size: 16),
+                  label: const Text('HARMONY IN THIS KEY'),
+                  tooltip: 'Set the HARMONY pedal to this minor key',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () async {
+                    final key = scaleKeyNames[_neck.root];
+                    final messenger = ScaffoldMessenger.of(context);
+                    try {
+                      await setHarmony(_neck.root);
+                      messenger.showSnackBar(SnackBar(
+                          content: Text('HARMONY pedal set to $key minor')));
+                    } catch (error) {
+                      messenger.showSnackBar(SnackBar(content: Text('$error')));
+                    }
+                  },
+                ),
             ],
           ),
           const SizedBox(height: 8),

@@ -1415,6 +1415,7 @@ fn handle_control_line(
             "octaver" => state.octaver_enabled = enabled,
             "delay" => state.delay_enabled = enabled,
             "reverb" => state.reverb_enabled = enabled,
+            "harmonizer" => state.harmonizer_enabled = enabled,
             _ => return control_error(request.id, "invalid_effect", "unknown effect"),
         }
         mark_preset_dirty(state);
@@ -1450,6 +1451,7 @@ fn handle_control_line(
             "demud" => state.demud_visible = visible,
             "delay" => state.delay_visible = visible,
             "reverb" => state.reverb_visible = visible,
+            "harmonizer" => state.harmonizer_visible = visible,
             "looper" => state.looper_visible = visible,
             _ => {
                 return control_error(
@@ -2047,6 +2049,16 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
         "delay_mix" => (&mut state.delay_mix, 0.0, 1.0),
         "reverb_decay_seconds" => (&mut state.reverb_decay_seconds, 0.3, 12.0),
         "reverb_mix" => (&mut state.reverb_mix, 0.0, 1.0),
+        "delay_duck" => (&mut state.delay_duck, 0.0, 1.0),
+        "reverb_duck" => (&mut state.reverb_duck, 0.0, 1.0),
+        "harmonizer_key" => (&mut state.harmonizer_key, 0.0, 11.0),
+        "harmonizer_scale" => (
+            &mut state.harmonizer_scale,
+            0.0,
+            (pedal_engine::harmonizer::SCALES.len() - 1) as f32,
+        ),
+        "harmonizer_interval" => (&mut state.harmonizer_interval, -7.0, 7.0),
+        "harmonizer_mix" => (&mut state.harmonizer_mix, 0.0, 1.0),
         _ => return Err("unknown control"),
     };
     if !(minimum..=maximum).contains(&value)
@@ -2058,7 +2070,14 @@ fn set_control(state: &mut EngineState, control: &str, value: f32) -> Result<(),
     {
         return Err("control value is outside its supported range");
     }
-    *target = value;
+    *target = if matches!(
+        control,
+        "harmonizer_key" | "harmonizer_scale" | "harmonizer_interval"
+    ) {
+        value.round()
+    } else {
+        value
+    };
     if control == "input_reference_dbu" {
         state.input_reference_set = true;
     }

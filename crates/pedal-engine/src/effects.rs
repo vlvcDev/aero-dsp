@@ -136,9 +136,16 @@ pub struct EffectsParameters {
     delay_time_ms: AtomicFloat,
     delay_feedback: AtomicFloat,
     delay_mix: AtomicFloat,
+    delay_duck: AtomicFloat,
     reverb_enabled: AtomicBool,
     reverb_decay_seconds: AtomicFloat,
     reverb_mix: AtomicFloat,
+    reverb_duck: AtomicFloat,
+    harmonizer_enabled: AtomicBool,
+    harmonizer_key: AtomicFloat,
+    harmonizer_scale: AtomicFloat,
+    harmonizer_interval: AtomicFloat,
+    harmonizer_mix: AtomicFloat,
     looper_mode: AtomicU8,
     looper_bpm: AtomicU32,
     looper_bars: AtomicU8,
@@ -202,9 +209,16 @@ impl EffectsParameters {
             delay_time_ms: AtomicFloat::new(state.delay_time_ms),
             delay_feedback: AtomicFloat::new(state.delay_feedback),
             delay_mix: AtomicFloat::new(state.delay_mix),
+            delay_duck: AtomicFloat::new(state.delay_duck),
             reverb_enabled: AtomicBool::new(state.reverb_enabled),
             reverb_decay_seconds: AtomicFloat::new(state.reverb_decay_seconds),
             reverb_mix: AtomicFloat::new(state.reverb_mix),
+            reverb_duck: AtomicFloat::new(state.reverb_duck),
+            harmonizer_enabled: AtomicBool::new(state.harmonizer_enabled),
+            harmonizer_key: AtomicFloat::new(state.harmonizer_key),
+            harmonizer_scale: AtomicFloat::new(state.harmonizer_scale),
+            harmonizer_interval: AtomicFloat::new(state.harmonizer_interval),
+            harmonizer_mix: AtomicFloat::new(state.harmonizer_mix),
             looper_mode: AtomicU8::new(LooperMode::from_state(&state.looper_mode) as u8),
             looper_bpm: AtomicU32::new(state.looper_bpm),
             looper_bars: AtomicU8::new(state.looper_bars),
@@ -278,6 +292,24 @@ impl EffectsParameters {
             .store(state.reverb_enabled, Ordering::Relaxed);
         self.reverb_decay_seconds.store(state.reverb_decay_seconds);
         self.reverb_mix.store(state.reverb_mix);
+        self.delay_duck.store(state.delay_duck);
+        self.reverb_duck.store(state.reverb_duck);
+        self.harmonizer_enabled
+            .store(state.harmonizer_enabled, Ordering::Relaxed);
+        self.harmonizer_key.store(state.harmonizer_key);
+        self.harmonizer_scale.store(state.harmonizer_scale);
+        self.harmonizer_interval.store(state.harmonizer_interval);
+        self.harmonizer_mix.store(state.harmonizer_mix);
+    }
+
+    fn harmonizer_settings(&self) -> crate::harmonizer::HarmonizerSettings {
+        crate::harmonizer::HarmonizerSettings {
+            enabled: self.harmonizer_enabled.load(Ordering::Relaxed),
+            key: self.harmonizer_key.load().round() as i32,
+            scale: self.harmonizer_scale.load().round().max(0.0) as usize,
+            steps: self.harmonizer_interval.load().round().clamp(-7.0, 7.0) as i32,
+            mix: self.harmonizer_mix.load().clamp(0.0, 1.0),
+        }
     }
 
     /// (enabled, threshold dB) for input-floor squelch users outside the
@@ -416,6 +448,10 @@ pub struct EffectChainProcessor<P> {
     octaver: crate::octaver::Octaver,
     delay_buffer: Vec<f32>,
     delay_write: usize,
+    delay_ducker: crate::duck::Ducker,
+    reverb_ducker: crate::duck::Ducker,
+    /// Only on the main (left/mono) channel; it feeds both outputs.
+    harmonizer: Option<Box<crate::harmonizer::Harmonizer>>,
     reverb: crate::reverb::Reverb,
     reverb_mix: f32,
     reverb_remaining: usize,
@@ -485,6 +521,9 @@ impl<P> EffectChainProcessor<P> {
             octaver: crate::octaver::Octaver::new(sample_rate),
             delay_buffer: vec![0.0; (sample_rate_f32 * 2.0) as usize],
             delay_write: 0,
+            delay_ducker: crate::duck::Ducker::new(sample_rate),
+            reverb_ducker: crate::duck::Ducker::new(sample_rate),
+            harmonizer: stereo.then(|| Box::new(crate::harmonizer::Harmonizer::new(sample_rate))),
             reverb: crate::reverb::Reverb::new(sample_rate),
             reverb_mix: 0.0,
             reverb_remaining: 0,
@@ -648,13 +687,17 @@ impl<P> EffectChainProcessor<P> {
             / 1_000.0) as usize;
         let feedback = self.parameters.delay_feedback.load().clamp(0.0, 0.92);
         let mix = self.parameters.delay_mix.load().clamp(0.0, 1.0);
+        let duck = self.parameters.delay_duck.load().clamp(0.0, 1.0);
         for sample in samples {
             let read = (self.delay_write + self.delay_buffer.len() - delay_samples)
                 % self.delay_buffer.len();
             let delayed = self.delay_buffer[read];
             self.delay_buffer[self.delay_write] = *sample + delayed * feedback;
             self.delay_write = (self.delay_write + 1) % self.delay_buffer.len();
-            *sample = *sample * (1.0 - mix) + delayed * mix;
+            // Only the output ducks; repeats keep building in the buffer and
+            // bloom once you stop.
+            let wet = delayed * mix * self.delay_ducker.tick(*sample, duck);
+            *sample = *sample * (1.0 - mix) + wet;
         }
     }
 
@@ -675,9 +718,11 @@ impl<P> EffectChainProcessor<P> {
             0.0
         };
         let smoothing = 1.0 - (-1.0 / (0.010 * self.sample_rate)).exp();
+        let duck = self.parameters.reverb_duck.load().clamp(0.0, 1.0);
         for sample in samples.iter_mut() {
             let dry = *sample;
-            let wet = self.reverb.tick(if enabled { dry } else { 0.0 });
+            let wet = self.reverb.tick(if enabled { dry } else { 0.0 })
+                * self.reverb_ducker.tick(dry, duck);
             self.reverb_mix += (target - self.reverb_mix) * smoothing;
             *sample = dry * (1.0 - self.reverb_mix) + wet * self.reverb_mix;
         }
@@ -792,6 +837,9 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
         for (input, out) in samples.chunks_mut(1024).zip(output.chunks_mut(1024)) {
             self.process_gate(input);
             self.process_squelch(input);
+            if let Some(h) = &mut self.harmonizer {
+                h.track(input);
+            }
             self.process_compressor(input);
             self.process_octaver(input);
             self.source.process_stereo(input, out);
@@ -812,6 +860,9 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
                 .process(settings, &self.parameters.dehiss_meter, left, Some(right));
             self.apply_gate_to_model_output(left);
             self.apply_gate_to_model_output(right);
+            if let Some(h) = &mut self.harmonizer {
+                h.process(left, Some(right), self.parameters.harmonizer_settings());
+            }
             self.process_eq(left);
             self.process_chorus(left);
             self.process_flanger(left);
@@ -838,6 +889,9 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
         for samples in samples.chunks_mut(self.gate_gains.len()) {
             self.process_gate(samples);
             self.process_squelch(samples);
+            if let Some(h) = &mut self.harmonizer {
+                h.track(samples);
+            }
             self.process_compressor(samples);
             self.process_octaver(samples);
             self.source.process(samples);
@@ -851,6 +905,9 @@ impl<P: MonoProcessor> MonoProcessor for EffectChainProcessor<P> {
             self.dehiss
                 .process(settings, &self.parameters.dehiss_meter, samples, None);
             self.apply_gate_to_model_output(samples);
+            if let Some(h) = &mut self.harmonizer {
+                h.process(samples, None, self.parameters.harmonizer_settings());
+            }
             self.process_eq(samples);
             self.process_chorus(samples);
             self.process_flanger(samples);

@@ -18,7 +18,9 @@ pub mod dsp;
 pub mod edge_amp;
 pub mod effects;
 pub mod fuzz;
+pub mod duck;
 pub mod gate;
+pub mod harmonizer;
 pub mod live_parameters;
 pub mod metronome;
 pub mod nam_eq;
@@ -182,10 +184,23 @@ pub struct EngineState {
     pub delay_time_ms: f32,
     pub delay_feedback: f32,
     pub delay_mix: f32,
+    /// 0..1: how far the repeats duck while you play (they swell back in the gaps).
+    pub delay_duck: f32,
     pub reverb_enabled: bool,
     pub reverb_visible: bool,
     pub reverb_decay_seconds: f32,
     pub reverb_mix: f32,
+    /// 0..1: how far the reverb tail ducks while you play.
+    pub reverb_duck: f32,
+    pub harmonizer_enabled: bool,
+    pub harmonizer_visible: bool,
+    /// Key root, 0 = C .. 11 = B.
+    pub harmonizer_key: f32,
+    /// Index into `harmonizer::SCALES`.
+    pub harmonizer_scale: f32,
+    /// Harmony distance in scale steps (2 = a third up, -2 = a third down).
+    pub harmonizer_interval: f32,
+    pub harmonizer_mix: f32,
     pub looper_mode: String,
     pub looper_visible: bool,
     pub looper_bpm: u32,
@@ -294,10 +309,18 @@ impl Default for EngineState {
             delay_time_ms: 360.0,
             delay_feedback: 0.35,
             delay_mix: 0.25,
+            delay_duck: 0.0,
             reverb_enabled: false,
             reverb_visible: false,
             reverb_decay_seconds: 2.5,
             reverb_mix: 0.25,
+            reverb_duck: 0.0,
+            harmonizer_enabled: false,
+            harmonizer_visible: false,
+            harmonizer_key: 4.0,
+            harmonizer_scale: 0.0,
+            harmonizer_interval: 2.0,
+            harmonizer_mix: 0.5,
             looper_mode: "stopped".to_owned(),
             looper_visible: false,
             looper_bpm: 100,
@@ -423,6 +446,18 @@ impl EngineState {
         snapshot["squelch_enabled"] = json!(self.squelch_enabled);
         snapshot["squelch_threshold_db"] = json!(self.squelch_threshold_db);
         snapshot["cabinet_folder"] = json!(self.cabinet_folder);
+        snapshot["delay_duck"] = json!(self.delay_duck);
+        snapshot["reverb_duck"] = json!(self.reverb_duck);
+        snapshot["harmonizer_enabled"] = json!(self.harmonizer_enabled);
+        snapshot["harmonizer_visible"] = json!(self.harmonizer_visible);
+        snapshot["harmonizer_key"] = json!(self.harmonizer_key);
+        snapshot["harmonizer_scale"] = json!(self.harmonizer_scale);
+        snapshot["harmonizer_interval"] = json!(self.harmonizer_interval);
+        snapshot["harmonizer_mix"] = json!(self.harmonizer_mix);
+        snapshot["harmonizer_latency_ms"] = json!(
+            crate::harmonizer::latency_frames(self.sample_rate) as f64 * 1000.0
+                / self.sample_rate.max(1) as f64
+        );
         snapshot["demud_enabled"] = json!(self.demud_enabled);
         snapshot["demud_visible"] = json!(self.demud_visible);
         snapshot["demud_threshold_db"] = json!(self.demud_threshold_db);

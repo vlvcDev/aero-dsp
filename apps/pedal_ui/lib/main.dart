@@ -999,6 +999,12 @@ class _RigScreenState extends State<RigScreen> {
                                 active: _chordsWorkspace,
                                 meters: _client.meters,
                                 onMetronomeChanged: _client.setMetronome,
+                                onHarmonyKey: (root) async {
+                                  await _client.setControl(
+                                      'harmonizer_key', root.toDouble());
+                                  await _client.setControl(
+                                      'harmonizer_scale', 0);
+                                },
                                 chords: (active) => ChordWorkspace(
                                     catalog: _catalog,
                                     client: _client,
@@ -1597,6 +1603,7 @@ class _RigScreenState extends State<RigScreen> {
       EffectKind.demud => OptionalPedal.demud,
       EffectKind.delay => OptionalPedal.delay,
       EffectKind.reverb => OptionalPedal.reverb,
+      EffectKind.harmonizer => OptionalPedal.harmonizer,
       EffectKind.gate || EffectKind.compressor => null,
     };
     showAeroControlBay<void>(
@@ -1824,6 +1831,7 @@ enum EffectKind {
   octaver,
   delay,
   reverb,
+  harmonizer,
 }
 
 enum OptionalPedal {
@@ -1835,6 +1843,7 @@ enum OptionalPedal {
   octaver,
   delay,
   reverb,
+  harmonizer,
   demud,
   looper,
 }
@@ -1850,6 +1859,7 @@ extension OptionalPedalDetails on OptionalPedal {
         OptionalPedal.octaver => 'OCTAVER',
         OptionalPedal.delay => 'DELAY',
         OptionalPedal.reverb => 'REVERB',
+        OptionalPedal.harmonizer => 'HARMONY',
         OptionalPedal.looper => 'LOOPER',
       };
 
@@ -1864,6 +1874,8 @@ extension OptionalPedalDetails on OptionalPedal {
           'Analog grit or clean, chord-capable octave down',
         OptionalPedal.delay => 'Repeat your signal over time',
         OptionalPedal.reverb => 'Add space and decay',
+        OptionalPedal.harmonizer =>
+          'A second guitar a third or fifth away, in key',
         OptionalPedal.looper => 'Capture and layer a performance',
       };
 
@@ -1877,6 +1889,7 @@ extension OptionalPedalDetails on OptionalPedal {
         OptionalPedal.octaver => Icons.south,
         OptionalPedal.delay => Icons.repeat,
         OptionalPedal.reverb => Icons.blur_on,
+        OptionalPedal.harmonizer => Icons.queue_music,
         OptionalPedal.looper => Icons.loop,
       };
 
@@ -1894,6 +1907,7 @@ extension OptionalPedalDetails on OptionalPedal {
         OptionalPedal.octaver => EffectKind.octaver,
         OptionalPedal.delay => EffectKind.delay,
         OptionalPedal.reverb => EffectKind.reverb,
+        OptionalPedal.harmonizer => EffectKind.harmonizer,
         OptionalPedal.looper => null,
       };
 }
@@ -1938,6 +1952,7 @@ extension EffectKindDetails on EffectKind {
         EffectKind.octaver => 'OCTAVER',
         EffectKind.delay => 'DELAY',
         EffectKind.reverb => 'REVERB',
+        EffectKind.harmonizer => 'HARMONY',
       };
 
   IconData get icon => switch (this) {
@@ -1952,6 +1967,7 @@ extension EffectKindDetails on EffectKind {
         EffectKind.octaver => Icons.south,
         EffectKind.delay => Icons.repeat,
         EffectKind.reverb => Icons.blur_on,
+        EffectKind.harmonizer => Icons.queue_music,
       };
 
   Color get color => switch (this) {
@@ -1966,6 +1982,7 @@ extension EffectKindDetails on EffectKind {
         EffectKind.octaver => const Color(0xff7a65dd),
         EffectKind.delay => const Color(0xff147cd1),
         EffectKind.reverb => const Color(0xff5466cf),
+        EffectKind.harmonizer => const Color(0xff9a5bd6),
       };
 }
 
@@ -2162,13 +2179,16 @@ class Pedalboard extends StatelessWidget {
                 onFootswitch: () =>
                     onEffectToggle(effect, snapshot.effectEnabled(effect)),
               );
-          final optionalPedals = OptionalPedal.values
-              .where((pedal) =>
-                  pedal != OptionalPedal.octaver &&
-                  pedal != OptionalPedal.dehiss &&
-                  pedal != OptionalPedal.demud &&
-                  snapshot.pedalVisible(pedal))
-              .toList(growable: false);
+          final shown = OptionalPedal.values.where((pedal) =>
+              pedal != OptionalPedal.octaver &&
+              pedal != OptionalPedal.dehiss &&
+              pedal != OptionalPedal.demud &&
+              snapshot.pedalVisible(pedal));
+          // The engine runs HARMONY straight after the amp, before EQ.
+          final optionalPedals = [
+            ...shown.where((p) => p == OptionalPedal.harmonizer),
+            ...shown.where((p) => p != OptionalPedal.harmonizer),
+          ];
           return ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: DecoratedBox(
@@ -5813,11 +5833,25 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                 percent: true),
             _ControlDefinition('delay_mix', 'MIX', 0, 1, 20, '%',
                 percent: true),
+            _ControlDefinition('delay_duck', 'DUCK', 0, 1, 20, '%',
+                percent: true),
           ],
         EffectKind.reverb => const [
             _ControlDefinition(
                 'reverb_decay_seconds', 'DECAY', .3, 12, 47, 's'),
             _ControlDefinition('reverb_mix', 'MIX', 0, 1, 20, '%',
+                percent: true),
+            _ControlDefinition('reverb_duck', 'DUCK', 0, 1, 20, '%',
+                percent: true),
+          ],
+        EffectKind.harmonizer => const [
+            _ControlDefinition('harmonizer_key', 'KEY', 0, 11, 11, '',
+                labels: scaleKeyNames),
+            _ControlDefinition('harmonizer_scale', 'SCALE', 0, 5, 5, '',
+                labels: harmonizerScaleNames),
+            _ControlDefinition('harmonizer_interval', 'INTERVAL', -7, 7, 14, '',
+                labels: harmonizerIntervalNames),
+            _ControlDefinition('harmonizer_mix', 'HARMONY', 0, 1, 20, '%',
                 percent: true),
           ],
       };
@@ -6045,6 +6079,20 @@ class _EffectControlsSheetState extends State<EffectControlsSheet> {
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: LostChrome.ice, fontSize: 12),
                 ),
+              ],
+              if (detail == EffectKind.harmonizer) ...[
+                const SizedBox(height: 4),
+                Text(
+                    'Play single notes: the harmony follows the KEY and SCALE, so a 3RD UP is minor or major as the key needs. HARMONY IN THIS KEY on the SCALES page sets the key for you.${widget.snapshot.harmonizerLatencyMs > 0 ? ' Voice +${widget.snapshot.harmonizerLatencyMs.toStringAsFixed(0)} ms.' : ''}',
+                    style:
+                        const TextStyle(color: LostChrome.ice, fontSize: 12)),
+              ],
+              if (detail == EffectKind.delay ||
+                  detail == EffectKind.reverb) ...[
+                const SizedBox(height: 4),
+                const Text(
+                    'DUCK pushes the effect down while you play and lets it swell back when you stop. Fast runs stay tight; the space fills the gaps.',
+                    style: TextStyle(color: LostChrome.ice, fontSize: 12)),
               ],
               if (detail == EffectKind.octaver) ...[
                 const SizedBox(height: 8),
@@ -12024,6 +12072,7 @@ class _ControlDefinition {
     this.unit, {
     this.percent = false,
     this.logarithmic = false,
+    this.labels,
   });
 
   final String keyName;
@@ -12035,15 +12084,20 @@ class _ControlDefinition {
   final bool percent;
   final bool logarithmic;
 
+  /// Names for whole-number steps from [minimum] (key, scale, interval).
+  final List<String>? labels;
+
   double sliderValue(double v) => logarithmic
       ? math.log(v.clamp(minimum, maximum))
       : v.clamp(minimum, maximum);
   double actualValue(double v) =>
       logarithmic ? math.exp(v).clamp(minimum, maximum) : v;
 
-  String format(double value) => percent
-      ? '${(value * 100).round()}$unit'
-      : '${value >= 0 ? '+' : ''}${value.toStringAsFixed(1)} $unit';
+  String format(double value) => labels != null
+      ? labels![(value - minimum).round().clamp(0, labels!.length - 1)]
+      : percent
+          ? '${(value * 100).round()}$unit'
+          : '${value >= 0 ? '+' : ''}${value.toStringAsFixed(1)} $unit';
 }
 
 class _VerticalControlBank extends StatelessWidget {
@@ -14596,6 +14650,15 @@ class EngineSnapshot {
     required this.reverbVisible,
     required this.reverbDecaySeconds,
     required this.reverbMix,
+    this.delayDuck = 0,
+    this.reverbDuck = 0,
+    this.harmonizerEnabled = false,
+    this.harmonizerVisible = false,
+    this.harmonizerKey = 4,
+    this.harmonizerScale = 0,
+    this.harmonizerInterval = 2,
+    this.harmonizerMix = .5,
+    this.harmonizerLatencyMs = 0,
     required this.looperMode,
     required this.looperVisible,
     required this.looperBpm,
@@ -14692,6 +14755,15 @@ class EngineSnapshot {
         reverbVisible = false,
         reverbDecaySeconds = 2.5,
         reverbMix = .25,
+        delayDuck = 0,
+        reverbDuck = 0,
+        harmonizerEnabled = false,
+        harmonizerVisible = false,
+        harmonizerKey = 4,
+        harmonizerScale = 0,
+        harmonizerInterval = 2,
+        harmonizerMix = .5,
+        harmonizerLatencyMs = 0,
         looperMode = 'stopped',
         looperVisible = false,
         looperBpm = 100,
@@ -14795,6 +14867,17 @@ class EngineSnapshot {
       reverbDecaySeconds:
           (json['reverb_decay_seconds'] as num?)?.toDouble() ?? 2.5,
       reverbMix: (json['reverb_mix'] as num?)?.toDouble() ?? .25,
+      delayDuck: (json['delay_duck'] as num?)?.toDouble() ?? 0,
+      reverbDuck: (json['reverb_duck'] as num?)?.toDouble() ?? 0,
+      harmonizerEnabled: json['harmonizer_enabled'] as bool? ?? false,
+      harmonizerVisible: json['harmonizer_visible'] as bool? ?? false,
+      harmonizerKey: (json['harmonizer_key'] as num?)?.toDouble() ?? 4,
+      harmonizerScale: (json['harmonizer_scale'] as num?)?.toDouble() ?? 0,
+      harmonizerInterval:
+          (json['harmonizer_interval'] as num?)?.toDouble() ?? 2,
+      harmonizerMix: (json['harmonizer_mix'] as num?)?.toDouble() ?? .5,
+      harmonizerLatencyMs:
+          (json['harmonizer_latency_ms'] as num?)?.toDouble() ?? 0,
       looperMode: json['looper_mode'] as String? ?? 'stopped',
       looperVisible: json['looper_visible'] as bool? ?? false,
       looperBpm: json['looper_bpm'] as int? ?? 100,
@@ -14892,6 +14975,15 @@ class EngineSnapshot {
   final bool reverbVisible;
   final double reverbDecaySeconds;
   final double reverbMix;
+  final double delayDuck;
+  final double reverbDuck;
+  final bool harmonizerEnabled;
+  final bool harmonizerVisible;
+  final double harmonizerKey;
+  final double harmonizerScale;
+  final double harmonizerInterval;
+  final double harmonizerMix;
+  final double harmonizerLatencyMs;
   final String looperMode;
   final bool looperVisible;
   final int looperBpm;
@@ -14914,6 +15006,7 @@ class EngineSnapshot {
         EffectKind.octaver => octaverEnabled,
         EffectKind.delay => delayEnabled,
         EffectKind.reverb => reverbEnabled,
+        EffectKind.harmonizer => harmonizerEnabled,
       };
 
   bool pedalVisible(OptionalPedal pedal) => switch (pedal) {
@@ -14926,6 +15019,7 @@ class EngineSnapshot {
         OptionalPedal.octaver => octaverVisible,
         OptionalPedal.delay => delayVisible,
         OptionalPedal.reverb => reverbVisible,
+        OptionalPedal.harmonizer => harmonizerVisible,
         OptionalPedal.looper => looperVisible,
       };
 
@@ -14980,10 +15074,18 @@ class EngineSnapshot {
             'delay_time_ms': delayTimeMs,
             'delay_feedback': delayFeedback,
             'delay_mix': delayMix,
+            'delay_duck': delayDuck,
           },
         EffectKind.reverb => {
             'reverb_decay_seconds': reverbDecaySeconds,
             'reverb_mix': reverbMix,
+            'reverb_duck': reverbDuck,
+          },
+        EffectKind.harmonizer => {
+            'harmonizer_key': harmonizerKey,
+            'harmonizer_scale': harmonizerScale,
+            'harmonizer_interval': harmonizerInterval,
+            'harmonizer_mix': harmonizerMix,
           },
       };
 
