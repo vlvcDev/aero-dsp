@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pedal_ui/main.dart';
@@ -160,4 +162,35 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+
+  testWidgets('a folder cab steps through its WAVs in natural order',
+      (tester) async {
+    final folder = Directory.systemTemp.createTempSync('Mesa 4x12 ');
+    addTearDown(() => folder.deleteSync(recursive: true));
+    for (final name in ['Mic 10.wav', 'Mic 2.WAV', 'notes.txt']) {
+      File('${folder.path}/$name').writeAsStringSync('');
+    }
+    final selected = <String>[];
+    await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+      body: CabinetControlsSheet(
+        snapshot: EngineSnapshot.fromJson({
+          'cabinet_ir': '${folder.path}/Mic 2.WAV',
+          'cabinet_folder': folder.path,
+        }),
+        onChanged: (_, __) async {},
+        onChooseIr: () async {},
+        onClear: () async {},
+        onSelectPreset: (path, folder) async => selected.add(path),
+      ),
+    )));
+    expect(find.text(folder.path.split('/').last), findsOneWidget);
+    expect(find.textContaining('2 presets'), findsOneWidget);
+    await tester.tap(find.byTooltip('Next cab preset'));
+    await tester.pump();
+    expect(selected, ['${folder.path}/Mic 10.wav']);
+    await tester.tap(find.byTooltip('Next cab preset'));
+    await tester.pump();
+    expect(selected.last, '${folder.path}/Mic 2.WAV');
+  });
 }

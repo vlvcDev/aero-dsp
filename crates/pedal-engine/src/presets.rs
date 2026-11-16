@@ -29,6 +29,7 @@ pub struct PresetRig {
     pub amp_volume_db: f32,
     pub cabinet_enabled: bool,
     pub cabinet_ir: Option<String>,
+    pub cabinet_folder: Option<String>,
     pub cabinet_gain_db: f32,
     pub cabinet_low_cut_hz: f32,
     pub cabinet_high_cut_hz: f32,
@@ -121,6 +122,7 @@ impl PresetRig {
             amp_volume_db: state.amp_volume_db,
             cabinet_enabled: state.cabinet_enabled,
             cabinet_ir: state.cabinet_ir.clone(),
+            cabinet_folder: state.cabinet_folder.clone(),
             cabinet_gain_db: state.cabinet_gain_db,
             cabinet_low_cut_hz: state.cabinet_low_cut_hz,
             cabinet_high_cut_hz: state.cabinet_high_cut_hz,
@@ -206,6 +208,7 @@ impl PresetRig {
         state.amp_volume_db = self.amp_volume_db;
         state.cabinet_enabled = self.cabinet_enabled;
         state.cabinet_ir.clone_from(&self.cabinet_ir);
+        state.cabinet_folder.clone_from(&self.cabinet_folder);
         state.cabinet_gain_db = self.cabinet_gain_db;
         state.cabinet_low_cut_hz = self.cabinet_low_cut_hz;
         state.cabinet_high_cut_hz = self.cabinet_high_cut_hz;

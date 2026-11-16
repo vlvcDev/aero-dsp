@@ -20,6 +20,7 @@ part 'node_audio.dart';
 part 'tone_workbench.dart';
 part 'node_library.dart';
 part 'tone_browser.dart';
+part 'scales.dart';
 
 const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');
 
@@ -994,10 +995,15 @@ class _RigScreenState extends State<RigScreen> {
                                 catalog: _catalog,
                                 toneSnapshot: _engine.presetTitle,
                               ),
-                              ChordWorkspace(
-                                  catalog: _catalog,
-                                  client: _client,
-                                  active: _chordsWorkspace),
+                              TheoryWorkspace(
+                                active: _chordsWorkspace,
+                                meters: _client.meters,
+                                onMetronomeChanged: _client.setMetronome,
+                                chords: (active) => ChordWorkspace(
+                                    catalog: _catalog,
+                                    client: _client,
+                                    active: active),
+                              ),
                               PatchEditor(
                                   document: _patchDocument, client: _client),
                             ],
@@ -1085,6 +1091,11 @@ class _RigScreenState extends State<RigScreen> {
         onSelectModel: _client.selectModel,
         onSelectCabinet: _client.selectCabinet,
         onBrowseFiles: target == ToneTarget.cabinet ? _chooseCabinetIr : null,
+        onBrowseFolder: target == ToneTarget.cabinet
+            ? () async {
+                await _chooseCabinetFolder();
+              }
+            : null,
       ),
     ));
   }
@@ -1622,6 +1633,12 @@ class _RigScreenState extends State<RigScreen> {
           Navigator.pop(context);
           _showToneBrowser(ToneTarget.cabinet);
         },
+        onChooseFolder: () async {
+          Navigator.pop(context);
+          if (await _chooseCabinetFolder() && mounted) _showCabinetControls();
+        },
+        onSelectPreset: (path, folder) =>
+            _client.selectCabinet(path, folder: folder),
         onClear: _client.clearCabinet,
       ),
     );
@@ -1649,6 +1666,42 @@ class _RigScreenState extends State<RigScreen> {
             .showSnackBar(SnackBar(content: Text('$error')));
       }
     }
+  }
+
+  /// Loads a folder of WAV IRs as one cab (its files become presets).
+  /// Returns whether a cab was loaded.
+  Future<bool> _chooseCabinetFolder() async {
+    try {
+      final result = await Process.run('zenity', [
+        '--file-selection',
+        '--directory',
+        '--title=Choose a cab folder (each WAV inside is a preset)',
+      ]);
+      if (result.exitCode != 0) return false;
+      final folder = (result.stdout as String).trim();
+      if (folder.isEmpty) return false;
+      final irs = cabinetFolderIrs(folder);
+      if (irs.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('No WAV impulse responses in that folder')));
+        }
+        return false;
+      }
+      await _client.selectCabinet(irs.first, folder: folder);
+      return true;
+    } on ProcessException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('The system file picker is unavailable')));
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+    return false;
   }
 
   void _showLooperControls() {
@@ -2254,7 +2307,12 @@ class Pedalboard extends StatelessWidget {
                                 active: snapshot.cabinetEnabled,
                                 height: tileHeight,
                                 disabled: !snapshot.connected,
-                                irName: snapshot.cabinetIr?.split('/').last,
+                                irName: cabinetDisplayName(
+                                    snapshot.cabinetIr, snapshot.cabinetFolder),
+                                presetName: snapshot.cabinetFolder != null &&
+                                        snapshot.cabinetIr != null
+                                    ? cabinetPresetName(snapshot.cabinetIr!)
+                                    : null,
                                 gainDb: snapshot.cabinetGainDb,
                                 lowCutHz: snapshot.cabinetLowCutHz,
                                 highCutHz: snapshot.cabinetHighCutHz,
@@ -3435,6 +3493,7 @@ class _RoadcaseCabinetTile extends StatefulWidget {
     required this.height,
     required this.disabled,
     required this.irName,
+    this.presetName,
     required this.gainDb,
     required this.lowCutHz,
     required this.highCutHz,
@@ -3448,6 +3507,9 @@ class _RoadcaseCabinetTile extends StatefulWidget {
   final double height;
   final bool disabled;
   final String? irName;
+
+  /// The active preset of a folder cab, shown under its name.
+  final String? presetName;
   final double gainDb;
   final double lowCutHz;
   final double highCutHz;
@@ -3857,16 +3919,33 @@ class _RoadcaseCabinetTileState extends State<_RoadcaseCabinetTile> {
                           color: LostChrome.ice.withValues(alpha: .62),
                         ),
                       ),
-                      child: Text(
-                        irName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: LostChrome.ice,
-                          fontSize: roomy ? 10 : 7,
-                          fontWeight: FontWeight.w900,
-                        ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            irName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: LostChrome.ice,
+                              fontSize: roomy ? 10 : 7,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                          if (roomy && widget.presetName != null)
+                            Text(
+                              widget.presetName!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Color(0xffa2d5f5),
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   ] else if (!dense) ...[
@@ -4986,18 +5065,70 @@ class _NamEqSlidersState extends State<_NamEqSliders> {
       onChangeEnd: widget.onCommit);
 }
 
+/// WAV IRs directly inside [folder], in natural order ("Mic 2" before
+/// "Mic 10"). Empty when the folder is missing or unreadable.
+List<String> cabinetFolderIrs(String folder) {
+  try {
+    final paths = Directory(folder)
+        .listSync(followLinks: true)
+        .whereType<File>()
+        .map((f) => f.path)
+        .where((p) => p.toLowerCase().endsWith('.wav'))
+        .toList()
+      ..sort((a, b) => _naturalCompare(
+          _baseName(a).toLowerCase(), _baseName(b).toLowerCase()));
+    return paths;
+  } on FileSystemException {
+    return const [];
+  }
+}
+
+String _baseName(String path) => path.split(Platform.pathSeparator).last;
+
+/// File name without the .wav extension, as shown for a cab preset.
+String cabinetPresetName(String path) =>
+    _baseName(path).replaceFirst(RegExp(r'\.wav$', caseSensitive: false), '');
+
+/// Display name of a cab: the folder name for a folder cab, else the file.
+String? cabinetDisplayName(String? ir, String? folder) => folder != null
+    ? _baseName(folder)
+    : ir == null
+        ? null
+        : cabinetPresetName(ir);
+
+int _naturalCompare(String a, String b) {
+  final chunk = RegExp(r'\d+|\D+');
+  final left = chunk.allMatches(a).map((m) => m[0]!).toList();
+  final right = chunk.allMatches(b).map((m) => m[0]!).toList();
+  for (var i = 0; i < math.min(left.length, right.length); i++) {
+    final x = int.tryParse(left[i]), y = int.tryParse(right[i]);
+    final order =
+        x != null && y != null ? x.compareTo(y) : left[i].compareTo(right[i]);
+    if (order != 0) return order;
+  }
+  return left.length.compareTo(right.length);
+}
+
 class CabinetControlsSheet extends StatefulWidget {
   const CabinetControlsSheet({
     required this.snapshot,
     required this.onChanged,
     required this.onChooseIr,
     required this.onClear,
+    this.onChooseFolder,
+    this.onSelectPreset,
     super.key,
   });
 
   final EngineSnapshot snapshot;
   final Future<void> Function(String, double) onChanged;
   final Future<void> Function() onChooseIr;
+
+  /// Loads a folder of WAVs as one cab.
+  final Future<void> Function()? onChooseFolder;
+
+  /// Switches to another IR of the loaded folder cab.
+  final Future<void> Function(String path, String folder)? onSelectPreset;
   final Future<void> Function() onClear;
 
   @override
@@ -5006,6 +5137,81 @@ class CabinetControlsSheet extends StatefulWidget {
 
 class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
   late final Map<String, double> _values;
+  late String? _ir = widget.snapshot.cabinetIr;
+  late final String? _folder = widget.snapshot.cabinetFolder;
+  late final List<String> _presets =
+      _folder == null ? const [] : cabinetFolderIrs(_folder);
+  bool _switching = false;
+
+  Future<void> _selectPreset(String path) async {
+    final folder = _folder;
+    if (folder == null || path == _ir || _switching) return;
+    setState(() => _switching = true);
+    try {
+      await widget.onSelectPreset?.call(path, folder);
+      if (mounted) setState(() => _ir = path);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _switching = false);
+    }
+  }
+
+  void _step(int delta) {
+    if (_presets.isEmpty) return;
+    final index = _presets.indexOf(_ir ?? '');
+    final next = index < 0 ? 0 : (index + delta) % _presets.length;
+    unawaited(_selectPreset(_presets[next]));
+  }
+
+  Widget _presetSwitcher() {
+    final current = _presets.contains(_ir) ? _ir : null;
+    return Row(
+      children: [
+        IconButton(
+          tooltip: 'Previous cab preset',
+          visualDensity: VisualDensity.compact,
+          onPressed: _switching ? null : () => _step(-1),
+          icon: const Icon(Icons.chevron_left, color: LostChrome.ice),
+        ),
+        Expanded(
+          child: DropdownButton<String>(
+            key: const ValueKey('cab-preset-dropdown'),
+            value: current,
+            isExpanded: true,
+            isDense: true,
+            dropdownColor: const Color(0xff0b2a5a),
+            hint: const Text('Choose a preset',
+                style: TextStyle(color: Color(0xffa2d5f5), fontSize: 12)),
+            style: const TextStyle(color: LostChrome.ice, fontSize: 12),
+            items: [
+              for (final path in _presets)
+                DropdownMenuItem(
+                  value: path,
+                  child: Text(cabinetPresetName(path),
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: _switching
+                ? null
+                : (path) {
+                    if (path != null) unawaited(_selectPreset(path));
+                  },
+          ),
+        ),
+        IconButton(
+          tooltip: 'Next cab preset',
+          visualDensity: VisualDensity.compact,
+          onPressed: _switching ? null : () => _step(1),
+          icon: const Icon(Icons.chevron_right, color: LostChrome.ice),
+        ),
+      ],
+    );
+  }
+
   final Map<String, double> _lastCut = {
     'cabinet_low_cut_hz': 80,
     'cabinet_high_cut_hz': 8000,
@@ -5086,8 +5292,7 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final name =
-        widget.snapshot.cabinetIr?.split('/').last ?? 'No cabinet IR loaded';
+    final name = cabinetDisplayName(_ir, _folder) ?? 'No cabinet IR loaded';
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
@@ -5109,10 +5314,13 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: LostChrome.ice, fontSize: 13),
             ),
-            const Text(
-              'WAV IR • Automatic headroom • LEVEL adjusts output',
-              style: TextStyle(color: Color(0xffa2d5f5), fontSize: 11),
+            Text(
+              _folder != null
+                  ? 'Folder cab • ${_presets.length} presets • LEVEL adjusts output'
+                  : 'WAV IR • Automatic headroom • LEVEL adjusts output',
+              style: const TextStyle(color: Color(0xffa2d5f5), fontSize: 11),
             ),
+            if (_folder != null) _presetSwitcher(),
             const SizedBox(height: 8),
             Expanded(
               child: LayoutBuilder(
@@ -5141,6 +5349,14 @@ class _CabinetControlsSheetState extends State<CabinetControlsSheet> {
                     label: const Text('CHANGE IR'),
                   ),
                 ),
+                if (widget.onChooseFolder != null) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: widget.onChooseFolder,
+                    icon: const Icon(Icons.folder_copy_outlined),
+                    label: const Text('FOLDER'),
+                  ),
+                ],
                 if (widget.snapshot.cabinetIr != null) ...[
                   const SizedBox(width: 8),
                   OutlinedButton.icon(
@@ -14316,6 +14532,7 @@ class EngineSnapshot {
     required this.ampTightHz,
     required this.cabinetEnabled,
     required this.cabinetIr,
+    this.cabinetFolder,
     required this.cabinetGainDb,
     required this.cabinetLowCutHz,
     required this.cabinetHighCutHz,
@@ -14411,6 +14628,7 @@ class EngineSnapshot {
         ampTightHz = 0,
         cabinetEnabled = false,
         cabinetIr = null,
+        cabinetFolder = null,
         cabinetGainDb = 0,
         cabinetLowCutHz = 0,
         cabinetHighCutHz = 0,
@@ -14508,6 +14726,7 @@ class EngineSnapshot {
       preIncludesCab: json['pre_includes_cab'] as bool? ?? false,
       ampIncludesCab: json['amp_includes_cab'] as bool? ?? false,
       cabinetIr: json['cabinet_ir'] as String?,
+      cabinetFolder: json['cabinet_folder'] as String?,
       cabinetGainDb: (json['cabinet_gain_db'] as num?)?.toDouble() ?? 0,
       cabinetLowCutHz: (json['cabinet_low_cut_hz'] as num?)?.toDouble() ?? 0,
       cabinetHighCutHz: (json['cabinet_high_cut_hz'] as num?)?.toDouble() ?? 0,
@@ -14609,6 +14828,9 @@ class EngineSnapshot {
   final bool preIncludesCab;
   final bool ampIncludesCab;
   final String? cabinetIr;
+
+  /// Set when a folder is loaded as one cab; its WAVs are the cab's presets.
+  final String? cabinetFolder;
   final double cabinetGainDb;
   final double cabinetLowCutHz;
   final double cabinetHighCutHz;
@@ -15221,9 +15443,9 @@ class ControlClient {
         timeoutMessage: 'Clearing the cabinet timed out',
       );
 
-  Future<void> selectCabinet(String path) => _request(
+  Future<void> selectCabinet(String path, {String? folder}) => _request(
         'select_cabinet',
-        {'path': path},
+        {'path': path, if (folder != null) 'folder': folder},
         timeout: const Duration(seconds: 15),
         timeoutMessage: 'Cabinet IR preparation timed out',
       );

@@ -1581,6 +1581,7 @@ fn handle_control_line(
     if request.message_type == "clear_cabinet" {
         model_mailboxes.cabinet.stage(None);
         state.cabinet_ir = None;
+        state.cabinet_folder = None;
         state.cabinet_enabled = false;
         mark_preset_dirty(state);
         return state_response(request.id, state);
@@ -1599,6 +1600,22 @@ fn handle_control_line(
             );
         };
         let path = Path::new(raw_path);
+        // Optional: the folder this IR belongs to when a folder is loaded as
+        // one cab. The IR must sit directly inside it.
+        let folder = request
+            .payload
+            .get("folder")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        if let Some(folder) = &folder
+            && path.parent() != Some(Path::new(folder))
+        {
+            return control_error(
+                request.id,
+                "invalid_payload",
+                "select_cabinet 'path' must be a file directly inside 'folder'",
+            );
+        }
         let impulse = match CabinetImpulse::load_with_duration(
             path,
             state.sample_rate,
@@ -1609,6 +1626,7 @@ fn handle_control_line(
         };
         model_mailboxes.cabinet.stage(Some(impulse));
         state.cabinet_ir = Some(raw_path.to_owned());
+        state.cabinet_folder = folder;
         state.cabinet_enabled = true;
         mark_preset_dirty(state);
         return state_response(request.id, state);

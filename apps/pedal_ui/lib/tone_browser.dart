@@ -98,6 +98,7 @@ class ToneBrowser extends StatefulWidget {
     this.nowPlayingPath,
     this.initialSource,
     this.onBrowseFiles,
+    this.onBrowseFolder,
     super.key,
   });
 
@@ -110,6 +111,9 @@ class ToneBrowser extends StatefulWidget {
 
   /// Fallback file picker for IRs that are not indexed yet (cabinet only).
   final Future<void> Function()? onBrowseFiles;
+
+  /// Loads a folder of IRs as one cab with presets (cabinet only).
+  final Future<void> Function()? onBrowseFolder;
 
   @override
   State<ToneBrowser> createState() => _ToneBrowserState();
@@ -595,6 +599,21 @@ class _ToneBrowserState extends State<ToneBrowser> {
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     onPressed: () async {
                       await widget.onBrowseFiles!();
+                      if (mounted) _fetch();
+                    },
+                  ),
+                if (_isCab &&
+                    _source == ToneSource.library &&
+                    widget.onBrowseFolder != null)
+                  ActionChip(
+                    avatar: const Icon(Icons.folder_copy_outlined, size: 14),
+                    label: const Text('LOAD FOLDER AS CAB…',
+                        style: TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.w800)),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    onPressed: () async {
+                      await widget.onBrowseFolder!();
                       if (mounted) _fetch();
                     },
                   ),

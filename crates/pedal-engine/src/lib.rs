@@ -114,6 +114,10 @@ pub struct EngineState {
     pub amp_volume_db: f32,
     pub cabinet_enabled: bool,
     pub cabinet_ir: Option<String>,
+    /// Folder the IR was picked from when a folder is loaded as one cab:
+    /// its WAVs are that cab's presets (mic positions, blends). None for a
+    /// single-file IR.
+    pub cabinet_folder: Option<String>,
     pub cabinet_gain_db: f32,
     pub cabinet_low_cut_hz: f32,
     pub cabinet_high_cut_hz: f32,
@@ -231,6 +235,7 @@ impl Default for EngineState {
             amp_volume_db: 0.0,
             cabinet_enabled: false,
             cabinet_ir: None,
+            cabinet_folder: None,
             cabinet_gain_db: 0.0,
             cabinet_low_cut_hz: 0.0,
             cabinet_high_cut_hz: 0.0,
@@ -417,6 +422,7 @@ impl EngineState {
         snapshot["compressor_mix"] = json!(self.compressor_mix);
         snapshot["squelch_enabled"] = json!(self.squelch_enabled);
         snapshot["squelch_threshold_db"] = json!(self.squelch_threshold_db);
+        snapshot["cabinet_folder"] = json!(self.cabinet_folder);
         snapshot["demud_enabled"] = json!(self.demud_enabled);
         snapshot["demud_visible"] = json!(self.demud_visible);
         snapshot["demud_threshold_db"] = json!(self.demud_threshold_db);
