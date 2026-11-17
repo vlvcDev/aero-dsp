@@ -34,7 +34,7 @@ Pedal V0 is a Raspberry Pi 5 guitar processor focused on two jobs: running Neura
 
 ## Desktop control-plane demo
 
-Run `tools/dev.sh demo` to build and start the real Rust engine without opening an audio device, start the catalog, and launch Flutter. Press Ctrl+C to close the UI and its background services. Use `tools/dev.sh help` for backend-only startup, status, logs, shutdown, and test commands.
+Run `tools/dev.sh` with no arguments for a launch menu: **1** play with audio through PipeWire, **2** play direct to the USB interface (lowest latency), or **3** no audio. `tools/dev.sh demo` still starts everything without opening an audio device. Every mode uses the same optimized engine build, so switching modes never rebuilds. Press Ctrl+C to close the UI and its background services. Use `tools/dev.sh help` for backend-only startup, status, logs, shutdown, and test commands.
 
 The Python mock remains available with `make mock` for isolated control-protocol experiments. It uses `/tmp/pedal-control.sock` by default.
 

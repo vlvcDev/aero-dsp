@@ -535,39 +535,6 @@ Audio
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('guided tuner locks each target string and allows revisiting it',
-      (tester) async {
-    final meters = StreamController<MeterSnapshot>();
-    addTearDown(meters.close);
-    await tester.pumpWidget(
-      PedalAppTestShell(child: TunerSheet(meters: meters.stream)),
-    );
-
-    expect(find.text('GUIDED STRING'), findsOneWidget);
-    expect(find.textContaining('Tune E2 first'), findsOneWidget);
-
-    await tester.tap(find.text('2 A2'));
-    await tester.pump();
-    expect(find.textContaining('Tune A2 first'), findsOneWidget);
-
-    await tester.tap(find.text('1 E2'));
-    await tester.pump();
-    meters.add(const MeterSnapshot(
-      inputDb: -18,
-      outputDb: -18,
-      clipped: false,
-      cpuPercent: 0,
-      xruns: 0,
-      tunerHz: 82.41,
-      tunerConfidence: .9,
-    ));
-    await tester.pump();
-    expect(find.text('IN TUNE — HOLD IT…'), findsOneWidget);
-
-    await tester.pump(const Duration(milliseconds: 1050));
-    expect(find.textContaining('Tune A2 first'), findsOneWidget);
-  });
-
   testWidgets('daily drill presents a touch-safe clean-input exercise',
       (tester) async {
     tester.view.physicalSize = const Size(480, 320);

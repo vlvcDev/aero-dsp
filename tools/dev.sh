@@ -22,14 +22,9 @@ ENGINE_LOG="$RUNTIME_DIR/engine.log"
 CATALOG_LOG="$RUNTIME_DIR/catalog.log"
 ENGINE_STARTED_BY_SCRIPT=0
 
-ENGINE_PROFILE=${PEDAL_ENGINE_PROFILE:-}
-if [[ -z "$ENGINE_PROFILE" ]]; then
-  if [[ ${PEDAL_AUDIO_ENABLED:-0} == 1 ]]; then
-    ENGINE_PROFILE=release
-  else
-    ENGINE_PROFILE=debug
-  fi
-fi
+# One optimized engine build serves every launch mode, so switching between
+# "with audio" and "UI only" never forces a rebuild.
+ENGINE_PROFILE=${PEDAL_ENGINE_PROFILE:-release}
 case "$ENGINE_PROFILE" in
 debug) ENGINE_BINARY="$REPO_DIR/target/debug/pedal-engine" ;;
 release) ENGINE_BINARY="$REPO_DIR/target/release/pedal-engine" ;;
@@ -211,13 +206,32 @@ down() {
   stop_one "Engine" "$ENGINE_PID_FILE" "$CONTROL_SOCKET" "$ENGINE_BINARY"
 }
 
+# True when any app source, asset or Linux runner file is newer than the
+# built bundle (or the bundle is missing).
+ui_build_stale() {
+  local app="$REPO_DIR/apps/pedal_ui" bundle="$1"
+  [[ -x "$bundle" ]] || return 0
+  [[ -n $(find "$app/lib" "$app/linux" "$app/assets" "$app/pubspec.yaml" \
+    "$app/pubspec.lock" -newer "$bundle" -print -quit 2>/dev/null) ]]
+}
+
 run_ui() {
   up
-  say "Launching the Flutter UI. Press Ctrl+C to close it."
-  cd "$REPO_DIR/apps/pedal_ui"
+  local app="$REPO_DIR/apps/pedal_ui"
+  local bundle="$app/build/linux/x64/release/bundle/pedal_ui"
+  # Skip Flutter's tooling entirely when nothing changed (~1 s instead of
+  # ~5 s); rebuild only after app code changes. PEDAL_UI_FORCE_BUILD=1 forces it.
+  if [[ ${PEDAL_UI_FORCE_BUILD:-0} == 1 ]] || ui_build_stale "$bundle"; then
+    say "App code changed: building the UI (about 30-40 s)…"
+    (cd "$app" && flutter build linux --release) || fail "UI build failed"
+    touch "$bundle"
+  else
+    ok "UI is up to date, skipping the build"
+  fi
+  say "Launching the UI. Close the window or press Ctrl+C to stop."
   PEDAL_CONTROL_SOCKET="$CONTROL_SOCKET" \
     PEDAL_CATALOG_SOCKET="$CATALOG_SOCKET" \
-    flutter run -d linux --release
+    "$bundle"
 }
 
 demo() {
@@ -260,12 +274,48 @@ run_tests() {
   cargo test --workspace
 }
 
+# First USB audio interface as an ALSA hw: device, e.g. hw:CARD=USB.
+usb_audio_device() {
+  local id
+  # /proc/asound/cards lines look like: " 2 [USB    ]: USB-Audio - Scarlett Solo"
+  id=$(awk -F'[][]' '/USB-Audio/ { gsub(/ /, "", $2); print $2; exit }' \
+    /proc/asound/cards 2>/dev/null || true)
+  [[ -n "$id" ]] && printf 'hw:CARD=%s' "$id"
+}
+
+menu() {
+  local usb choice
+  usb=$(usb_audio_device || true)
+  printf '\n\033[1;36mAERO>>DSP\033[0m — how do you want to run it?\n\n'
+  printf '  1) Play guitar        audio on, shared with the desktop (PipeWire)\n'
+  if [[ -n "$usb" ]]; then
+    printf '  2) Play guitar, direct  lowest latency, takes over %s\n' "$usb"
+  else
+    printf '  2) Play guitar, direct  lowest latency (no USB interface found right now)\n'
+  fi
+  printf '  3) No audio           just the app, no interface needed\n\n'
+  read -r -p 'Choose 1, 2 or 3 [1]: ' choice
+  case "${choice:-1}" in
+  1) exec env PEDAL_AUDIO_ENABLED=1 "$0" demo ;;
+  2)
+    [[ -n "$usb" ]] || fail "No USB audio interface found. Plug it in, or choose 1."
+    # Capture/playback must both be set: they take precedence over
+    # PEDAL_AUDIO_DEVICE and otherwise default to PipeWire below.
+    exec env PEDAL_AUDIO_ENABLED=1 PEDAL_AUDIO_CAPTURE_DEVICE="$usb" \
+      PEDAL_AUDIO_PLAYBACK_DEVICE="$usb" "$0" demo
+    ;;
+  3) exec env PEDAL_AUDIO_ENABLED=0 "$0" demo ;;
+  *) fail "Please choose 1, 2 or 3" ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 Pedal V0 development harness
 
-Usage: tools/dev.sh COMMAND
+Usage: tools/dev.sh [COMMAND]
 
+  (no command)      Menu: play with audio, play direct, or no audio
   demo              Start everything, launch Flutter, stop on exit
   up                 Start the real Rust engine (without audio) and catalog
   ui                 Start missing services and launch Flutter
@@ -288,7 +338,8 @@ TONE3000 browsing is enabled automatically when both of these are exported:
 EOF
 }
 
-case "${1:-help}" in
+case "${1:-menu}" in
+menu) menu ;;
 demo) demo ;;
 up) up ;;
 ui) run_ui ;;

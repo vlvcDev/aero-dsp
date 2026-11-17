@@ -21,6 +21,7 @@ part 'tone_workbench.dart';
 part 'node_library.dart';
 part 'tone_browser.dart';
 part 'scales.dart';
+part 'tuner.dart';
 
 const _windowChromeChannel = MethodChannel('aero_dsp/window_chrome');
 
@@ -558,6 +559,118 @@ class _WindowCloseButton extends StatelessWidget {
       );
 }
 
+/// Borderless-window resizing: generous edge and corner grab zones that
+/// show resize cursors, plus a grip in the bottom-right corner. Mouse only,
+/// so the touchscreen is unaffected; presses still reach the content below.
+class _WindowResizeFrame extends StatelessWidget {
+  const _WindowResizeFrame({required this.child});
+
+  final Widget child;
+
+  static const edge = 10.0;
+  static const corner = 24.0;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget zone(String name, MouseCursor cursor) => MouseRegion(
+          cursor: cursor,
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (event) {
+              if (event.kind == ui.PointerDeviceKind.mouse &&
+                  event.buttons == 1) {
+                unawaited(_windowChromeChannel.invokeMethod<void>(
+                    'beginResize', name));
+              }
+            },
+          ),
+        );
+    return Stack(children: [
+      Positioned.fill(child: child),
+      // Edges first so the corners (added after) win where they overlap.
+      Positioned(
+          left: corner,
+          right: corner,
+          top: 0,
+          height: edge,
+          child: zone('north', SystemMouseCursors.resizeUp)),
+      Positioned(
+          left: corner,
+          right: corner,
+          bottom: 0,
+          height: edge,
+          child: zone('south', SystemMouseCursors.resizeDown)),
+      Positioned(
+          top: corner,
+          bottom: corner,
+          left: 0,
+          width: edge,
+          child: zone('west', SystemMouseCursors.resizeLeft)),
+      Positioned(
+          top: corner,
+          bottom: corner,
+          right: 0,
+          width: edge,
+          child: zone('east', SystemMouseCursors.resizeRight)),
+      Positioned(
+          left: 0,
+          top: 0,
+          width: corner,
+          height: corner,
+          child: zone('northWest', SystemMouseCursors.resizeUpLeft)),
+      Positioned(
+          right: 0,
+          top: 0,
+          width: corner,
+          height: corner,
+          child: zone('northEast', SystemMouseCursors.resizeUpRight)),
+      Positioned(
+          left: 0,
+          bottom: 0,
+          width: corner,
+          height: corner,
+          child: zone('southWest', SystemMouseCursors.resizeDownLeft)),
+      Positioned(
+        right: 0,
+        bottom: 0,
+        width: corner,
+        height: corner,
+        child: Stack(children: [
+          const Positioned(
+            right: 3,
+            bottom: 3,
+            child: IgnorePointer(
+              child: CustomPaint(
+                  size: Size.square(12), painter: _ResizeGripPainter()),
+            ),
+          ),
+          Positioned.fill(
+              child: zone('southEast', SystemMouseCursors.resizeDownRight)),
+        ]),
+      ),
+    ]);
+  }
+}
+
+class _ResizeGripPainter extends CustomPainter {
+  const _ResizeGripPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = LostChrome.ice.withValues(alpha: .55)
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round;
+    for (final inset in [0.0, 4.0, 8.0]) {
+      canvas.drawLine(
+          Offset(size.width, inset), Offset(inset, size.height), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ResizeGripPainter oldDelegate) => false;
+}
+
 class _WindowDragRegion extends StatelessWidget {
   const _WindowDragRegion({required this.child});
 
@@ -692,34 +805,6 @@ class _RigScreenState extends State<RigScreen> {
   final _patchDocument = PatchDocument();
   String? _importedPreviewPath;
 
-  void _beginWindowResize(PointerDownEvent event) {
-    if (event.kind != ui.PointerDeviceKind.mouse || event.buttons != 1) {
-      return;
-    }
-
-    const resizeBand = 8.0;
-    final size = MediaQuery.sizeOf(context);
-    final point = event.localPosition;
-    final north = point.dy <= resizeBand;
-    final south = point.dy >= size.height - resizeBand;
-    final west = point.dx <= resizeBand;
-    final east = point.dx >= size.width - resizeBand;
-    final edge = switch ((north, south, west, east)) {
-      (true, _, true, _) => 'northWest',
-      (true, _, _, true) => 'northEast',
-      (_, true, true, _) => 'southWest',
-      (_, true, _, true) => 'southEast',
-      (true, _, _, _) => 'north',
-      (_, true, _, _) => 'south',
-      (_, _, true, _) => 'west',
-      (_, _, _, true) => 'east',
-      _ => null,
-    };
-    if (edge != null) {
-      unawaited(_windowChromeChannel.invokeMethod<void>('beginResize', edge));
-    }
-  }
-
   @override
   void initState() {
     super.initState();
@@ -751,9 +836,7 @@ class _RigScreenState extends State<RigScreen> {
     // an RGBA surface, so the rounded shell can reveal the desktop there.
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerDown: _beginWindowResize,
+      body: _WindowResizeFrame(
         child: Padding(
           padding: const EdgeInsets.all(2),
           child: DecoratedBox(
@@ -11444,236 +11527,6 @@ class _RiffVaultSheetState extends State<RiffVaultSheet> {
   }
 }
 
-class TunerSheet extends StatefulWidget {
-  const TunerSheet({required this.meters, super.key});
-
-  final Stream<MeterSnapshot> meters;
-
-  @override
-  State<TunerSheet> createState() => _TunerSheetState();
-}
-
-class _TunerSheetState extends State<TunerSheet> {
-  _Tuning _tuning = _tunings.first;
-  MeterSnapshot _meter = const MeterSnapshot.silent();
-  StreamSubscription<MeterSnapshot>? _meterSubscription;
-  Timer? _holdTimer;
-  int _stringIndex = 0;
-  bool _holdingPitch = false;
-  bool _completed = false;
-
-  static const _holdDuration = Duration(milliseconds: 1000);
-
-  String get _targetNote => _tuning.notes[_stringIndex];
-
-  @override
-  void initState() {
-    super.initState();
-    _meterSubscription = widget.meters.listen(_receiveMeter);
-  }
-
-  @override
-  void dispose() {
-    _meterSubscription?.cancel();
-    _holdTimer?.cancel();
-    super.dispose();
-  }
-
-  void _receiveMeter(MeterSnapshot meter) {
-    if (!mounted) return;
-    final reading = _TunerReading.forTarget(meter, _targetNote);
-    final isStable =
-        !_completed && reading.hasPitch && reading.cents.abs() <= 5;
-    if (isStable && !_holdingPitch) {
-      _holdTimer = Timer(_holdDuration, _advanceIfStillInTune);
-    } else if (!isStable && _holdingPitch) {
-      _holdTimer?.cancel();
-      _holdTimer = null;
-    }
-    setState(() {
-      _meter = meter;
-      _holdingPitch = isStable;
-    });
-  }
-
-  void _advanceIfStillInTune() {
-    if (!mounted || !_holdingPitch) return;
-    setState(() {
-      _holdTimer = null;
-      _holdingPitch = false;
-      if (_stringIndex < _tuning.notes.length - 1) {
-        _stringIndex += 1;
-      } else {
-        _completed = true;
-      }
-    });
-  }
-
-  void _chooseString(int index) {
-    _holdTimer?.cancel();
-    _holdTimer = null;
-    setState(() {
-      _stringIndex = index;
-      _holdingPitch = false;
-      _completed = false;
-    });
-  }
-
-  void _chooseTuning(_Tuning tuning) {
-    _holdTimer?.cancel();
-    _holdTimer = null;
-    setState(() {
-      _tuning = tuning;
-      _stringIndex = 0;
-      _holdingPitch = false;
-      _completed = false;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Builder(
-        builder: (context) {
-          final reading = _TunerReading.forTarget(_meter, _targetNote);
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(18, 10, 18, 16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.tune, color: LostChrome.lime),
-                    const SizedBox(width: 8),
-                    const Text('CLEAN INPUT TUNER',
-                        style: TextStyle(
-                            fontSize: 19, fontWeight: FontWeight.w900)),
-                  ],
-                ),
-                const Text(
-                    'Listens before NAM and effects. Your sound stays unchanged.',
-                    style: TextStyle(color: Color(0xffa2d5f5))),
-                const SizedBox(height: 14),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xee0f407c), Color(0xee081a43)],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: LostChrome.ice, width: 1.3),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(_targetNote,
-                          style: const TextStyle(
-                            fontSize: 55,
-                            height: 1,
-                            fontWeight: FontWeight.w900,
-                            color: LostChrome.pearl,
-                          )),
-                      const SizedBox(height: 6),
-                      Text(
-                        _completed
-                            ? 'ALL STRINGS TUNED'
-                            : !reading.hasPitch
-                                ? 'PLUCK $_targetNote ONLY'
-                                : _holdingPitch
-                                    ? 'IN TUNE — HOLD IT…'
-                                    : '${reading.frequency.toStringAsFixed(1)} Hz  •  ${reading.cents >= 0 ? '+' : ''}${reading.cents.round()} cents',
-                        style: const TextStyle(
-                          color: LostChrome.lime,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.8,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      _TunerNeedle(
-                          cents: reading.cents, hasSignal: reading.hasPitch),
-                      if (_holdingPitch) ...[
-                        const SizedBox(height: 9),
-                        const _TunerHoldIndicator(),
-                      ],
-                      const SizedBox(height: 3),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: const [
-                          Text('FLAT',
-                              style: TextStyle(
-                                  fontSize: 10, color: Color(0xffa2d5f5))),
-                          Text('IN TUNE',
-                              style: TextStyle(
-                                  fontSize: 10, color: Color(0xffa2d5f5))),
-                          Text('SHARP',
-                              style: TextStyle(
-                                  fontSize: 10, color: Color(0xffa2d5f5))),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text('GUIDED STRING',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: [
-                    for (var index = 0; index < _tuning.notes.length; index++)
-                      ChoiceChip(
-                        label: Text('${index + 1} ${_tuning.notes[index]}'),
-                        selected: index == _stringIndex,
-                        onSelected: (_) => _chooseString(index),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _completed
-                      ? 'Finished. Tap any string above to check it again.'
-                      : 'Tune $_targetNote first. Other strings are ignored until it locks.',
-                  textAlign: TextAlign.center,
-                  style:
-                      const TextStyle(color: Color(0xffa2d5f5), fontSize: 11),
-                ),
-                const SizedBox(height: 14),
-                const Text('TUNING',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w900, letterSpacing: 1.2)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: [
-                    for (final tuning in _tunings)
-                      ChoiceChip(
-                        label: Text(tuning.name),
-                        selected: tuning == _tuning,
-                        onSelected: (_) => _chooseTuning(tuning),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _tuning.notes.join('  '),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: LostChrome.ice,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.1,
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
 class BackingTrackSheet extends StatefulWidget {
   const BackingTrackSheet({
     required this.catalog,
@@ -11938,68 +11791,7 @@ class _BackingTrackNotice extends StatelessWidget {
       );
 }
 
-class _TunerHoldIndicator extends StatelessWidget {
-  const _TunerHoldIndicator();
-
-  @override
-  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: _TunerSheetState._holdDuration,
-        builder: (context, value, _) => LinearProgressIndicator(
-          value: value,
-          minHeight: 4,
-          borderRadius: BorderRadius.circular(4),
-          color: LostChrome.lime,
-          backgroundColor: const Color(0xff20528c),
-        ),
-      );
-}
-
-class _TunerNeedle extends StatelessWidget {
-  const _TunerNeedle({required this.cents, required this.hasSignal});
-
-  final double cents;
-  final bool hasSignal;
-
-  @override
-  Widget build(BuildContext context) {
-    final x = hasSignal ? (cents.clamp(-50, 50) / 50).toDouble() : 0.0;
-    final inTune = hasSignal && cents.abs() <= 5;
-    return SizedBox(
-      height: 24,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-              height: 4,
-              decoration: BoxDecoration(
-                  color: const Color(0xff20528c),
-                  borderRadius: BorderRadius.circular(4))),
-          Container(width: 2, height: 18, color: LostChrome.pearl),
-          Align(
-            alignment: Alignment(x, 0),
-            child: Container(
-              width: 15,
-              height: 15,
-              decoration: BoxDecoration(
-                color: inTune ? LostChrome.lime : LostChrome.ice,
-                shape: BoxShape.circle,
-                boxShadow: hasSignal
-                    ? [
-                        BoxShadow(
-                            color: inTune ? LostChrome.lime : LostChrome.ice,
-                            blurRadius: 8)
-                      ]
-                    : null,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
+/// Named string sets used by the practice tabs.
 class _Tuning {
   const _Tuning(this.name, this.notes);
 
@@ -12017,28 +11809,6 @@ const _tunings = [
   _Tuning('7-string Standard B', ['B1', 'E2', 'A2', 'D3', 'G3', 'B3', 'E4']),
   _Tuning('7-string Drop A', ['A1', 'E2', 'A2', 'D3', 'G3', 'B3', 'E4']),
 ];
-
-class _TunerReading {
-  const _TunerReading(
-      {required this.frequency, required this.cents, required this.hasPitch});
-
-  factory _TunerReading.forTarget(MeterSnapshot meter, String targetNote) {
-    if (meter.tunerHz <= 0 || meter.tunerConfidence < .55) {
-      return const _TunerReading(frequency: 0, cents: 0, hasPitch: false);
-    }
-    final cents =
-        1200 * math.log(meter.tunerHz / _noteFrequency(targetNote)) / math.ln2;
-    return _TunerReading(
-      frequency: meter.tunerHz,
-      cents: cents,
-      hasPitch: true,
-    );
-  }
-
-  final double frequency;
-  final double cents;
-  final bool hasPitch;
-}
 
 double _noteFrequency(String note) {
   final normalized = note.replaceAll('♯', '#');
